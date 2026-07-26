@@ -24,10 +24,8 @@ set(ANO_MUSIC_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/music_host.c
 )
 target_sources(anoptic_core PRIVATE ${ANO_MUSIC_SOURCES})
-# TARGET_DIRECTORY is load-bearing: anoptic_core is defined at the root, and a
-# source property set here without it is silently ignored. That no-op shipped
-# fused fmadd on arm64 (baseline there, absent in baseline x86-64 codegen) and
-# broke CPython bit-parity on macOS (anotest_music, 2026-07-16).
+# TARGET_DIRECTORY required: anoptic_core is defined at root; without it this
+# property is a silent no-op (fmadd ships, CPython bit-parity breaks).
 set_source_files_properties(${ANO_MUSIC_SOURCES}
         TARGET_DIRECTORY anoptic_core
         PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")

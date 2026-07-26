@@ -64,14 +64,13 @@ void render_slots_destroy(RenderSlotTable *table);
 
 // Alloc one slot (free-list else high-water). in: render_id, unmapped and not the sentinel.
 // out: slot, or UNMAPPED on the sentinel, an already-mapped id, at capacity, or OOM.
-// inv: a refusal maps nothing 〜 no slot taken, slotHighWater unmoved.
+// inv: refusal maps nothing; no slot taken, slotHighWater unmoved.
 uint32_t render_slots_alloc(RenderSlotTable *table, uint32_t render_id);
 
 // Contiguous range for RCMD_BULK_CREATE. in: render_ids, each unmapped and distinct
 // from the rest; none the sentinel. out: base slot, or UNMAPPED.
-// inv: refused on a sentinel id, an already-live id, an intra-batch duplicate, at
-//      capacity, or OOM 〜 anywhere in the batch. Every failure arm leaves all
-//      mappings untouched and slotHighWater unmoved; the batch lands whole or not at all.
+// inv: refuse on sentinel, live id, intra-batch dup, capacity, or OOM.
+//      Failure leaves mappings and slotHighWater untouched (all-or-nothing).
 [[nodiscard]]
 uint32_t render_slots_alloc_range(RenderSlotTable *table, const uint32_t *render_ids, uint32_t count);
 

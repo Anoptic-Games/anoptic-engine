@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 #if defined(_WIN32)
-// Pin API level before Windows headers so CreateWaitableTimerExW / FlsAlloc are visible.
+// Pin API level before Windows headers (CreateWaitableTimerExW / FlsAlloc).
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00   // Win10: hi-res waitable timers
 #define WINVER       0x0A00
@@ -48,8 +48,7 @@ static uint64_t query_perf_freq(void) {
     return f;
 }
 
-// Raw QPC counts. Calibration reference for the TSC mapping, and the timebase itself where no
-// invariant TSC exists. Not the re-anchor reference: that is unbiased_now.
+// Raw QPC counts. TSC calibration ref, or timebase when no invariant TSC. Re-anchor uses unbiased_now.
 //   out: uint64_t counts, same domain as query_perf_freq
 static inline uint64_t qpc_now(void) {
     LARGE_INTEGER tmp;
@@ -57,18 +56,11 @@ static inline uint64_t qpc_now(void) {
     return (uint64_t)tmp.QuadPart;
 }
 
-// QueryUnbiasedInterruptTimePrecise lives in realtimeapiset.h (pulled by winbase.h on Win10 SDKs)
-// and is exported by KernelBase.dll rather than kernel32, so an SDK whose headers predate it needs
-// this declaration and a toolchain whose import libs predate it needs a mincore/onecore link. The
-// signature is the documented one, so this is a compatible redeclaration wherever the SDK has it.
+// QueryUnbiasedInterruptTimePrecise: KernelBase.dll. Redeclare for older SDKs/import libs.
 WINBASEAPI VOID WINAPI QueryUnbiasedInterruptTimePrecise(PULONGLONG lpUnbiasedInterruptTimePrecise);
 
-// Unbiased interrupt time: interrupt time with the time the system spent suspended subtracted out.
-// That is the engine's monotonic semantic on every platform (Linux CLOCK_MONOTONIC, Darwin
-// mach_absolute_time), which is why the TSC mapping re-anchors against this and not QPC: how far
-// QPC advances across S3/S4 depends on which hardware source the machine picked, so the resume gap
-// would vary per machine. The Precise form reads the source rather than the last tick, so it does
-// not quantize to the ~15.6ms interrupt period.
+// Unbiased interrupt time: suspend-excluded, monotonic. TSC re-anchor reference (not QPC).
+// Precise form reads the source, not the last tick (~15.6ms).
 //   out: uint64_t 100ns units since boot, suspended time excluded, monotonic non-decreasing
 static inline uint64_t unbiased_now(void) {
     ULONGLONG t = 0;
@@ -84,7 +76,7 @@ static _Atomic int      g_clockMode  = CLOCK_UNSET;
 static _Atomic int      g_clockElect = 0;    // one-time election guard for resolve_clock
 static _Atomic uint64_t cachedTscHz  = 0;    // calibrated invariant-TSC frequency (TSC mode only)
 
-// Calibration sanity band. A floor above 0 is what makes an elected cachedTscHz safe to divide by.
+// Calibration sanity band (excludes 0).
 #define ANO_TSC_HZ_MIN 100000000ull      // 100 MHz
 #define ANO_TSC_HZ_MAX 100000000000ull   // 100 GHz
 static_assert(ANO_TSC_HZ_MIN > 0 && ANO_TSC_HZ_MIN < ANO_TSC_HZ_MAX, "TSC band must exclude 0 and be ordered");
@@ -159,14 +151,8 @@ static void tsc_set_anchor(uint64_t raw, uint64_t ref, uint64_t exported) {
     atomic_store_explicit(&g_tscAnchorRaw, raw, memory_order_release);
 }
 
-// Cold path: the raw TSC fell a millisecond below the anchor, which only a power transition does.
-// S3 sleep and S4 hibernate drop the core power domain and firmware restarts the counter near zero;
-// the invariant-TSC bit checked at election covers P/C/T states only. Re-derive the mapping so the
-// exported count continues where it left off, measuring the gap on unbiased interrupt time: the
-// engine's clock excludes suspended time, so the resume advance is the awake interval alone and is
-// the same on every machine.
-//   out: void. On return this thread republished the anchor, or another thread is republishing it;
-//        the caller re-reads either way.
+// Cold path: raw TSC fell ≥1ms below anchor (S3/S4 restart). Re-anchor via unbiased gap.
+//   out: void. This or another thread republished; caller re-reads either way.
 static void tsc_reanchor(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong(&g_tscAnchoring, &expected, 1)) {
@@ -176,13 +162,10 @@ static void tsc_reanchor(void) {
     uint64_t raw = rdtsc_fenced();
     uint64_t ref = unbiased_now();
     uint64_t adv = 0;
-    if (ref > g_refAnchor) {   // a reference below its anchor is outside contract; keeps the gap out of the scale
+    if (ref > g_refAnchor) {   // ref below anchor: out of contract, skip gap
         uint64_t hz = atomic_load_explicit(&cachedTscHz, memory_order_relaxed);
         adv = (uint64_t)(((unsigned __int128)(ref - g_refAnchor) * hz) / 10000000ull);   // 100ns units/s
-        // Round the gap up. cachedTscHz is calibrated against QPC and applied here to an unbiased
-        // gap, so the estimate carries both references' drift: tens of ppm either way. A short
-        // estimate puts post-resume stamps below held pre-resume ones, exactly the u64 delta wrap
-        // this seam exists to prevent. Long is one stretched delta, short is 584 years.
+        // Round gap up: short estimate wraps u64 deltas post-resume.
         adv += adv / 1024u + hz / 1000u;
     }
     tsc_set_anchor(raw, ref, g_exportedAnchor + adv);
@@ -230,9 +213,7 @@ static inline int clock_mode(void) {
 
 #endif // ANO_TSC_ARCH
 
-// Raw counter: rdtsc against its anchor, or QPC. Divide deferred to ano_ticks_to_ns.
-// The anchor test is the whole cost of surviving S3/S4: a live counter is always far above it, so
-// the stamp keeps its load-add shape and only a restart pays.
+// Raw counter: rdtsc vs anchor, or QPC. Divide deferred to ano_ticks_to_ns.
 uint64_t ano_timestamp_ticks() {
 #ifdef ANO_TSC_ARCH
     if (clock_mode() == CLOCK_TSC) {
@@ -241,17 +222,14 @@ uint64_t ano_timestamp_ticks() {
             uint64_t anchor = atomic_load_explicit(&g_tscAnchorRaw, memory_order_acquire);
             if (raw >= anchor)
                 return raw + atomic_load_explicit(&g_tscBias, memory_order_relaxed);
-            // Below the anchor: core-to-core skew is a few hundred cycles, a restarted counter is
-            // seconds of uptime. Clamp the first to the anchor, re-anchor on the second.
+            // Below anchor: skew → clamp to anchor; restart (≥1ms) → re-anchor.
             if (anchor - raw < atomic_load_explicit(&cachedTscHz, memory_order_relaxed) / 1000u)
                 return anchor + atomic_load_explicit(&g_tscBias, memory_order_relaxed);
             tsc_reanchor();
         }
     }
 #endif
-    // No invariant TSC: QPC is the timebase directly, and best-effort on suspend semantics 〜 its
-    // advance across S3/S4 is its hardware source's business and there is no second reference here
-    // to correct it against.
+    // No invariant TSC: QPC timebase. Suspend advance is best-effort.
     return qpc_now();
 }
 
@@ -366,7 +344,7 @@ static void NTAPI ano_sleep_timer_free(PVOID p) {
 // Lazy hi-res waitable timer. NULL -> caller uses coarse Sleep.
 static HANDLE ano_sleep_timer(void) {
     if (tlSleepTimer == INVALID_HANDLE_VALUE)
-        return NULL;             // previously determined unsupported
+        return NULL;             // unsupported
     if (tlSleepTimer != NULL)
         return tlSleepTimer;     // hot path: reuse
 
@@ -405,7 +383,7 @@ int ano_sleep(uint64_t us) {
         bool yielded = false;
         if (timer != NULL) {
             // Relative due time in 100ns units, negative per Win32 ABI.
-            // Clamp to INT64_MAX so negation never becomes an absolute due; floor to 1 so a wait never rounds to "signal now".
+            // Clamp to INT64_MAX (negation stays relative). Floor to 1 (never "signal now").
             uint64_t units = coarse_ns / 100ULL;
             if (units == 0) units = 1;
             if (units > (uint64_t)INT64_MAX) units = (uint64_t)INT64_MAX;
@@ -430,7 +408,7 @@ int ano_sleep(uint64_t us) {
         }
     }
 
-    // Spin stage: remaining time in <=MAX_BUSYWAIT_NS chunks (oversleep / missing coarse must not trip busywait's 1e9ns cap).
+    // Spin stage: remaining time in <=MAX_BUSYWAIT_NS chunks.
     for (;;) {
         uint64_t elapsed = ano_timestamp_raw() - start;
         if (elapsed >= target_ns)

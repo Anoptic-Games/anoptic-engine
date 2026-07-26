@@ -17,9 +17,7 @@
 _Static_assert(sizeof(AnoAudioEvent) <= 32u, "AnoAudioEvent grew past 32 bytes; revisit the events ring");
 _Static_assert(sizeof(AnoAudioCommand) <= 192u, "AnoAudioCommand grew past 192 bytes; revisit the command ring");
 
-// An adopted block is one allocation: header, then the interleaved payload at h + 1. Registration
-// and discharge both treat the header pointer as the allocation base, so it must not misalign that
-// payload.
+// Header + interleaved payload share one alloc; header must not misalign float payload.
 _Static_assert(_Alignof(AnoAudioBlockHeader) >= _Alignof(float)
                    && sizeof(AnoAudioBlockHeader) % _Alignof(float) == 0u,
                "AnoAudioBlockHeader must not misalign the payload sharing its allocation");
@@ -208,18 +206,10 @@ fail_heap:
     return false;
 }
 
-// Free every adopted block the world still holds: registrations queued in the command ring,
-// un-polled retirements in the event ring, blocks resident in the buffer table. Sole discharge
-// point is ano_audio_block_free 〜 the same call the rides-home path hands the producer.
-// in:  mx 〜 mixer joined, device stopped, producer no longer submitting
-// out: none. Both bridge rings empty, every owned buffer slot FREE
-// inv: single-threaded. The mixer was the command ring's only consumer and the event ring's only
-//      producer, and it no longer exists; the device never touches either.
-// inv: the three populations are disjoint, so nothing is freed twice. A REGISTER command leaves
-//      the ring before its block enters a slot, and a slot is cleared only in the step that hands
-//      its block to the event ring.
-// inv: module-heap allocations (mixer, bridge, ring storage, bus scratch) are not touched here;
-//      mi_heap_destroy owns those. Borrowed blocks (MUSIC_SEEK snapshots) stay the producer's.
+// Free adopted blocks (cmd regs, unpolled retires, owned slots) via ano_audio_block_free.
+// in:  mx joined, device stopped, producer idle
+// out: bridge rings empty; owned buffer slots FREE
+// inv: single-threaded; populations disjoint; module-heap untouched; borrowed stays with producer
 static void audio_discharge_blocks(AnoAudioMixer *mx)
 {
     AnoAudioCommand cmd;
@@ -273,7 +263,7 @@ void ano_audio_shutdown(void)
         return;
     AnoAudioMixer *mx = g_mixer;
 
-    // Stop mixer (producer) then device (consumer); no submit may race teardown.
+    // Stop mixer (producer) then device (consumer).
     atomic_store_explicit(&mx->mixerRun, false, memory_order_release);
     ano_thread_join(mx->mixerThread, NULL);
     mx->device->stop(mx);
@@ -323,8 +313,7 @@ bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,
 {
     if (!bridge || !interleaved || frames == 0u || channels < 1u || channels > 2u)
         return false;
-    // Divide before multiplying: frames near 2^62 wraps the product past 2^64 to a tiny value
-    // that passes any size check downstream, and the header keeps the huge frame count.
+    // Overflow guard: divide before multiply.
     const uint64_t stride = (uint64_t)channels * sizeof(float);
     if (frames > (SIZE_MAX - sizeof(AnoAudioBlockHeader)) / stride)
         return false;

@@ -7,7 +7,7 @@
 // Mixer thread owns the graph after init. Device thread: cooked ring + underruns.
 // Pools from module heap at init. Steady-state block loop: no alloc, no locks.
 // Adopted sample blocks return via AEVT_BUFFER_RETIRED (reject-on-full frees at boundary).
-// Teardown exception: shutdown frees whatever is still resident 〜 both rings and the buffer table.
+// Teardown: shutdown frees resident rings and buffer table.
 
 #ifndef ANO_AUDIO_INTERNAL_H
 #define ANO_AUDIO_INTERNAL_H
@@ -168,8 +168,7 @@ struct AnoAudioMixer
     AnoAudioRing blockRing;
     float       *blockScratch;  // mixer render target before push
     float       *deviceScratch; // device pop / pull carry (one backend at a time)
-    // Own line: an underrun storm must not invalidate the read-only ring/pointer
-    // lines both hot paths dereference every cycle.
+    // Own cache line.
     _Alignas(ANO_THREAD_LINE) _Atomic uint32_t underruns; // device increments; mixer reports in telemetry
 
     const AnoAudioDeviceApi *device;

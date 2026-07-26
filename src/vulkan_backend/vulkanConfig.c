@@ -10,7 +10,7 @@
 // Static parameters. preferredMode all-bits = "nothing selected". preferredMsaa default 4x.
 static VulkanSettings vulkanSettings = {.preferredDevice = "", .preferredMode = 0b111111111, .preferredMsaa = 4};
 
-// monitorIndex -1 wraps to UINT32_MAX 〜 windowed (structs.h)
+// monitorIndex -1 wraps to UINT32_MAX, ignored (structs.h)
 static WindowParameters windowParameters = {.width = 800, .height = 600, .monitorIndex = -1, .borderless = false};
 
 /* If an API function isn't here, it's probably implemented in vulkanMaster.c */
@@ -93,10 +93,10 @@ bool updateWindow(GLFWwindow *window)
 {
     if (!window) return false;
 
-    // Get the current context
+    // Current context
     GLFWwindow* currentContext = glfwGetCurrentContext();
 
-    // 1. Handle window size change
+    // 1. Window size
     int currentWidth, currentHeight;
     glfwGetWindowSize(window, &currentWidth, &currentHeight);
     if (currentWidth != windowParameters.width || currentHeight != windowParameters.height)
@@ -104,7 +104,7 @@ bool updateWindow(GLFWwindow *window)
         glfwSetWindowSize(window, (int)windowParameters.width, (int)windowParameters.height);
     }
 
-    // 2. Handle monitor change. -1 wraps to UINT32_MAX 〜 windowed (structs.h)
+    // 2. Monitor. -1 wraps to UINT32_MAX, ignored (structs.h)
     if (windowParameters.monitorIndex != -1)
     {
         int count;
@@ -114,15 +114,15 @@ bool updateWindow(GLFWwindow *window)
             GLFWmonitor* targetMonitor = monitors[windowParameters.monitorIndex];
             const GLFWvidmode* mode = glfwGetVideoMode(targetMonitor);
             
-            // Update the window to fullscreen on the desired monitor
+            // Fullscreen on target monitor
             glfwSetWindowMonitor(window, targetMonitor, 0, 0, mode->width, mode->height, mode->refreshRate);
         }
     }
 
-    // 3. Handle borderless mode
+    // 3. Borderless
     if (windowParameters.borderless)
     {
-        // Assuming you want to use the native resolution for borderless fullscreen
+        // Native res borderless
         GLFWmonitor* primary = glfwGetPrimaryMonitor();
         const GLFWvidmode* mode = glfwGetVideoMode(primary);
 
@@ -133,7 +133,7 @@ bool updateWindow(GLFWwindow *window)
         glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_TRUE);
     }
 
-    // Restore the original context
+    // Restore context
     glfwMakeContextCurrent(currentContext);
 
     return true;

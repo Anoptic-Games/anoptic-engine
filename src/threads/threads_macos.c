@@ -12,7 +12,7 @@
 #include <limits.h>
 
 
-/* Spinlocks 〜 POSIX gap-fill */
+/* Spinlocks: POSIX gap-fill */
 
 // in: lock, pshared (ignored, always process-private). out: 0. unlocked state.
 int pthread_spin_init(pthread_spinlock_t *lock, int pshared) {
@@ -58,14 +58,9 @@ int pthread_spin_unlock(pthread_spinlock_t *lock) {
 }
 
 
-/* Synchronization Barriers 〜 POSIX gap-fill */
+/* Synchronization Barriers: POSIX gap-fill */
 
-// The whole round rides one word, `arrived`: [phase : 16][arrivals : 16]. One RMW claims the
-// arrival AND the phase it belongs to, and the RMW that admits the last arrival opens the next
-// phase - so reuse by more than `count` threads can neither erase an arrival nor hand a waiter
-// a phase it never joined. A phase wrap (65536 rounds inside one waiter's spin) can only delay
-// a release, never advance one. The phase rides the same word because a two-word round cannot be
-// sampled atomically.
+// `arrived`: [phase:16][arrivals:16]. One RMW claims arrival+phase; last opens next phase.
 #define ANO_BAR_SHIFT 16u
 #define ANO_BAR_MASK  ((1u << ANO_BAR_SHIFT) - 1u)   // one half of the state word
 
@@ -75,7 +70,6 @@ _Static_assert(ATOMIC_INT_LOCK_FREE == 2,
                "the barrier spins on atomic_uint; a lock-backed atomic would deadlock it");
 
 // in: barrier, attr (ignored), count (1..ANO_BAR_MASK). out: 0, or EINVAL outside that domain.
-// Sole gate on the packing: past ANO_BAR_MASK an arrival tally would run into the phase half.
 int pthread_barrier_init(pthread_barrier_t *barrier,
                          const pthread_barrierattr_t *attr, unsigned int count) {
 
@@ -88,9 +82,7 @@ int pthread_barrier_init(pthread_barrier_t *barrier,
 }
 
 // in: barrier. out: PTHREAD_BARRIER_SERIAL_THREAD to exactly one thread per cohort, else 0.
-// invariant: no thread returns before all `count` threads of ITS OWN phase have arrived, and
-// every arrival is served by exactly one cohort - both hold when more than `count` threads
-// share the barrier cohort by cohort.
+// invariant: no return until all `count` of this phase arrive; each arrival in exactly one cohort.
 int pthread_barrier_wait(pthread_barrier_t *barrier) {
 
     const unsigned int count = barrier->count;
@@ -126,7 +118,7 @@ int pthread_barrier_destroy(pthread_barrier_t *barrier) {
 }
 
 
-/* Spinlocks 〜 ano_ wrappers (Darwin) */
+/* Spinlocks: ano_ wrappers (Darwin) */
 
 int ano_thread_spin_init(anothread_spinlock_t *lock, int pshared) {
 
@@ -154,7 +146,7 @@ int ano_thread_spin_unlock(anothread_spinlock_t *lock) {
 }
 
 
-/* Synchronization Barriers 〜 ano_ wrappers (Darwin) */
+/* Synchronization Barriers: ano_ wrappers (Darwin) */
 
 int ano_thread_barrier_init(anothread_barrier_t *barrier, const anothread_barrierattr_t *attr, unsigned int count) {
 

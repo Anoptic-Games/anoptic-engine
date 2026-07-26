@@ -264,8 +264,7 @@ void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
 }
 
 // createDataBuffer with optional CONCURRENT graphics+compute sharing.
-// Total out-params: every failure arm answers *buffer == VK_NULL_HANDLE, including a refused bind
-// (the buffer exists but is unbacked, so recording against it is UB).
+// Failure: *buffer == VK_NULL_HANDLE (incl. refused bind).
 bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
                                VkMemoryPropertyFlags props, bool shared,
                                VkBuffer* buffer, GpuAllocation* alloc)
@@ -304,9 +303,8 @@ bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
 
 // Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 7 UI-table
 // SSBOs (bindings 4-10 of uiFrameBuffer).
-// Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
-// argument, so a refused mint zeroes the handle and the build carries on.
-// Commit-last idiom: implementationCount is published only once its array exists.
+// Cache idiom: refused mint -> VK_NULL_HANDLE, build continues.
+// Commit-last: implementationCount published after the array exists.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
     VkDescriptorSetLayoutBinding bindings[11] = {};
@@ -386,9 +384,8 @@ fail:
 
 // Blend pipeline shared by both text lanes: premultiplied src-over, bufferless triangles,
 // dynamic viewport/scissor, one color attachment, state->tonemapCache.
-// In: vertPath/fragPath .spv paths, an already-created layout, samples, colorFormat, and
-// depthFormat 〜 VK_FORMAT_UNDEFINED asks for no depth attachment and no depth test.
-// Out: *out, written by vkCreateGraphicsPipelines; untouched if a shader step refuses.
+// In: vert/frag .spv, layout, samples, colorFormat; UNDEFINED depthFormat = no depth.
+// Out: *out; untouched if a shader step refuses.
 static bool text_build_blend_pipeline(VulkanContext* ctx, RendererState* state,
                                       const char* vertPath, const char* fragPath,
                                       VkPipelineLayout layout, VkSampleCountFlagBits samples,
@@ -894,9 +891,8 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state)
     ano_vk_ui_write_sets(ctx, state);
 }
 
-// The raster pass body, queue-agnostic: clear, dispatch, hand off to the composite's
-// sampled read. Graphics final barrier targets FRAGMENT_SHADER, compute-only transitions
-// the layout, textTimeline carries the cross-queue dependency.
+// Raster pass body, queue-agnostic: clear, dispatch, hand off to composite sample.
+// Graphics barrier: FRAGMENT_SHADER. Async: layout-only; textTimeline for cross-queue.
 static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
                                bool asyncQueue)
 {

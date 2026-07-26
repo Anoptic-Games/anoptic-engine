@@ -204,8 +204,7 @@ bool isVisibleInShadow(uint s, vec4 worldCenter, float worldRadius) {
 // Draw emission
 // ---------------------------------------------------------------------------
 
-// Append one compacted draw for entity idx (at LOD level) into partition partIdx. mData is the
-// selected level's mesh data. Returns the draw's position in the partition (writeIdx).
+// Append compacted draw for entity idx (LOD level) into partition partIdx. Returns writeIdx.
 uint emitDraw(uint partIdx, uint idx, MeshData mData, uint level) {
     uint writeIdx = atomicAdd(drawCounts[partIdx], 1);
     uint destIdx = partIdx * maxEntities + writeIdx;
@@ -232,8 +231,7 @@ uint emitDraw(uint partIdx, uint idx, MeshData mData, uint level) {
 // LOD selection
 // ---------------------------------------------------------------------------
 
-// Select an LOD level from the projected pixel radius rpx. thresholdPx = the rpx where level 1 begins,
-// each halving below it drops one more level. bias offsets the selection (+coarser, -finer). Clamped to [0, lodCount-1].
+// LOD from projected px radius rpx. level 1 at thresholdPx; each halving drops a level. bias: +coarser. Clamped [0, lodCount-1].
 uint lodSelect(float rpx, uint lodCount, float thresholdPx, int bias) {
     if (lodCount <= 1u) return 0u;
     int autoLevel = 0;
@@ -251,10 +249,8 @@ uint lodSelect(float rpx, uint lodCount, float thresholdPx, int bias) {
 // Hi-Z occlusion
 // ---------------------------------------------------------------------------
 
-// Hi-Z occlusion test. Reproject the world sphere into last frame's screen via prevViewProj[view],
-// form a conservative screen AABB, pick the pyramid mip matching its size, take MAX depth over the 4
-// corner texels, report occluded iff the sphere's nearest point is behind that farthest occluder.
-// Returns false (keep) when unusable: disabled, sphere straddling/behind the eye, nearest point behind eye.
+// Hi-Z: reproject sphere via prevViewProj, MAX depth over 4 AABB-corner mip texels.
+// Occluded iff nearest sphere point is behind that occluder. false (keep) if disabled/behind eye.
 bool isOccluded(uint view, vec4 worldCenter, float worldRadius) {
     if (hizParams[view].z < 1.0) return false;                      // mipCount 0 => test off
     vec4 clip = prevViewProj[view] * worldCenter;
@@ -304,8 +300,7 @@ void main() {
     }
 
     mat4 model = transforms[idx];
-    // entity.meshIndex is the LOD base (level 0). Bounds + frustum/screen-area test use the base.
-    // The per-view draw uses the selected level's mesh data (base + level).
+    // meshIndex = LOD base. Bounds/frustum use base; draw uses base+level.
     uint baseMesh = entity.meshIndex;
     vec4 bounds = meshBounds[baseMesh];
     MeshData baseData = meshDrawData[baseMesh];
@@ -329,8 +324,7 @@ void main() {
         if (isVisibleIn(view, worldCenter, worldRadius)) {
             // dist = clip.w == -view_z, positive in front of the eye. Drives screen-area cull + sort key.
             float dist = (views[view].viewProj * worldCenter).w;
-            // Screen-area cull: rpx = worldRadius * scale / dist, drop draws below the threshold.
-            // Compared squared: (worldRadius*scale)^2 < threshSq * dist^2. dist <= 0 bypasses, thresholdSq 0 disables.
+            // Screen-area cull: drop if (worldRadius*scale)^2 < threshSq * dist^2. dist<=0 bypasses; threshSq 0 disables.
             float rnum = worldRadius * viewCullParams[view].x;
             if (dist > 0.0 && rnum * rnum < viewCullParams[view].y * dist * dist) {
                 continue;
@@ -352,14 +346,10 @@ void main() {
             }
         }
     }
-    // Shadow casters: opaque + transmission cast solid shadows into the per-frustum solid partition
-    // (base + s); the MASKED lane's casters go to the per-frustum masked partition (base + FRUSTUM_COUNT + s),
-    // drawn by the alpha-testing shadow pipeline. The additive lane casts none.
+    // Shadow: opaque+transmission -> solid (base+s); MASKED -> base+FRUSTUM_COUNT+s. Additive casts none.
     uint shadowSub = (slot == specialSlots.z) ? ANO_SHADOW_FRUSTUM_COUNT : 0u;
     if (slot != specialSlots.x) {
-        // Shadow LOD matches view 0's level. Recompute view 0's screen-area metric here: rpx = worldRadius
-        // * scale / dist, fed to lodSelect with view 0's threshold + bias + shadowLodBias (+ = coarser).
-        // dist<=0 leaves rpx=0. Same level for every shadow frustum.
+        // Shadow LOD = view 0 lodSelect (threshold + bias + shadowLodBias). Same level for all shadow frustums.
         uint slevel = 0u;
         if (lodCount > 1u) {
             float cdist = (viewCount > 0u) ? (views[0].viewProj * worldCenter).w : 0.0;

@@ -8,9 +8,7 @@
 #include <anoptic_memory.h>
 #include <mimalloc.h>
 
-// macOS ano_aligned_malloc.
-// mi_malloc_aligned follows malloc's zero-size convention and hands back a live block;
-// the header promises NULL, so the degenerate request is refused here.
+// macOS ano_aligned_malloc. Zero size/alignment -> NULL.
 inline void* ano_aligned_malloc(size_t size, size_t alignment) {
     if (size == 0 || alignment == 0) return NULL;
     return mi_malloc_aligned(size, alignment);

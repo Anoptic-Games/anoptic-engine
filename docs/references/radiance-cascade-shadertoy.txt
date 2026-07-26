@@ -478,49 +478,10 @@ void mainCubemap(out vec4 fragColor, in vec2 fragCoord, in vec3 rayOri, in vec3 
 
 /*
 Radiance Cascades 3D
-    Combining radiance cascades with radiosity/irradiance methods
-    This implementation is not perfect, see comments below :)
-
-
-Cascades
-    Cubemap layout
-        Traces 1 ray per pixel, smallest probe is a 2x2 quad
-        Like radiosity and irradiance methods, probes/rays exist on the surface of geometry -> good memory scaling
-        5 cascades are used in this shader
-    Ray tracing
-        Rays are traced with different lengths between cascades
-        Their distribution causes the resolution in phi to be a semilinear function of theta -> bins_phi = 4 + 8*theta_bin_index
-    Merging
-        Cascades are merged by linearly interpolating along the parent rays
-        Spatial interpolation is weighted based on local visibility, approximated by the probes traced rays
-    Primary ray sampling
-        Uses normal bilinear interpolation when reading the cascades
-
-
-Flickering
-    A consequence of (mainly) temporally merging cascades and static probe positions
-
-
-Light leaking from interpolation
-    This implementation samples the smallest probes using naive bilinear interpolation, leading
-    to some light leaking close to geometry
-        A solution is to use weighted interpolation here as well
-
-
-This implementation is pretty simple and should be extended:
-    Dynamic probe positions
-        Moving/complex geometry/light can cause spikes/flickering with static probes
-        A solution like RTXGI could work as an example
-    Can be extended to integrate more complex BRDFs
-        An idea is to importance sample both ray directions and probe positions based on screen space BRDF changes
-        Otherwise hgih frequency detail would be blurred away
-
-
-Feedback is welcome! :)
-
-
-Controls
-    Press and move mouse in x-axis to control camera
+Cubemap: 1 ray/px, 2x2 min probe, 5 cascades, surface probes
+Ray lengths differ per cascade; bins_phi = 4 + 8*theta_bin_index
+Merge: lerp along parent rays; spatial interp visibility-weighted
+Primary: bilinear. Mouse X: camera.
 */
 
 vec4 TextureCube(vec2 uv, float lod) {

@@ -1,9 +1,7 @@
 #version 450
 
-// Vertex-bufferless fullscreen triangle. Three vertices (gl_VertexIndex 0,1,2) expand to a
-// triangle that fully covers the [-1,1] clip rectangle; uv is the matching [0,1] texture
-// coordinate. uv.y = 0 maps to clip y = -1 (Vulkan's top), which is texture row 0 (the top of
-// the HDR resolve as the geometry pass rasterized it), so no vertical flip is needed.
+// Fullscreen triangle from gl_VertexIndex 0,1,2. No VBO.
+// uv [0,1] <-> clip [-1,1]. uv.y=0 is Vulkan top (tex row 0). No Y flip.
 layout(location = 0) out vec2 uv;
 
 void main() {

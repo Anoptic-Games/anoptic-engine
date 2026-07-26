@@ -13,8 +13,7 @@
 
 AnoArpConfig ano_arp_config_default(void)
 {
-    // static: an object with static storage has its PADDING zeroed, and this
-    // struct is copied into the engine, whose bytes are its snapshot.
+    // static: zero padding; engine copies these bytes as snapshot
     static const AnoArpConfig k = { .baseOctave = 5, .spanOctaves = 2, .velocityOffset = -16 };
     return k;
 }

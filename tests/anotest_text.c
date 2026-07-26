@@ -369,7 +369,7 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
         if (maxd > worstMax)
             worstMax = maxd;
 
-        // FT coverage agreement. Thresholds leave platform margin (worst ~rms 2.71 / max 53).
+        // FT coverage agreement (worst rms ~2.71 / max 53).
         CHECK(rms <= 4.0, "coverage RMS within threshold of FreeType");
         CHECK(maxd <= 64, "per-pixel coverage deviation bounded");
 
@@ -805,15 +805,11 @@ static void test_shaper_runs(const AnoFontBake *b)
     CHECK(w == 0.0f && h == 0.0f, "empty runs measure zero");
 }
 
-// The header contracts a run with byteCount 0 as a no-op, on either edge of the run list: it
-// styles nothing, so it may not move the measured width or set the final line's height. A bake
-// with rangeCount 0 makes every codepoint an out-of-bake gap, so the measure comes purely from
-// lineHeight and the runs 〜 no font, no backend. Controls pin the single-run height and the
-// leading no-op, so neither rejecting no-op runs nor dropping the final-line step can pass.
+// byteCount-0 runs are no-ops (either edge). Empty bake: measure = lineHeight * size only.
 static void test_measure_runs_noop(void)
 {
     AnoFontBake bake = { 0 };
-    bake.lineHeight = 1.0f;   // em per line; keeps the arithmetic a clean multiple of size
+    bake.lineHeight = 1.0f;   // em per line
 
     const anostr_t text = anostr_lit("AA");   // two single-line, out-of-bake codepoints
 
@@ -831,7 +827,7 @@ static void test_measure_runs_noop(void)
     CHECK(hLead == hSingle, "leading no-op run does not change measured height");
     CHECK(wLead == wSingle, "leading no-op run does not change measured width");
 
-    // trailing no-op: styles nothing, yet it is runs[runCount-1]
+    // trailing no-op at runs[runCount-1]
     AnoTextRun trail[2] = {
         { .byteCount = 2, .sizePx = 32.0f, .color = { 0 } },
         { .byteCount = 0, .sizePx = 64.0f, .color = { 0 } },

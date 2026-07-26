@@ -1,13 +1,11 @@
 #version 460
 #extension GL_EXT_mesh_shader : require
 
-// SKELETON 〜 not in the shader manifest, not loaded by any pipeline.
-// Skinned-mesh draw stage (PIPELINE_SKINNED): flat.mesh plus a bone-palette fetch.
-// Deform each vertex by its 4 weighted bone matrices; fragment stage is flat.frag.
-//   - per-vertex joints+weights are a parallel vertex stream (binding 10).
-//   - the bone palette (binding 11) is the visible-compacted output of pose.comp.
-//   - skinned meshes use a conservative animated bound and skip meshlet cone cull.
-// To activate: add to the manifest + a PIPELINE_SKINNED prototype + a g_framePasses entry.
+// SKELETON: not in shader manifest / any pipeline.
+// PIPELINE_SKINNED draw: flat.mesh + bone palette. Frag: flat.frag.
+// Binding 10: joints+weights. Binding 11: pose.comp compacted palette.
+// Conservative animated bound. Skip meshlet cone cull.
+// Activate: manifest + PIPELINE_SKINNED prototype + g_framePasses.
 
 layout(local_size_x = 64) in;
 layout(triangles, max_vertices = 64, max_primitives = 126) out;

@@ -74,9 +74,8 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
         ano_spsc_destroy(&bridge->commands);
         return false;
     }
-    // Published latest-wins lanes start unpublished (version 0): until logic publishes a pose the
-    // renderer uses its built-in camera, and until render publishes a frame logic's acquire fails.
-    // Lane words need atomic_init, not memset.
+    // Latest-wins lanes start at version 0 (unpublished).
+    // Lane words: atomic_init, not memset.
     for (size_t i = 0; i < sizeof bridge->snapshot / sizeof bridge->snapshot[0]; ++i)
         atomic_init(&bridge->snapshot[i], 0u);
     for (size_t i = 0; i < sizeof bridge->viewState / sizeof bridge->viewState[0]; ++i)
@@ -89,9 +88,7 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
 
 // in:  cmd (POD command being dropped)
 // out: nothing; frees the render-owned block its kind carries
-// inv: the switch is total over RenderCommandKind and carries no default, so a new kind
-//      is a compile-time diagnostic here instead of a silent leak. Ownership rides
-//      bulk_owned: a borrowed pointer is never freed.
+// inv: switch total over RenderCommandKind (no default). Ownership rides bulk_owned.
 void ano_render_command_release(const RenderCommand *cmd)
 {
     if (!cmd || !cmd->bulk_owned) return;
@@ -116,13 +113,11 @@ void ano_render_command_release(const RenderCommand *cmd)
     if (blk) mi_free((void *)blk);
 }
 
-// inv: sole caller quiesces both roles first (main.c joins the producer thread, then runs
-//      teardown on the thread that was the consumer), so the drain below is single-threaded
-//      and the join edge makes every enqueued command visible.
+// inv: caller quiesces both roles first (main.c joins producer, then teardown on consumer thread).
 void ano_render_bridge_destroy(AnoRenderBridge *bridge)
 {
     if (!bridge) return;
-    // Owner discharges: the transport frees only its buffer, so undelivered payloads die here.
+    // Discharge undelivered payloads (ring frees buffer only).
     RenderCommand cmd;
     while (ano_spsc_pop(&bridge->commands, &cmd))
         ano_render_command_release(&cmd);
@@ -320,9 +315,8 @@ AnoRenderSubmitResult ano_render_text_clear(AnoRenderBridge *bridge, uint32_t te
 
 /* UI */
 
-// Bounds every read of one PATH prim curve walk (aux0 = stream offset, aux1 = monotone-quad count):
+// Bounds PATH prim curve walk (aux0 = stream offset, aux1 = monotone-quad count):
 // start word, then per quad optional SENTINEL + restart ahead of control + end.
-// Hand-built blocks cannot run the GPU or ref walker past the stream; builder bakes always pass.
 static bool ui_path_walk_valid(const uint32_t *curves, uint32_t curveCount,
                                uint32_t off, uint32_t quads)
 {
@@ -357,7 +351,7 @@ static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, u
         if (p->paintRef >= paints)
             return false;
         const AnoUiPaint *pa = &paintTab[p->paintRef];
-        // Window by subtraction: stopFirst + stopCount wraps past this arm otherwise.
+        // Window by subtraction: stopFirst + stopCount.
         if (pa->stopFirst > stops || pa->stopCount > stops - pa->stopFirst)
             return false;
     }
@@ -477,8 +471,7 @@ bool ano_render_acquire_snapshot(AnoRenderBridge *bridge, RenderSnapshot *out)
     return ano_seqpub_load(bridge->snapshot, &bridge->snapshotVersion, out, sizeof *out);
 }
 
-// The guard below is float arithmetic: the accept-form compares are only total over NaN/inf
-// if the fields really are floats (an integer or double field would change what compares mean).
+// Accept-form compares need float fields.
 _Static_assert(_Generic(((AnoViewState *)0)->eye[0],    float: 1, default: 0)
                    && _Generic(((AnoViewState *)0)->center[0], float: 1, default: 0)
                    && _Generic(((AnoViewState *)0)->up[0],     float: 1, default: 0)
@@ -491,8 +484,7 @@ _Static_assert(sizeof ((AnoViewState *)0)->eye    == 3u * sizeof(float)
 
 // in:  view (logic-published camera pose)
 // out: true if lookAt(eye, center, up) yields a finite orthonormal basis
-// inv: no sqrt, no divide. Accept-form: every compare must PASS to accept, so a NaN/inf
-//      operand (which fails every compare) rejects instead of leaking into the basis.
+// inv: no sqrt, no divide. Accept-form: NaN/inf fails every compare -> reject.
 static bool view_pose_valid(const AnoViewState *view)
 {
     const float eps2 = 1e-8f; // sin(theta)^2 floor: ~0.006 deg off-parallel
@@ -512,10 +504,8 @@ static bool view_pose_valid(const AnoViewState *view)
 }
 
 // in:  bridge, view (logic-owned camera pose)
-// out: nothing; a degenerate pose is dropped and the last accepted pose stands
-// inv: single producer (public contract), so viewRejectWarned needs no atomicity.
-//      lookAt/perspective are branch-free and NaN-transparent: validity is constructed here,
-//      once, and nothing downstream re-checks.
+// out: nothing; degenerate pose dropped, last accepted stands
+// inv: single producer. Validity checked here once.
 void ano_render_publish_view(AnoRenderBridge *bridge, const AnoViewState *view)
 {
     if (!view_pose_valid(view)) {

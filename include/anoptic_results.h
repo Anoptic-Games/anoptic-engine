@@ -7,9 +7,7 @@
  * @file anoptic_results.h
  * @brief Typed, domain-local outcomes for fallible public operations.
  *
- * A result is deliberately not a scalar. Callers must inspect .code instead of
- * collapsing distinct outcomes into true or false. Each domain defines its own
- * codes at the public interface that returns them; its success code is zero.
+ * Not a scalar. Inspect .code. Domains own their codes; success is zero.
  *
  * Example:
  * @code

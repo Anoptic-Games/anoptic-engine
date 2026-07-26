@@ -3,17 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: the static shadow-caster region of the backend.h static-row contract 〜 the CREATE
-// grant (register_static_shadow), the revoke (unregister_static_shadow) and the query
-// (static_shadow_row_casts), across the whole lifetime of a scene's casters. What is asserted is
-// the contract's behaviour: which rows cast, with which footprint, and what the GPU is told 〜
-// never a free-list count or an allocation order.
-//
-// The region is ANO_SHADOW_STATIC_FRUSTUM_COUNT entries and blocks come in two shapes (point = 6
-// faces, dir/spot = 1), so a row that changes shape releases one shape and asks for another. The
-// scene-lifetime case is a row flipped point -> spot -> point far past the region's own size: every
-// flip must land, and every later caster must still be able to register. Deterministic, no RNG, no
-// device 〜 only host-side staging is faked in. Exit 0 == pass.
+// Static-row shadow contract: register / unregister / static_shadow_row_casts.
+// Asserts cast rows, footprint, and GPU-told block. Not free-list order.
+// Region: ANO_SHADOW_STATIC_FRUSTUM_COUNT; point=6 faces, dir/spot=1.
+// Host-side staging only. Exit 0 == pass.
 
 #include <stdio.h>
 #include <stdint.h>
@@ -27,12 +20,11 @@ static int failures = 0;
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
 
-// Zero-initialized render state; the heap-sized fields are wired up in harness_init.
+// Render state. Heap fields from harness_init.
 static RendererState st;
 
-// in:  SlotUpload lane b, element stride in bytes. out: none.
-// Host-side staging only 〜 enough for slot_upload_stage to queue deltas with no device. Every case
-// calls frame_end() before it can reach the cap, so the vkDeviceWaitIdle growth path never runs.
+// in: SlotUpload lane b, element stride. out: none.
+// Host staging for slot_upload_stage. No device.
 static void fake_lane(SlotUpload* b, uint32_t stride)
 {
     b->stride = stride;
@@ -44,15 +36,15 @@ static void fake_lane(SlotUpload* b, uint32_t stride)
     }
 }
 
-// The frame boundary, minus the device copy: slot_upload_flush's queue reset.
+// Reset slot_upload_flush queues (no device copy).
 static void frame_end(void)
 {
     st.shadowConfig.staged[0] = 0u;
     st.shadowInfo.staged[0] = 0u;
 }
 
-// Last value staged into lane b for element index this frame, NULL if the frame staged none.
-// Reads the delta queue the way the flush would: the last region naming index wins.
+// Last staged value for index this frame, or NULL.
+// Last region naming index wins.
 static const void* lane_last(const SlotUpload* b, uint32_t index)
 {
     const void* v = NULL;
@@ -62,9 +54,9 @@ static const void* lane_last(const SlotUpload* b, uint32_t index)
     return v;
 }
 
-// Independent oracle for block ownership: first live static entry the row owns, and its type.
-// Walks the mirror the record path gates on, not the module's own decode.
-// out: uint32_t, block base, ANO_SHADOW_NONE when the row owns none; outType untouched on that arm
+// First live static block base + type for lightIdx.
+// Walks shadowCfgMirror.
+// out: base or ANO_SHADOW_NONE; outType set only when found
 static uint32_t row_block(uint32_t lightIdx, uint32_t* outType)
 {
     for (uint32_t s = 0; s < ANO_SHADOW_STATIC_FRUSTUM_COUNT; s++)
@@ -75,9 +67,7 @@ static uint32_t row_block(uint32_t lightIdx, uint32_t* outType)
     return ANO_SHADOW_NONE;
 }
 
-// Does the row cast, with the footprint a caster of this type needs, consistently on every channel?
-// The mirror is the durable state and the contract's query must agree with it; when this frame also
-// staged the row's info, the block the GPU is told about must be that same block.
+// True if query, mirror, and staged GPU info agree on cast footprint for lightType.
 static bool row_casts_as(uint32_t lightIdx, uint32_t lightType)
 {
     uint32_t queryType = LIGHT_TYPE_COUNT, mirrorType = LIGHT_TYPE_COUNT;
@@ -97,7 +87,7 @@ static bool row_casts_as(uint32_t lightIdx, uint32_t lightType)
     return true;
 }
 
-// Mirror shadow_resources.c's static-rig + runtime-pool init. No Vulkan object is ever touched.
+// Init static-rig + runtime pools. No Vulkan objects.
 static void harness_init(void)
 {
     fake_lane(&st.shadowConfig, sizeof(ShadowFrustumConfig));
@@ -111,7 +101,7 @@ static void harness_init(void)
         st.rtPointFree[st.rtPointFreeCount++] = ANO_SHADOW_RT_POINT_BASE + b * ANO_SHADOW_CUBE_FACES;
 }
 
-// Back to the init state, so no case inherits another's books.
+// Reset books to init state.
 static void harness_reset(void)
 {
     frame_end();
@@ -122,7 +112,7 @@ static void harness_reset(void)
     for (uint32_t t = 0; t < LIGHT_TYPE_COUNT; t++) st.shadowTypeUsed[t] = 0u;
 }
 
-// The grant half: a caster of each shape lands, and the budgets refuse past their ceiling.
+// Grant each shape; refuse past type ceiling.
 static void test_grant_and_budget(void)
 {
     register_static_shadow(&st, 0u, LIGHT_TYPE_SPOT, 0u, 0u, 5.0f);
@@ -134,7 +124,7 @@ static void test_grant_and_budget(void)
     uint32_t type;
     CHECK(row_block(0u, &type) != row_block(1u, &type), "distinct rows hold distinct blocks");
 
-    // Past the type's ceiling the caster stays lit and shadowless, and costs the region nothing.
+    // Past ceiling: shadowless, region unchanged.
     uint32_t region = st.shadowFrustumNext;
     register_static_shadow(&st, 2u, LIGHT_TYPE_SPOT, 0u, 2u, 5.0f);
     CHECK(!row_casts_as(2u, LIGHT_TYPE_SPOT), "a spot past budget stays shadowless");
@@ -142,8 +132,7 @@ static void test_grant_and_budget(void)
     harness_reset();
 }
 
-// The two paths the static-region ruling accepts as they are: a same-footprint rebuild is a
-// rewrite in place, and a revoke leaves the row lit, shadowless and costing nothing.
+// Same-footprint rebuild in place; revoke leaves row lit and shadowless.
 static void test_rebuild_and_revoke(void)
 {
     uint32_t type;
@@ -168,15 +157,13 @@ static void test_rebuild_and_revoke(void)
     CHECK(st.shadowTypeUsed[LIGHT_TYPE_SPOT] == 0u, "a revoke returns the budget row");
     CHECK(st.shadowFrustumNext == region, "a revoke does not move the region cursor");
 
-    // The returned budget row funds the next caster of that type.
+    // Returned budget funds next caster of that type.
     register_static_shadow(&st, 1u, LIGHT_TYPE_SPOT, 0u, 1u, 5.0f);
     CHECK(row_casts_as(1u, LIGHT_TYPE_SPOT), "a revoked budget row funds a later spot");
     harness_reset();
 }
 
-// The scene-lifetime case: one row changing shape over and over. Each change releases a block of
-// the old shape and needs one of the new, so a region that only ever grows is exhausted after
-// roughly ANO_SHADOW_STATIC_FRUSTUM_COUNT changes and every caster after that goes dark.
+// One row flips shape far past region size; later casters must still register.
 static void test_footprint_churn(void)
 {
     const uint32_t flips = ANO_SHADOW_STATIC_FRUSTUM_COUNT * 8u; // well past the region's own size
@@ -192,7 +179,7 @@ static void test_footprint_churn(void)
     }
     CHECK(st.shadowFrustumNext <= ANO_SHADOW_STATIC_FRUSTUM_COUNT, "churn stays inside the static region");
 
-    // The damage the churn used to do was to everyone else: a later caster found no region left.
+    // Later casters still find region.
     register_static_shadow(&st, 1u, LIGHT_TYPE_DIRECTIONAL, 0u, 1u, 0.0f);
     CHECK(row_casts_as(1u, LIGHT_TYPE_DIRECTIONAL), "a directional after the churn still casts");
     register_static_shadow(&st, 2u, LIGHT_TYPE_POINT, 0u, 2u, 6.0f);
@@ -200,9 +187,7 @@ static void test_footprint_churn(void)
     harness_reset();
 }
 
-// Churn with every budget row spoken for: the region is exactly full, so a flip needing room for a
-// new shape has no slack at all. A flip into a saturated type is refused (that type's ceiling is
-// the answer, not the region's), and flipping back restores the caster.
+// Full region + full budgets. Saturated-type flip refused; flip back restores.
 static void test_churn_at_full_budget(void)
 {
     register_static_shadow(&st, 0u, LIGHT_TYPE_DIRECTIONAL, 0u, 0u, 0.0f);
@@ -214,7 +199,7 @@ static void test_churn_at_full_budget(void)
 
     int before = failures; // one report per defect, not one per round
     for (uint32_t i = 0; i < ANO_SHADOW_STATIC_FRUSTUM_COUNT * 4u && failures == before; i++) {
-        // Row 0 holds the only directional; flipping it to spot collides with row 1's ceiling.
+        // Row 0 dir->spot hits row 1's spot ceiling.
         register_static_shadow(&st, 0u, LIGHT_TYPE_SPOT, 0u, 0u, 5.0f);
         CHECK(!row_casts_as(0u, LIGHT_TYPE_SPOT), "a flip into a saturated type is refused");
         frame_end();
@@ -222,7 +207,7 @@ static void test_churn_at_full_budget(void)
         CHECK(row_casts_as(0u, LIGHT_TYPE_DIRECTIONAL), "flipping back restores the caster");
         frame_end();
 
-        // A point row round-trips through the saturated spot type and back to its own shape.
+        // Point row round-trips via saturated spot.
         register_static_shadow(&st, 2u, LIGHT_TYPE_SPOT, 0u, 2u, 5.0f);
         frame_end();
         register_static_shadow(&st, 2u, LIGHT_TYPE_POINT, 0u, 2u, 7.0f);
@@ -246,7 +231,7 @@ int main(void)
     test_footprint_churn();
     test_churn_at_full_budget();
 
-    // The static region and the runtime pools are disjoint: nothing above touched the latter.
+    // Static path left runtime pools untouched.
     CHECK(st.rtSingleFreeCount == ANO_SHADOW_RT_SINGLE_COUNT, "the static path left the runtime single pool alone");
     CHECK(st.rtPointFreeCount == ANO_SHADOW_RT_POINT_COUNT, "the static path left the runtime point pool alone");
 

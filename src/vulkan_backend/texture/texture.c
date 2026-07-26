@@ -244,8 +244,7 @@ bool createImageShared(VulkanContext* ctx, GpuAllocator* allocator, uint32_t wid
 		return false;
 	}
 
-	// A refused bind leaves the image created but unbacked; the first record against it would
-	// read unbacked memory. The arena span is monotonic, so nothing is reclaimed here.
+	// Bind fail: destroy image; arena not reclaimed.
 	if (vkBindImageMemory(ctx->device, *image, imageAlloc->memory, imageAlloc->offset) != VK_SUCCESS)
 	{
 		ano_log(ANO_ERROR, "Failed to bind image memory!");
@@ -266,7 +265,6 @@ bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, ui
 }
 
 // in: format. out: true iff the driver can linear-filter optimal-tiled blits of it.
-// Sole decode point for "can a mip chain be generated for this format".
 static bool formatFiltersLinear(VulkanContext* ctx, VkFormat format)
 {
 	VkFormatProperties formatProperties;
@@ -276,7 +274,7 @@ static bool formatFiltersLinear(VulkanContext* ctx, VkFormat format)
 
 [[nodiscard]] static bool generateMipmaps(VulkanContext* ctx, VkCommandBuffer cmd, VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
 { // true: every level of the chain is written and parked in SHADER_READ_ONLY_OPTIMAL
-	// Only the downsample blits need filtering; a one-level chain needs none.
+	// Filtering only when mipLevels > 1.
 	if (mipLevels > 1 && !formatFiltersLinear(ctx, imageFormat))
 	{ // TODO software-generation fallback
 		ano_log(ANO_ERROR, "Texture image does not support bilinear filtering!");
@@ -436,7 +434,7 @@ AnoTextureResult createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffe
 		goto fail;
 	}
 
-	// Widen before multiplying: the uint32_t product wraps and would undersize the staging buffer.
+	// Widen before multiply.
 	VkDeviceSize imageSize = (VkDeviceSize)width * height * 4;
 
 	if (!createDataBuffer(ctx, &stagingAllocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging, &stagingAlloc))
@@ -455,7 +453,7 @@ AnoTextureResult createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffe
 		goto fail;
 	}
 
-	// Views before any vkCmd*: no CB holds the image on failure.
+	// Views before any vkCmd*.
 	if ((usage & TEXTURE_USE_COLOR) && !createTextureImageView(ctx, image, &srgbView, VK_FORMAT_R8G8B8A8_SRGB, mipLevels))
 	{
 		ano_log(ANO_ERROR, "Colour image view creation failure!");
@@ -519,7 +517,6 @@ AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, Tex
 	VkBuffer staging = VK_NULL_HANDLE; GpuAllocation stagingAlloc = (GpuAllocation){0};
 	VkImageView srgbView = VK_NULL_HANDLE, unormView = VK_NULL_HANDLE;
 	Texture8 texture = {0};
-	// sRGB for color textures, linear UNORM for data textures; mixed use takes the sRGB base.
 	const VkFormat texFormat = textureBaseFormat(usage);
 	AnoTextureResultCode code = ANO_TEXTURE_DEVICE; // default; SOURCE overrides
 
@@ -532,12 +529,12 @@ AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, Tex
 		goto fail;
 	}
 
-	// Widen before multiplying: stbi's int32 dims overflow the int product above ~23170 square.
+	// Widen before multiply.
 	VkDeviceSize imageSize = (VkDeviceSize)texture.texWidth * texture.texHeight * 4;
 	texture.mipLevels = (uint32_t)(floor(log2(texture.texWidth > texture.texHeight ? texture.texWidth : texture.texHeight)) + 1); // dynamic mip levels; the log2 operand is >= 1 by the decode gate
 	// Dual-view: single mip.
 	if (textureViewFormatCount(usage) == 2) texture.mipLevels = 1;
-	// The chain is only as long as the format can blit: no linear filter, no tail to leave unwritten.
+	// No linear filter -> single mip.
 	if (texture.mipLevels > 1 && !formatFiltersLinear(ctx, texFormat))
 	{
 		ano_log(ANO_WARN, "Format lacks linear filtering; loading %s with a single mip.", fileName);
@@ -565,7 +562,7 @@ AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, Tex
 		goto fail;
 	}
 
-	// Views before any vkCmd*: no CB holds the image on failure.
+	// Views before any vkCmd*.
 	if ((usage & TEXTURE_USE_COLOR) && !createTextureImageView(ctx, image, &srgbView, VK_FORMAT_R8G8B8A8_SRGB, texture.mipLevels))
 	{
 		ano_log(ANO_ERROR, "Colour image view creation failure: %s", fileName);
@@ -589,7 +586,7 @@ AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, Tex
 		goto fail;
 	}
 
-	// Publishes the whole chain in SHADER_READ_ONLY_OPTIMAL, which is the layout the bindless descriptor pins.
+	// Leaves chain in SHADER_READ_ONLY_OPTIMAL.
 	if (!generateMipmaps(ctx, cmd, image, texFormat, texture.texWidth, texture.texHeight, texture.mipLevels))
 	{
 		ano_log(ANO_ERROR, "Mip chain generation failure: %s", fileName);
@@ -615,7 +612,7 @@ fail:
 }
 
 bool createTextureImageView(VulkanContext* ctx, VkImage textureImage, VkImageView* textureImageView, VkFormat format, uint32_t miplevels)
-{ // createImageView answers VK_NULL_HANDLE on failure, which is what false means here
+{ // false iff createImageView returned VK_NULL_HANDLE
 	*textureImageView = createImageView(ctx->device, textureImage, format, VK_IMAGE_ASPECT_COLOR_BIT, miplevels);
 
 	return *textureImageView != VK_NULL_HANDLE;

@@ -31,8 +31,7 @@ bool ano_audio_wav_write(const char *path, const float *interleaved,
 {
     if (!path || !interleaved || channels == 0u || sampleRate == 0u)
         return false;
-    // Divide before multiplying: frames near 2^62 wraps the product to a tiny value that slips
-    // under the RIFF guard, and a truncated file is written whose fact chunk lies.
+    // Divide before multiply (u64 wrap slips RIFF guard)
     const uint64_t stride = (uint64_t)channels * sizeof(float);
     if (frames > (0xFFFFFFFFull - 58u) / stride) // RIFF sizes are 32-bit
         return false;

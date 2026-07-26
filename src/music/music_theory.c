@@ -58,7 +58,7 @@ int ano_mode_brightness(AnoMode mode)
 }
 
 // Input: mode in [0, ANO_MODE_COUNT). Output: 7 read-only ascending semitone offsets.
-// Invariant: immutable constant data, so the row is the same on every thread and call.
+// Invariant: immutable constant data.
 const uint8_t *ano_mode_intervals(AnoMode mode)
 {
     return MODE_INTERVALS[mode];
@@ -190,7 +190,7 @@ static AnoScale chord_scale_for(AnoChord c, AnoScale context)
 uint32_t ano_chord_pitch_classes(AnoChord c, AnoScale context, uint8_t out[5])
 {
     if (c.applied) {
-        // dominant quality by pc offsets 〜 the applied chord leaves the collection
+        // dominant quality by pc offsets
         int rootPc = (ano_scale_pitch_at(context, c.applied, 4) + 7) % 12;
         static const int seven[4] = { 0, 4, 7, 10 };
         uint32_t n = (c.extensions & ANO_EXT_7) ? 4u : 3u;
@@ -375,7 +375,7 @@ bool ano_forbidden_direct(int prevLower, int prevUpper, int lower, int upper, in
 
 /* Pivot modulation */
 
-// pivot preference by NEW-key degree; old-dominant chords pull backward
+// NEW-key degree preference ranks
 static const int NEW_DEGREE_RANK[8] = { 0, 3, 0, 4, 1, 8, 2, 9 }; // index by degree
 #define OLD_DOMINANT_PENALTY 6
 
@@ -424,7 +424,7 @@ uint32_t ano_find_pivots(AnoScale oldKey, AnoScale newKey, AnoPivot out[7])
             }
         }
     }
-    // ascending by the packed score (unique per pivot: no stable-sort concern)
+    // ascending by packed score
     for (uint32_t i = 1; i < count; ++i) {
         AnoPivot key = out[i];
         int ks = pivot_score(&key);

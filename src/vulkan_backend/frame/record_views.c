@@ -60,7 +60,7 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
             const RenderPassDef* pass = &ano_frame_passes[p];
             if (pass->type != PASS_GRAPHICS) continue;
 
-            // Depth write->read hazard. Order the pre-pass's writes before this pass's reads/tests.
+            // Depth write->read hazard.
             if (pass->depthBarrierBefore) {
                 VkImageMemoryBarrier depthWaw = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                     .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -296,9 +296,8 @@ void ano_record_composite(VkCommandBuffer cmd, uint32_t imageIndex)
                 tmScissor.offset = (VkOffset2D){0, 0};
                 tmScissor.extent = rendererState.imageExtent;
             } else {
-                // Inset: stack auxiliary views up the right edge from the bottom corner.
-                // Skip the view when the swapchain cannot hold a legal inset: extents must be
-                // non-zero and offsets >= 0. Compare against a quotient, never a wrapping product.
+                // Aux inset: stack up right edge from bottom.
+                // Skip unfit; idx+1 vs H/stride (no wrap).
                 uint32_t idx = v - 1u;
                 uint32_t stride = insetH + margin;      // one stacked row
                 if (insetW == 0u || insetH == 0u) continue;

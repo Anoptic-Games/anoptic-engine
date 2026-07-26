@@ -312,7 +312,7 @@ int main(int argc, char **argv)
             AnoMusicAffect affect = { 0 };
             CHECK(ano_synth_score_bar(g, 0, &params, &affect), "score_bar accepted");
 
-            // control: a contract-clean event passes, so the gate is live
+            // control: contract-clean event passes
             AnoNoteEvent ok = { .start = 0.0, .dur = 1.0, .pitch = 60, .velocity = 100,
                                 .layer = ANO_MUSIC_MELODY, .tie = ANO_MUSIC_TIE_NONE };
             CHECK(ano_synth_score_event(g, &ok), "in-range event accepted");
@@ -324,12 +324,12 @@ int main(int argc, char **argv)
             dur0.dur = 0.0;
             CHECK(!ano_synth_score_event(g, &dur0), "dur 0 rejected");
 
-            // above the documented ceiling: would render at ~2x the amplitude contract
+            // velocity above contract ceiling
             AnoNoteEvent hot = ok;
             hot.velocity = 200;
             CHECK(!ano_synth_score_event(g, &hot), "velocity 200 rejected as out of contract");
 
-            // above MIDI 127: would alias pitch & 0x7F (130 -> 2) in the tie chains
+            // pitch above MIDI 127
             AnoNoteEvent high = ok;
             high.pitch = 130;
             CHECK(!ano_synth_score_event(g, &high), "pitch 130 rejected as out of contract");
@@ -360,7 +360,7 @@ int main(int argc, char **argv)
             CHECK(!ano_synth_score_event(b, &ev), "score_event before begin returns false");
             CHECK(!ano_synth_score_end(b), "score_end before begin returns false");
 
-            fflush(stdout);   // the misuse below must not swallow buffered FAIL lines
+            fflush(stdout);   // flush before misuse CHECK
             CHECK(!ano_synth_score_tempo(b, 0.0, 120.0), "score_tempo before begin returns false");
         }
         ano_synth_destroy(b);
@@ -384,8 +384,7 @@ int main(int argc, char **argv)
         ano_synth_destroy(b);
         ano_synth_destroy(a);
 
-        // tempoCount UINT32_MAX: begin sizes the anchor array from tempoCount + 1 for the
-        // implicit beat-0 seed, so the promise must either be refused or honored.
+        // UINT32_MAX tempoCount: begin must refuse or honor (tempoCount+1 for beat-0 seed).
         fflush(stdout);
         AnoSynth *c = ano_synth_create(NULL);
         CHECK(c != NULL, "anchor-cap edge synth created");

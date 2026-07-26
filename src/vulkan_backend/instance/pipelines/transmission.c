@@ -10,9 +10,7 @@
 #include <stdlib.h>
 
 // Transmission lane: opaque (index 0) + blended (index 1) variants.
-// Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
-// argument, so a refused mint zeroes the handle and the build carries on.
-// Commit-last idiom: implementationCount is published only once its array exists.
+// Cache refuse -> VK_NULL_HANDLE. Commit-last on implementationCount.
 bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
 	// 1. Setup cache
@@ -67,10 +65,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		PBR_FEATURE_DOUBLE_SIDED;   // cullMode NONE -> double-sided
 
 	// Load shaders: mesh on capable devices, vertex on fallback.
-	// Unwind idiom: blobs and modules are held from the first load to the tail discharge, so every
-	// refusal in between takes `goto fail`, which discharges unconditionally (free(NULL) and
-	// destroying VK_NULL_HANDLE are both no-ops). A refused load clears its own buffer first:
-	// loadFile leaves data dangling on a short read.
+	// Unwind: goto fail discharges all. Clear dangling buffer on load refuse.
 	struct Buffer geomShaderCode = {0}, fragShaderCode = {0};
 	VkShaderModule geomShaderModule = VK_NULL_HANDLE, fragShaderModule = VK_NULL_HANDLE;
 	VkShaderModule taskModule = VK_NULL_HANDLE;
@@ -188,7 +183,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	renderingInfo.pColorAttachmentFormats = &colorFormat;
 	renderingInfo.depthAttachmentFormat = depthFormat;
 
-	// Fallback vertex path uses programmable vertex pulling + triangle-list assembly.
+	// Fallback vertex: pull + triangle list.
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 

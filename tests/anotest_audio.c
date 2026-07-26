@@ -300,8 +300,7 @@ static bool pred_quiet(const AnoAudioTelemetry *t)     { return t->sourcesActive
 
 static void test_live_world(void)
 {
-    // Backend pinned: ano_audio_init(NULL) means ANO_AUDIO_BACKEND_AUTO, which opens the real
-    // device and plays the click below out of the speakers. This is the offline round-trip.
+    // Pin NULL_DEV. AUTO opens the real device.
     AnoAudioConfig nullCfg = { .backend = ANO_AUDIO_BACKEND_NULL_DEV };
     CHECK(ano_audio_init(&nullCfg), "audio world up (null backend)");
     AnoAudioBridge *b = anoAudioBridge();
@@ -360,10 +359,7 @@ static void test_live_world(void)
 
 /* Bad-args boundaries */
 
-// The header contracts ano_audio_wav_write returns false on I/O or bad args. A frame count
-// whose byte size (frames * channels * sizeof(float)) wraps uint64 must be rejected, never
-// written as a truncated file claiming the requested count. Controls: a sane write round-trips
-// through ano_audio_wav_load and channels == 0 is rejected, so reject-everything cannot pass.
+// wav_write: reject uint64 byte-size wrap. Sane write + channels==0 are controls.
 static void test_wav_write_size_wrap(void)
 {
     scratch_make_dir("anotest_audio_wrap");
@@ -409,10 +405,7 @@ static void test_wav_write_size_wrap(void)
     scratch_remove_dir("anotest_audio_wrap");
 }
 
-// The header contracts ano_audio_buffer_register returns false on backpressure or bad args.
-// A frame count whose byte size wraps uint64 must be rejected, never adopted as a short block
-// carrying the huge frame count in its header. Control: a sane 64-frame registration is
-// accepted, so the path is live rather than reject-everything.
+// buffer_register: reject uint64 byte-size wrap. Sane 64-frame registration is the control.
 static void test_buffer_register_size_wrap(void)
 {
     AnoAudioConfig nullCfg = { .backend = ANO_AUDIO_BACKEND_NULL_DEV };

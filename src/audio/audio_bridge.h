@@ -121,8 +121,7 @@ static inline bool ano_audio_ring_full(const AnoAudioRing *ring)
 
 // Even version = stable. Odd = mid-write. version 0 = never published.
 // value: _Atomic word lane, sizeof(payload)/8 entries (asserted at the bridge).
-// Relaxed word copies keep concurrent store/load defined; torn loads are
-// discarded by the version recheck, exactly as before.
+// Relaxed word copies; torn loads fail the version recheck.
 static inline void ano_audio_seq_store(_Atomic uint64_t *value, _Atomic uint64_t *version, const void *v, size_t stride)
 {
     uint64_t s = atomic_load_explicit(version, memory_order_relaxed);
@@ -165,10 +164,8 @@ struct AnoAudioBridge
     AnoAudioRing commands; // logic -> mixer
     AnoAudioRing events;   // mixer -> logic
 
-    // Seqlock lanes store object representation as atomic words; typed access
-    // only ever happens through the publish/acquire copies.
-    // One ANO_THREAD_LINE region per direction, version leading its words:
-    // publish and acquire each move one line, and the two directions never share one.
+    // Seqlock lanes: object bytes as atomic words. Typed access via publish/acquire only.
+    // One ANO_THREAD_LINE per direction; version leads its words.
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t listenerVersion; // logic publishes
     _Atomic uint64_t listener[sizeof(AnoAudioListener) / sizeof(uint64_t)];
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t telemetryVersion; // mixer publishes

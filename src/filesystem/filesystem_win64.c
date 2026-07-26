@@ -67,16 +67,15 @@ ano_fspath ano_fs_userpath(void) {
     return result;
 }
 
-// Sets CWD to ano_fs_gamepath() so relative asset loads resolve. Output: true on success.
+// Sets CWD to ano_fs_gamepath(). Output: true on success.
 bool ano_fs_chdir_gamepath(void)
 {
     ano_fspath dir = ano_fs_gamepath();
     return dir.length > 0 && _chdir(dir.str) == 0;
 }
 
-// Output: 0 when `path` is a directory afterwards, -1 otherwise.
-// EEXIST is only success for a real directory: a file squatting the name would hand callers
-// a path every create under it rejects. POSIX twins' S_ISDIR is FILE_ATTRIBUTE_DIRECTORY here.
+// Output: 0 when path is a directory afterwards, -1 otherwise.
+// EEXIST: success only for a real directory (FILE_ATTRIBUTE_DIRECTORY).
 int fs_mkdir(const char *path)
 {
     if (_mkdir(path) == 0)
@@ -97,7 +96,7 @@ struct ano_file {
 };
 
 // Output: FILE_APPEND_DATA handle, or NULL. OPEN_ALWAYS creates if absent.
-// FILE_SHARE_DELETE: POSIX unlink parity; another process may remove/replace while open.
+// FILE_SHARE_DELETE: POSIX unlink parity while open.
 ano_file *ano_fs_open_append(const char *path)
 {
     if (path == NULL)
@@ -119,7 +118,7 @@ ano_file *ano_fs_open_append(const char *path)
 }
 
 // Truncate via throwaway CREATE_ALWAYS, reopen FILE_APPEND_DATA. NULL on failure.
-// CREATE_ALWAYS needs GENERIC_WRITE; FILE_WRITE_DATA would break EOF-append atomicity.
+// CREATE_ALWAYS needs GENERIC_WRITE.
 ano_file *ano_fs_open_trunc(const char *path)
 {
     if (path == NULL)
@@ -135,9 +134,7 @@ ano_file *ano_fs_open_trunc(const char *path)
 }
 
 // Output: 0 once all bytes written, -1 on error. Loops past short writes.
-// WriteFile reports the bytes transferred; nothing in its contract promises that count is nonzero
-// on a TRUE return, so zero progress is an error here, not a retry: the identical call would repeat
-// forever. The POSIX twin cannot produce it (write() of nbyte > 0 never returns 0).
+// written == 0 on TRUE is error (not retry).
 int ano_fs_write(ano_file *file, const void *data, size_t length)
 {
     if (file == NULL || (data == NULL && length != 0))

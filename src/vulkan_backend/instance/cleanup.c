@@ -33,8 +33,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
 		return;
 	}
 
-	// Init can fail before the logical device exists; the loader crashes on a
-	// VK_NULL_HANDLE device, and the guarded destroys below all no-op then anyway.
+	// Skip waitIdle when device never created
 	if (ctx->device != VK_NULL_HANDLE)
 	{
 		vkDeviceWaitIdle(ctx->device);

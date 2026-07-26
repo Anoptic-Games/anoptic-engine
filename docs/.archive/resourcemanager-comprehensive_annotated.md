@@ -25,7 +25,7 @@ The owner's directives in `docs/resourcemanager-real.md` define the goal. `docs/
 
 The resource manager is an owner, not a filesystem convenience wrapper. It owns logical identity, registry state, backing allocator domains, raw bytes, parsed and conditioned resources, derived-resource relationships, lifetime retirement, asynchronous work, consumption, durable saves, pack lookup, and hot-reload publication. Domain extensions own meaning inside the module: graphics parses and conditions graphics, audio parses and conditions audio, world resources parse and condition levels, and config resources validate and migrate settings.
 
-The hierarchy has two layers. A minimal permanent handle directory keeps stable slot identity and generation/tombstone publication so stale copied handles can fail safely after an owning domain winks out. The substantial registry shard〜names, hash tables, resource records, dependency metadata, placement metadata, and payloads〜belongs to the backing allocator domain selected by the contest. The permanent directory must remain deliberately small; moving the whole registry into a global default heap and calling payload placement ownership is forbidden.
+The hierarchy has two layers. A minimal permanent handle directory keeps stable slot identity and generation/tombstone publication so stale copied handles can fail safely after an owning domain winks out. The substantial registry shard (names, hash tables, resource records, dependency metadata, placement metadata, and payloads) belongs to the backing allocator domain selected by the contest. The permanent directory must remain deliberately small; moving the whole registry into a global default heap and calling payload placement ownership is forbidden.
 
 `anores_t` remains the transparent read handle shape unless an interface review proves a stronger layout: `{rid, slot, generation}` by value, sentinel zero, immutable views, generation retirement, no reference-count mutation on reads. The owner publishes a stable SoA snapshot for handle resolution; consumers never enter the mutable owner registry.
 
@@ -33,7 +33,7 @@ The hierarchy has two layers. A minimal permanent handle directory keeps stable 
 
 ### A.1 Objective
 
-Stage A establishes the honest baseline on which the allocator contest can run. It preserves sound completed work, relabels scaffolding truthfully, closes every functional gap that would otherwise make the contest synthetic, and leaves allocator placement behind a neutral internal interface. It is intentionally open-ended about local implementation tactics: follow the project's module boundaries, C23 conventions, platform layer, tests, and benchmark-first rules, and keep working until the complete behavior exists rather than stopping at the first compilable approximation.
+Stage A establishes the honest baseline for the allocator contest. Preserve sound completed work, relabel scaffolding truthfully, close every functional gap that would make the contest synthetic, leave allocator placement behind a neutral internal interface. Follow module boundaries, C23 conventions, platform layer, tests, and benchmark-first rules until complete behavior exists.
 
 ### A.2 Current delta
 
@@ -101,35 +101,35 @@ Before timing, every model must pass the entire resource correctness battery, AS
 - Raw `mi_malloc`, default-parent allocation, a private scratch heap, or any other escape is legal only when it is a declared primitive of that contestant, owned by its root, charged to its reports, and subjected to its teardown and transfer rules. A hidden allocator cannot absorb a model's predicted wound.
 - Each model runs with real resource scopes in the engine, not only direct calls from a benchmark TU.
 
-### B.3 Model A 〜 one complete multipool
+### B.3 Model A: one complete multipool
 
 Model A owns the entire resource system with one backing heap and one full multipool hierarchy. Registry rows, names, dependency records, conditioned metadata, ordinary payloads, parse/import scratch, and allocator bookkeeping all live in this ownership domain; only objects whose external consume contract requires an independently transferable block may use an explicitly tracked transfer allocation from the same root. Category and lifetime are registry fields, not allocator boundaries. Unload and group retirement perform the required per-resource destruction without pretending to wink out a subset; a hidden monotonic lifetime heap may not make Model A look like Model C or E.
 
 Model A's home is steady mixed-size churn and maximum reuse/density. Its hostile ground is repeated partial lifetime retirement, cross-level residue, very large live-set changes, and category-local traversal. The implementation must make its predicted wound measurable rather than outsourcing lifetime work to a hidden per-group allocator.
 
-### B.4 Model B 〜 full kind-major ownership
+### B.4 Model B: full kind-major ownership
 
 Model B creates complete backing domains by resource kind: graphics models/meshes, textures/images, shaders/pipelines, fonts/text, levels/worlds, saves/config, audio, scripts, and any other real class established in Stage A. Each kind owns its registry shard, names, metadata multipool, payload policy, derived objects, and stats; its class-specific size histogram may tune multipool classes without changing public semantics. Whole-kind teardown is a real domain wink-out where the class contract allows it.
 
 Model B's home is kind-local iteration, kind-specific size distributions, cache/TLB locality, subsystem restart, and fragmentation over a long mixed-lifetime soak. Its hostile ground is level retirement spanning many kinds, shared resources, cross-kind dependencies, and promotion. No kind may be represented by a tag in the Model A pool.
 
-### B.5 Model C 〜 full lifetime-major ownership
+### B.5 Model C: full lifetime-major ownership
 
 Model C creates complete backing domains by lifetime: engine-forever, world/level, streaming window, transient/import, save/config, and other demonstrated lifetimes. Each domain owns its registry shard and one or more multipools required to serve its full size distribution. Opening a level in the real engine opens its domain; every disclosed dependency enters that domain or an explicit shared/promoted domain; retirement invalidates the published generations, crosses the reclamation barrier, and destroys the backing heap in the promised wink-out.
 
 Model C's home is repeated real level/world load-unload, streaming-window turnover, residual footprint, retire latency, and lifetime-local traversal. Its hostile ground is cross-level sharing, promotion, long-lived resources referenced by short-lived worlds, and category iteration. The current ambient test group is not Model C; lifetime tokens must be explicit and production-owned.
 
-### B.6 Model D 〜 full role-split ownership
+### B.6 Model D: full role-split ownership
 
 Model D separates roles completely. Stable registry metadata, names, dependency graphs, small conditioned structs, and control records live in metadata multipools; variable ordinary payloads live in appropriate payload multipools; fixed streaming chunks live in bounded `ano_mem_pool` instances; bulk SoA arrays and ticket/consume planes use cache-striped placement; transfer-eligible GPU/audio/world payloads use allocations that can move ownership without an interior-pointer copy. Every resource records the role domains it spans, and retire/release handles all of them exactly once.
 
 Model D's home is ranged streaming, parse-to-condition-to-consume throughput, GPU/audio hand-off, zero-copy rate across the full size distribution, SoA traversal, and bounded chunk reuse. Its hostile ground is metadata-heavy tiny resources, multi-domain teardown complexity, bookkeeping overhead, and fragmentation between roles. A 2 MiB direct allocation shared with every other model is not evidence for Model D.
 
-### B.7 Model E 〜 the full C×D hybrid
+### B.7 Model E: the full C×D hybrid
 
 Model E is implemented as the complete hybrid originally promised: lifetime-major backing heaps, and inside every lifetime domain a role split of registry/metadata multipools, variable payload multipools, bounded streaming pools, cache-striped SoA storage, transfer-compatible consume allocations, and transient monotonic staging. The real level domain owns its registry shard and all level resources; the engine domain owns permanent resources; shared immutable domains and explicit promotion answer cross-level sharing; worker staging winks out after adoption; final retirement invalidates handles, waits for the lock-free reclamation condition, and destroys the whole backing heap.
 
-Model E's home is the combined production workload: level disclosure and parallel ingest, continuous streaming, derived-resource conditioning, renderer/audio consumption, hot reload, promotion, and world retirement under frame load. Its hostile ground is control complexity, duplicated slack across small domains, over-partitioning, promotion traffic, and total metadata cost. Model E receives no credit for components that do not exist and no presumption of victory because it was favored on paper.
+Model E's home is the combined production workload: level disclosure and parallel ingest, continuous streaming, derived-resource conditioning, renderer/audio consumption, hot reload, promotion, and world retirement under frame load. Its hostile ground is control complexity, duplicated slack across small domains, over-partitioning, promotion traffic, and total metadata cost. Model E receives no credit for components that do not exist and no presumption of victory from paper favoritism.
 
 ### B.8 Corpus and battlefields
 
@@ -166,11 +166,11 @@ Stage B ends only when five full implementations have fought on every battlefiel
 
 Stage C changes how work and ownership move without weakening what Stage A and B established. The winning backing allocator domains remain the owners of registry shards and resources. One resource owner/service thread mutates those domains and performs or schedules IO; arbitrary engine threads submit requests through lock-free ingress; readonly handles resolve through a published SoA directory; the owner publishes consume work through cache-striped SPMC lanes; consumers return completion through the cheapest correct topology; every operation is correlated by a generational ticket.
 
-The default topology is deliberate: registered submitters use cache-aligned producer-local SPSC ingress lanes drained fairly by the owner, decomposing MPSC without a shared reserve-to-publish gap; a shared many-producer fallback is allowed only if it has a strict helping/recovery proof. SPMC consume lanes distribute homogeneous work from one owner to many consumers. Known workers return completions on SPSC lanes; any shared MPSC return path meets the same strict proof. Separate consume lanes by capability〜graphics upload, audio decode/mix preparation, world conditioning, generic workers〜rather than filtering incompatible work inside one FIFO.
+Default topology: registered submitters use cache-aligned producer-local SPSC ingress lanes drained fairly by the owner, decomposing MPSC without a shared reserve-to-publish gap; a shared many-producer fallback is allowed only if it has a strict helping/recovery proof. SPMC consume lanes distribute homogeneous work from one owner to many consumers. Known workers return completions on SPSC lanes; any shared MPSC return path meets the same strict proof. Separate consume lanes by capability (graphics upload, audio decode/mix preparation, world conditioning, generic workers), not by filtering incompatible work inside one FIFO.
 
 ### C.2 Lineage and algorithm choice
 
-Michael–Scott supplies the foundational lock-free FIFO, helping, linearization, ABA, and safe-reclamation lessons; it remains a correctness/reference baseline, not an automatic production choice. A node queue would import hazard/epoch reclamation into the queue itself before resource reclamation even begins. The bounded array lineage is the primary fit: Vyukov per-slot sequences, monotonic cycle numbers, FAA ticket allocation, and the LCRQ/SCQ/wCQ lesson that common-path work should claim array positions productively and reserve heavier helping for a proven starvation case.
+Michael-Scott supplies the foundational lock-free FIFO, helping, linearization, ABA, and safe-reclamation lessons; it remains a correctness/reference baseline, not an automatic production choice. The bounded array lineage is the primary fit: Vyukov per-slot sequences, monotonic cycle numbers, FAA ticket allocation, and the LCRQ/SCQ/wCQ lesson that common-path work should claim array positions productively and reserve heavier helping for a proven starvation case.
 
 The current `anoring_spmc` is useful prior art but not the finished resource consume structure. See also `ano_log.h` and its (very fast) implementation. The final design must incorporate the logger's cache-aligned striping: claim and publish useful groups of work per coherence transfer, isolate hot cursors by `ANO_THREAD_LINE`, separate atomic control/sequence planes from dense payload planes, and prevent consumers from causing false sharing in resource metadata. Stripe width and control layout are selected by proof and benchmark, not by aesthetic guess.
 
@@ -189,7 +189,7 @@ The current `anoring_spmc` is useful prior art but not the finished resource con
 
 ### C.4 Transparent readonly handles
 
-The read path stays simpler than the consume path. `anores_t` indexes a stable permanent publication directory. The owner finishes an immutable descriptor〜counted owner/domain identity, immutable data pointer or offset, byte size, typed-view metadata, state, rid, and row generation〜then release-publishes one lock-free atomic pointer to it; an all-atomic snapshot is an allowed measured alternative. A reader acquire-loads the immutable descriptor, verifies owner/rid/slot/generation/state, and returns an immutable view or the empty sentinel. Current `anoseqpub` may not publish resource rows as-is: versioned `memcpy` of ordinary storage that a writer can modify concurrently is a C23 data race. The reader never touches the mutable hash map, allocator, dependency graph, or owner queue on a cache hit.
+The read path stays simpler than the consume path. `anores_t` indexes a stable permanent publication directory. The owner finishes an immutable descriptor (counted owner/domain identity, immutable data pointer or offset, byte size, typed-view metadata, state, rid, and row generation), then release-publishes one lock-free atomic pointer to it; an all-atomic snapshot is an allowed measured alternative. A reader acquire-loads the immutable descriptor, verifies owner/rid/slot/generation/state, and returns an immutable view or the empty sentinel. Current `anoseqpub` may not publish resource rows as-is: versioned `memcpy` of ordinary storage that a writer can modify concurrently is a C23 data race. The reader never touches the mutable hash map, allocator, dependency graph, or owner queue on a cache hit.
 
 Published rows are stable and SoA; the current relocatable `mi_realloc` row array is not acceptable. Growth uses non-moving chunks, a bounded preallocated directory justified by population evidence, or another proven publication scheme. The substantial registry data remains in the winning allocator domain; the stable directory stores only the routing and tombstone information required for transparent handles. Owner identities and slots are monotone for the process or counted by a generation carried in every handle; owner, row, ticket, and stripe generation wrap causes refusal or a global-quiescent reset, never silent reuse.
 
@@ -207,7 +207,7 @@ Tickets correlate load, range, parse, derived-resource, consume, release, save, 
 
 Registered callers submit fixed-size request descriptors through bounded cache-aligned SPSC lanes; the owner drains active lanes fairly and registration/unregistration is explicit. An unregistered-producer fallback and any shared completion lane use an SCQ/LPRQ/helping-grade bounded algorithm or carry a written proof that a stalled producer cannot wedge a reserved slot; the current bare reserve-then-publish MPSC is not assumed strictly lock-free. Large or variable request data uses an explicitly owned envelope or a shared cache-striped variable-record primitive; allocation and ownership transfer occur before publication, and a failed enqueue leaves the envelope with the caller. Requests include logical identity/path ownership, operation, range, band, destination lane, lifetime token, and ticket.
 
-The resource owner owns the winning allocators, registry shards, duplicate-load state, save sequencing, pack mounts, hot-reload swaps, and publication directory. Duplicate GETs coalesce behind one physical operation and complete every waiter with the same generation. No mutex guards the map because no other thread mutates or reads it directly. Owner-only direct functions prevent synchronous wrappers or worker callbacks from recursively submitting to the owner and deadlocking.
+The resource owner owns the winning allocators, registry shards, duplicate-load state, save sequencing, pack mounts, hot-reload swaps, and publication directory. Duplicate GETs coalesce behind one physical operation and complete every waiter with the same generation. No other thread mutates or reads the map directly; no mutex guards it. Owner-only direct functions prevent synchronous wrappers or worker callbacks from recursively submitting to the owner and deadlocking.
 
 The public asynchronous surface includes submit, poll, pump/acknowledge, cancel, and consume operations; exact names freeze only after an interface review. Existing synchronous calls become bootstrap/tool wrappers over tickets or owner-only primitives and must not reintroduce a data mutex. Blocking wait on a ticket is built on poll/pump plus an optional platform wait, never by holding registry state.
 
@@ -215,7 +215,7 @@ The public asynchronous surface includes submit, poll, pump/acknowledge, cancel,
 
 Ordinary handle reads borrow immutable manager-owned memory. Resource consume is an explicit ticketed operation published by the manager to the appropriate SPMC lane. A consumer claims it exactly once, validates the handle generation captured by the ticket, performs the typed operation, and completes with a result/ownership disposition.
 
-Two consume classes are explicit. Borrow-consume lets a worker or subsystem process immutable manager-owned data while the ticket pins its retirement epoch; completion releases the pin and memory remains in the manager. Destructive-consume first withdraws the live handle publication and waits for every pre-existing read scope to cross its grace point, then publishes a counted transfer token〜not an already-retired ordinary handle〜to the SPMC lane. It is legal only for a placement class whose allocation can be transferred and reclaimed by the recipient without copying or freeing an interior multipool pointer. The allocator contest must therefore give consumable resources a transfer-compatible home. Hidden pooled copy-out is not destructive zero-copy.
+Two consume classes are explicit. Borrow-consume lets a worker or subsystem process immutable manager-owned data while the ticket pins its retirement epoch; completion releases the pin and memory remains in the manager. Destructive-consume first withdraws the live handle publication and waits for every pre-existing read scope to cross its grace point, then publishes a counted transfer token (not an already-retired ordinary handle) to the SPMC lane. It is legal only for a placement class whose allocation can be transferred and reclaimed by the recipient without copying or freeing an interior multipool pointer. The allocator contest must therefore give consumable resources a transfer-compatible home. Hidden pooled copy-out is not destructive zero-copy.
 
 Derived-resource consume may return a new manager handle instead of external ownership: a worker parses/decodes/conditions in its own staging allocator, sends the result and ticket back, the owner adopts it into the winning home, publishes the derived handle, and retires staging. Parser/worker allocators stay single-owner throughout; memory crosses threads only by an explicit transfer message.
 
@@ -223,7 +223,7 @@ Derived-resource consume may return a new manager handle instead of external own
 
 The winner's allocator domain may wink out only after its published rows are invalidated, all accepted tickets touching it are terminal, all destructive transfers have completed, and every registered readonly-consumer lane has crossed the required grace point. Implement an engine-appropriate epoch/interval scheme or equally strong quiescent protocol; state the stalled-thread behavior and bound retained memory. A frame pump is a natural quiescent point but is not assumed sufficient until every non-frame consumer participates.
 
-Resource reclamation is distinct from queue reclamation. The bounded ticket rings reuse in-place slots through cycles and need no node SMR; resource payloads and registry shards still require a grace condition because transparent views can outlive the lookup instruction. Tests must independently attack both problems.
+Resource reclamation is distinct from queue reclamation. The bounded ticket rings reuse in-place slots through cycles and need no node SMR; resource payloads and registry shards still require a grace condition: transparent views can outlive the lookup instruction. Tests must independently attack both problems.
 
 ### C.9 Backpressure, priority, and progress
 
@@ -251,7 +251,7 @@ State progress precisely: ticket issuance may be wait-free when it is one FAA; b
 - Stripe fuzz forces wrap, partial stripes, every cycle transition, producer/consumer preemption, delayed consumers, cancellation, shutdown, and simulated narrow-counter wrap; count, sum, xor, generation, and ownership oracles all hold.
 - Fault tests terminate producers and consumers at every claim/publish/complete boundary permitted by the design and verify the documented progress behavior. A wedged slot is either impossible by construction, bounded by a declared scheduler assumption, or repaired by helping.
 - TSan runs the complete non-GPU concurrency surface with zero engine suppressions; ASan/UBSan covers ownership and retirement; native GPU/audio runtime verification covers the external consumers TSan cannot instrument reliably.
-- Benchmarks compare the final striped SPMC against the existing per-slot Vyukov SPMC, a mutex queue baseline, and a Michael–Scott reference where useful; the production choice must win at the actual resource consume topology and stride distribution.
+- Benchmarks compare the final striped SPMC against the existing per-slot Vyukov SPMC, a mutex queue baseline, and a Michael-Scott reference where useful; the production choice must win at the actual resource consume topology and stride distribution.
 - Hardware counters and layout probes measure cache-line transfers, false sharing, atomic retries, stripe occupancy, wasted entries, and tail latency. Apple Silicon and x86 results are both required; generic aarch64 is included when available.
 
 ### C.12 Migration sequence
@@ -276,7 +276,7 @@ Stage C ends only when no resource data mutex exists, the winning allocator doma
 - All asset meaning lives in resource extensions; graphics includes skins/animations and every supported image/material path, levels are data-driven, configs/keybindings persist safely, saves migrate safely, and renderer/audio/world code does not open or parse resource files.
 - Logical names, SID identity, ordered mounts, remote-FS byte truth, durable writes, save preservation, pack integrity, loose shadowing, and generation sentinels hold across all supported platforms.
 - Readonly handles are transparent, immutable, wait-free to resolve under the published-directory contract, and stale-safe. Mutable registry state is single-owner and unreachable to callers.
-- Requests and completions use the cheapest lock-free topology; resource consumption uses cache-striped SoA SPMC lanes derived from the logger and the Michael–Scott/Vyukov queue lineage; no data mutex, hidden copy, unbounded spin, lost wakeup, or unbounded ABA window survives.
+- Requests and completions use the cheapest lock-free topology; resource consumption uses cache-striped SoA SPMC lanes derived from the logger and the Michael-Scott/Vyukov queue lineage; no data mutex, hidden copy, unbounded spin, lost wakeup, or unbounded ABA window survives.
 - Ranged streaming, bounded chunk pools, codecs, deterministic packs, baked load-in-place resources, ticketed hot reload, and the backend ladder are complete and measured. The shipped scene loads with zero runtime parse work.
 - Every correctness and performance claim is reproducible from checked-in tests, raw reports, exact commands, and named commits. “Done” describes the running engine, not the next rung in a journal.
 
@@ -294,7 +294,7 @@ The request was to execute `docs/resourcemanager-comprehensive.md` in full and c
 
 I read `CLAUDE.md`, `docs/conventions.md`, `docs/resourcemanager-comprehensive.md`, `docs/resourcemgr/RESOURCE_MANAGER_IMPL.md`, `flake.nix`, the root `CMakeLists.txt`, `src/src.md`, `tests/tests.md`, the current resource public/private headers and implementations, the resource tests, and the latest three commits. This established the module rules, C23 and PAL requirements, build matrix, historical scaffold state, save-data ruling, and the comprehensive plan as the sole current specification.
 
-I inspected commits `2480020`, `6455651`, and `485efb6`. The first two reconcile the comprehensive specification and rename the live global/scoped allocator paths as scaffolds; the third contains the earlier resource-manager implementation work. This was done because the plan explicitly requires preserving honest terminology and because the current code had to be measured against the new authoritative completion bars rather than the superseded implementation journal.
+I inspected commits `2480020`, `6455651`, and `485efb6`. The first two reconcile the comprehensive specification and rename the live global/scoped allocator paths as scaffolds; the third contains the earlier resource-manager implementation work.
 
 ## Ultracode audit
 
@@ -306,29 +306,29 @@ The audit itself changed no repository files. It created temporary workflow arti
 
 ## Stage A ownership foundation implemented
 
-A direct implementation batch rewrote the resource-manager ownership foundation. The reason was that every later resource domain, every allocator contestant, and the final ticket transport require one neutral ownership grammar and a safe read contract before they can be implemented honestly.
+Rewrote the resource-manager ownership foundation: neutral ownership grammar and safe read contract for later domains, contestants, and ticket transport.
 
 `include/anoptic_resources.h` now declares explicit lifetime kinds for engine, world/level, streaming, transient/import, save/config, and tool/import ownership. `ano_res_lifetime` is a counted owner/generation capability. The engine lifetime is created at initialization; additional domains open and retire explicitly. The old ambient `cur_group` mechanism and `ANO_RES_PLACEMENT=global|scoped` selector were removed from the live code.
 
-`src/resources/resources_internal.h` now defines a neutral Stage A placement vocabulary: resource kind, lifetime, role, operation, destination, provenance, disposition, transfer compatibility, dependency metadata, owned blocks, and placement plans. These names describe allocation facts and intentionally do not claim to be Models A through E. The reason was to give all five later contestants the same semantic and accounting contract without allowing one model a private API.
+`src/resources/resources_internal.h` now defines a neutral Stage A placement vocabulary: resource kind, lifetime, role, operation, destination, provenance, disposition, transfer compatibility, dependency metadata, owned blocks, and placement plans. These names describe allocation facts and do not claim Models A through E. Same semantic/accounting contract for all five contestants; no private API.
 
 `src/resources/resources_registry.c` was substantially rewritten. The registry now uses a bounded permanent publication directory of 4096 slots, non-moving row chunks of 64 rows, up to 32 explicit domains, and up to 64 registered reader lanes. Immutable descriptors are published through atomics. Resource reads require reader registration plus `ano_res_read_begin`/`ano_res_read_end`; `ano_res_bytes` no longer returns a raw manager pointer without an announced read scope. Retirement invalidates publication first and defers reclamation until pre-existing readers become quiescent. Generation and owner exhaustion refuse rather than silently wrap.
 
 The registry now records requested and serving bytes, live and peak allocation state, chunks, allocations/frees, copies and bytes copied, promotions, duplications, transfers and transferred bytes, pending retirement, stalled readers, live descriptors, live domains, and bound rows. Existing payload load/adopt/release/unload paths, registry rows, names, hash storage, dependency metadata, graphics scenes, decoded images, and save payload installation were routed through the neutral placement/accounting layer.
 
-`ano_res_shutdown` and registry shutdown were added. Shutdown invalidates publication and reclaims manager-owned domains and allocations, returning failure while a registered reader still pins reclamation. This was added because the comprehensive plan requires real teardown, zero-residue tests, and backing-domain ownership rather than an immortal process-global scaffold.
+`ano_res_shutdown` and registry shutdown were added. Shutdown invalidates publication and reclaims manager-owned domains and allocations, returning failure while a registered reader still pins reclamation.
 
 `include/anoptic_threads.h` and `src/threads/threads.c` gained `ano_thread_equal`. This keeps owner-thread enforcement behind the thread PAL instead of comparing platform thread types in the resource module.
 
 ## Existing consumers migrated to read scopes and explicit lifetimes
 
-`src/vulkan_backend/instance/pipeline.c` now registers a reader, enters a read scope, loads shader bytes in the engine lifetime, creates the shader module, and ends the scope. This was required because shader bytes are borrowed manager memory and may no longer legally escape an unannounced read lifetime.
+`src/vulkan_backend/instance/pipeline.c` now registers a reader, enters a read scope, loads shader bytes in the engine lifetime, creates the shader module, and ends the scope. Shader bytes are borrowed manager memory; they may not escape an unannounced read lifetime.
 
 `src/vulkan_backend/text_raster.c` and `src/vulkan_backend/structs.h` now retain a registered resource reader and read scope while FreeType memory faces borrow manager-owned font blobs. The scope ends during text teardown. This preserves the existing zero-file-open font path while making its pointer lifetime explicit.
 
-`src/render/gltf/ano_GltfParser.c` now receives the explicit engine lifetime, uses registered read scopes for source, scene, and image views, and unloads through the lifetime-aware API. `src/resources/graphics/res_graphics.c` and `include/anoptic_res_graphics.h` were updated so graphics model conditioning, scene views, and image decoding accept the read scope and lifetime required by the new contract. The reason was to keep the renderer on the real production resource path while eliminating unsafe borrowed pointers.
+`src/render/gltf/ano_GltfParser.c` now receives the explicit engine lifetime, uses registered read scopes for source, scene, and image views, and unloads through the lifetime-aware API. `src/resources/graphics/res_graphics.c` and `include/anoptic_res_graphics.h` were updated so graphics model conditioning, scene views, and image decoding accept the read scope and lifetime required by the new contract.
 
-`src/engine/main.c` now calls `ano_res_shutdown` on resource-aware exit paths and opens a save/config lifetime during startup. This supplied a real production lifetime owner instead of keeping every resource in an immortal implicit group.
+`src/engine/main.c` now calls `ano_res_shutdown` on resource-aware exit paths and opens a save/config lifetime during startup. Real production lifetime owner; not immortal implicit group.
 
 ## Tests added and existing tests migrated for the ownership foundation
 
@@ -342,13 +342,13 @@ Before the later persistence batch modified the tree, the ownership implementati
 
 A second implementation batch was started to satisfy the comprehensive plan's explicit requirement for config/keybinding clients, save migration, a production world/save consumer, first-valid-generation fallback without fixed candidate windows, and per-slot save ordering. The batch was interrupted before it completed its own review and verification. Its partial files remain in the working tree.
 
-`include/anoptic_config.h`, `src/config/config.c`, and `src/config/CMakeLists.txt` were added. They define a version-2 typed settings schema containing camera movement speed, look sensitivity, and initial menu visibility. The implementation uses strict JSMN parsing, rejects unknown or duplicate structure, validates numeric bounds, migrates a version-1 flat schema, quarantines malformed data, writes validated defaults when data is missing or damaged, and durably replaces `config/settings.json` through `ano_res_write`. This exists because the comprehensive plan requires a real config client exercising validation, migration, quarantine, and durable replacement through the resource namespace.
+`include/anoptic_config.h`, `src/config/config.c`, and `src/config/CMakeLists.txt` were added. They define a version-2 typed settings schema containing camera movement speed, look sensitivity, and initial menu visibility. The implementation uses strict JSMN parsing, rejects unknown or duplicate structure, validates numeric bounds, migrates a version-1 flat schema, quarantines malformed data, writes validated defaults when data is missing or damaged, and durably replaces `config/settings.json` through `ano_res_write`.
 
-`include/anoptic_keybindings.h`, `src/keybindings/keybindings.c`, and `src/keybindings/CMakeLists.txt` were added. They define 13 stable action SIDs for movement, menu, lighting mode, model LOD, shadow LOD, and Hi-Z, with configurable key/modifier pairs. The implementation supplies defaults, strict validation, duplicate-key refusal, version-1 migration, version-2 serialization, quarantine, durable replacement, and a process-global installed binding table. This exists because the comprehensive plan requires a real keybinding client and removal of hardcoded production bindings.
+`include/anoptic_keybindings.h`, `src/keybindings/keybindings.c`, and `src/keybindings/CMakeLists.txt` were added. They define 13 stable action SIDs for movement, menu, lighting mode, model LOD, shadow LOD, and Hi-Z, with configurable key/modifier pairs. The implementation supplies defaults, strict validation, duplicate-key refusal, version-1 migration, version-2 serialization, quarantine, durable replacement, and a process-global installed binding table.
 
 `src/vulkan_backend/instance/window.c` now dispatches renderer debug actions through the installed keybinding table instead of direct hardcoded GLFW key comparisons. `src/engine/main.c` now uses the same table for movement and menu actions. Camera movement speed, look sensitivity, and initial menu visibility come from the loaded config.
 
-`include/anoptic_res_world.h`, `src/resources/world/res_world.c`, and the resource CMake list were added. They define a small portable world-save payload with simulation tick, seed, camera position, yaw, pitch, and flags; a byte-exact version-2 encoder/decoder; version-1 migration; validation; `min_reader_version` handling; exact status reporting; and source-preserving migration writeback. This exists to provide the required real save-migration client instead of testing only raw frame primitives.
+`include/anoptic_res_world.h`, `src/resources/world/res_world.c`, and the resource CMake list were added. They define a small portable world-save payload with simulation tick, seed, camera position, yaw, pitch, and flags; a byte-exact version-2 encoder/decoder; version-1 migration; validation; `min_reader_version` handling; exact status reporting; and source-preserving migration writeback.
 
 `src/engine/main.c` currently loads the named `autosave` into the world state during startup and commits a new `autosave` generation on normal renderer shutdown. Every prior generation remains. The logic thread starts its camera from loaded world state and writes the final camera state back before shutdown. This is current partial behavior and has not yet received a completed design review.
 
@@ -356,13 +356,13 @@ A second implementation batch was started to satisfy the comprehensive plan's ex
 
 ## Save-path changes
 
-`src/resources/resources_core.c` replaced the one global save mutex with a map mutex plus one persistent mutex lane per exact slot name. Same-slot commits, statistics, and deletion serialize on that lane while distinct slot names may proceed concurrently. The reason was to establish owner-side per-slot ordering before Stage C moves the same semantic onto the single resource owner and tickets.
+`src/resources/resources_core.c` replaced the one global save mutex with a map mutex plus one persistent mutex lane per exact slot name. Same-slot commits, statistics, and deletion serialize on that lane while distinct slot names may proceed concurrently. Owner-side per-slot ordering before Stage C moves the same semantic onto the single resource owner and tickets.
 
 The save frame now carries a separately supplied `min_reader_version`. `ano_res_save_commit_ex` writes it, `ano_res_save_load_ex` accepts a reader version and reports `READER_TOO_OLD`, and the compatibility commit/load entries remain adapters. Existing generations are still immutable and preserved.
 
 `src/resources/resources_registry.c` replaced the fixed newest-64 normal-generation list and eight-temp list with bounded-memory iterative directory scans. It attempts to walk every normal generation newest-first and every orphan temp without retaining a fixed candidate array. `rmos_rename_new` was added to the resource OS interface and both POSIX and Windows implementations so orphan recovery cannot overwrite an already-preserved generation.
 
-The public warning threshold is now `ANO_RES_SAVE_WARN 16`. It is advisory only and has no deletion behavior. `ANO_RES_SAVE_KEEP` was removed because the name implied the rejected keep-three retention policy. The engine never automatically deletes a successful save generation. `ano_res_save_delete(slot, seq)` remains the only save-generation deletion API and is documented as user-directed.
+The public warning threshold is now `ANO_RES_SAVE_WARN 16`. It is advisory only and has no deletion behavior. `ANO_RES_SAVE_KEEP` was removed: the name implied the rejected keep-three retention policy. The engine never automatically deletes a successful save generation. `ano_res_save_delete(slot, seq)` remains the only save-generation deletion API and is documented as user-directed.
 
 ## Persistence and durability tests added
 
@@ -392,7 +392,7 @@ CTest currently registers 41 tests: 30 enabled and 11 optional/benchmark tests d
 
 ## Engine runs
 
-Before being challenged about runtime verification, the engine had not been launched after the persistence changes. I then launched `build/Tests/anopticengine.exe` for a 12-second smoke run. The process initialized Vulkan on the NVIDIA GeForce RTX 4090, loaded all three fonts as memory faces, ingested `models/viking_room.gltf`, `models/GlassHurricaneCandleHolder.gltf`, and Sponza, reached the render loop, emitted snapshots, and rendered at roughly 396–427 fps during the captured interval. No resource-manager ERROR or FATAL message appeared.
+Engine had not been launched after the persistence changes. I then launched `build/Tests/anopticengine.exe` for a 12-second smoke run. The process initialized Vulkan on the NVIDIA GeForce RTX 4090, loaded all three fonts as memory faces, ingested `models/viking_room.gltf`, `models/GlassHurricaneCandleHolder.gltf`, and Sponza, reached the render loop, emitted snapshots, and rendered at roughly 396-427 fps during the captured interval. No resource-manager ERROR or FATAL message appeared.
 
 The smoke log contained the already-recorded Debug SPIR-V validation complaint concerning `NonSemantic.Shader.DebugInfo.100 DebugGlobalVariable`. The same issue is documented in the historical implementation journal as a debug-info artifact; this run did not establish a new resource-manager cause.
 
@@ -400,7 +400,7 @@ I then launched the engine again as a visible background process and left it run
 
 ## Current regressions and risks
 
-The current tree is red because `anoptic_resources` and `anoptic_persistence` fail. No phase can be committed while those failures remain.
+Current tree is red: `anoptic_resources` and `anoptic_persistence` fail. No phase can be committed while those failures remain.
 
 The bounded-memory orphan-temp rewrite regressed previously passing recovery behavior. It is incomplete, despite the intended improvement over the old eight-temp cap.
 
@@ -438,4 +438,4 @@ The first ownership batch completed and returned a coherent verification report.
 
 A high-effort workflow-backed code review was launched near the end of the run, but its result was not retrieved or incorporated after the tool interaction was interrupted. No review finding from that workflow is claimed in this document.
 
-No source or documentation commit was made. The working tree remains intentionally uncommitted so the two current test regressions and the incomplete Stage A design can be corrected before the first phase boundary.
+No source or documentation commit was made. Working tree left uncommitted. Two test regressions and incomplete Stage A design remain before the first phase boundary.

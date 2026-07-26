@@ -17,8 +17,7 @@ extern RendererState rendererState;
 static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4 parentTransform,
                          AnoRenderableDesc* out, uint32_t cap, uint32_t* idx);
 
-// Proof token: a cgltf_data that has passed cgltf_validate. Minted only at the gate in
-// parseGltf, so no sizing pass below can consume unvalidated counts.
+// Proof token: cgltf_data past cgltf_validate (minted in parseGltf).
 typedef struct ValidatedGltf {
     const cgltf_data* data;
 } ValidatedGltf;
@@ -37,8 +36,6 @@ static_assert(alignof(Vertex) <= 16 && alignof(uint32_t) <= 16 && alignof(VkBuff
               "scratch block carves assume <=16-byte alignment");
 
 // Inputs: element count n, element size sz. Output: 16-rounded byte footprint.
-// Sizing and carving both call this one expression, so a block's carves can never
-// outrun the size its own gltf_span sum produced.
 static inline size_t gltf_span(size_t n, size_t sz)
 {
     return (n * sz + 15u) & ~(size_t)15u;
@@ -59,9 +56,7 @@ static void* gltf_carve(GltfBlock* blk, size_t n, size_t sz)
 }
 
 // Inputs: prim. Outputs: *pos/*norm/*tex accessors, NULL when absent (last texcoord wins).
-// Output: true when the primitive is uploadable (POSITION and indices present).
-// The sizing pass and the upload loop both call this, so the scratch extents always
-// cover exactly the primitives the upload loop reads.
+// Output: true when uploadable (POSITION and indices present).
 static bool prim_accessors(const cgltf_primitive* prim, cgltf_accessor** pos,
                            cgltf_accessor** norm, cgltf_accessor** tex)
 {
@@ -93,10 +88,8 @@ static inline uint32_t gltf_slot(const cgltf_data* d, const uint32_t* slots, con
     return (tex && tex->image) ? slots[tex->image - d->images] : ANO_BINDLESS_NONE;
 }
 
-// Inputs: g (validated, so every count is bounded by delivered bytes).
-// Outputs: *primsTotal/*childTotal/*rootTotal element totals.
-// Output: byte size of the asset's single persistent block, as the exact gltf_span
-// sequence parseGltf carves from it.
+// Inputs: g (validated). Outputs: *primsTotal/*childTotal/*rootTotal.
+// Output: persistent asset block byte size (gltf_span carve sequence).
 static size_t asset_block_size(ValidatedGltf g, size_t* primsTotal, size_t* childTotal,
                                size_t* rootTotal)
 {
@@ -120,8 +113,7 @@ static size_t asset_block_size(ValidatedGltf g, size_t* primsTotal, size_t* chil
          + gltf_span(roots, sizeof(uint32_t));
 }
 
-// Inputs: g (validated). Outputs: *maxVerts/*maxIdx 〜 the widest uploadable primitive's
-// counts, so one scratch vertex/index pair serves every primitive in turn.
+// Inputs: g (validated). Outputs: *maxVerts/*maxIdx (widest uploadable primitive).
 static void scratch_extents(ValidatedGltf g, size_t* maxVerts, size_t* maxIdx)
 {
     const cgltf_data* d = g.data;
@@ -159,8 +151,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         return NULL;
     }
 
-    // Untrusted-input gate. cgltf's only accessor-vs-bufferView and bufferView-vs-buffer
-    // byte-range proof; every cgltf_accessor_read_* below is in-contract only after it passes.
+    // Untrusted-input gate: cgltf_validate (accessor/bufferView/buffer ranges).
     result = cgltf_validate(data);
     if (result != cgltf_result_success) {
         ano_log(ANO_ERROR, "glTF failed validation (result %d), rejecting: %s", (int)result, fileName);
@@ -171,9 +162,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 
     ano_debug_log(ANO_INFO, "Successfully parsed %s with cgltf!", fileName);
 
-    // Everything the returned ModelAsset owns lives in one zeroed block: one failure arm
-    // now, one free at a future unload. Sized post-validate, so every count is bounded by
-    // delivered bytes.
+    // Persistent ModelAsset block (one calloc, one free at unload).
     size_t primsTotal, childTotal, rootTotal;
     size_t assetBytes = asset_block_size(gltf, &primsTotal, &childTotal, &rootTotal);
     void* assetBase = calloc(1, assetBytes);
@@ -191,9 +180,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     uint32_t*       rootPool  = gltf_carve(&assetBlk, rootTotal, sizeof(uint32_t));
     strncpy(asset->name, fileName, 63);
 
-    // Load-time temporaries live in one scoped-heap block; scope exit discharges every
-    // return path, so no free() below. vertices/indices are sized to the widest primitive
-    // and reused across all of them; maxStaging upper-bounds needed textures + 10.
+    // Scratch block (LOCALHEAPATTR): verts/indices (widest prim) + image slots + staging.
     size_t maxVerts, maxIdx;
     scratch_extents(gltf, &maxVerts, &maxIdx);
     // Staging bound follows images (one upload each).
@@ -220,7 +207,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     TextureUsageFlags* imageUsage     = gltf_carve(&scratchBlk, data->images_count, sizeof(uint32_t));
     VkBuffer*          stagingBuffers = gltf_carve(&scratchBlk, maxStaging, sizeof(VkBuffer));
 
-    // Seed ANO_BINDLESS_NONE (calloc would leave slot 0).
+    // Seed ANO_BINDLESS_NONE.
     static_assert(ANO_BINDLESS_NONE == 0xFFFFFFFFu, "0xFF fill must equal ANO_BINDLESS_NONE");
     memset(colorIndex, 0xFF, data->images_count * sizeof(uint32_t));
     memset(dataIndex,  0xFF, data->images_count * sizeof(uint32_t));
@@ -252,7 +239,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 #ifdef DEBUG_BUILD
             assert(vertexCount <= maxVerts); // extents came from the same prim_accessors walk
 #endif
-            // Reused scratch: re-zero so absent attributes read as zeroes.
+            // Re-zero reused scratch.
             memset(vertices, 0, vertexCount * sizeof(Vertex));
 
             for (uint32_t v = 0; v < vertexCount; ++v) {
@@ -350,9 +337,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     }
 
     // 2. Upload Textures & Bind Materials
-    // Batch CB for every texture upload. A refused mint answers VK_NULL_HANDLE, which is exactly
-    // createTextureImage's "borrow nothing" sentinel: each upload mints per-op instead, and the
-    // epilogue below discharges only a CB this scope actually holds.
+    // Batch CB for texture uploads. VK_NULL_HANDLE -> per-image mint; epilogue ends a held CB only.
     VkCommandBuffer textureCmd = beginSingleTimeCommands(ctx);
     if (textureCmd == VK_NULL_HANDLE)
         ano_log(ANO_WARN, "No transient command buffer for the texture batch; uploading per image.");

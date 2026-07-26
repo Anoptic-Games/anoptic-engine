@@ -15,9 +15,9 @@ layout(set = 2, binding = 3) uniform ShadowSampleVPUBO {
     vec4 depthParams[64];
 } shadowVPBuf;
 
-// Hardware-tunable knobs in LINEARIZED depth units, fractions of the light's near..far range.
-//   DEPTH_BIAS   〜 constant occluder offset killing residual self-shadow acne, slope-scaled by nDotL.
-//   CONTACT_SOFT 〜 soft-step width above each band's mean occluder depth. 0 = hard step at the mean.
+// LINEARIZED depth knobs (fractions of light near..far).
+//   DEPTH_BIAS    occluder offset, slope-scaled by nDotL.
+//   CONTACT_SOFT  soft-step width above band mean. 0 = hard step.
 const float ANO_CDF_DEPTH_BIAS   = 0.0002;
 const float ANO_CDF_CONTACT_SOFT = 0.2;
 

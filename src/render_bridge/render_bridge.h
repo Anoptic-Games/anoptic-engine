@@ -136,11 +136,9 @@ static inline bool ano_size_align_up(size_t *bytes, size_t align)
 /* Seqlock */
 
 // Latest-wins epoch. Even version == stable, odd == mid-write; version 0 == unpublished.
-// One producer per version; readers retry if version moved across the copy 〜
-// never a torn value, at any payload size or scheduling.
+// One producer per version; readers retry if version moved across the copy.
 // value: _Atomic word lane, sizeof(payload)/8 entries (asserted at the bridge).
-// Relaxed word copies keep concurrent store/load defined; torn loads are
-// discarded by the version recheck, exactly as before.
+// Relaxed word copies; torn loads discarded by version recheck.
 static inline void ano_seqpub_store(_Atomic uint64_t *value, _Atomic uint64_t *version, const void *v, size_t stride)
 {
     uint64_t s = atomic_load_explicit(version, memory_order_relaxed); // producer-owned version
@@ -184,18 +182,14 @@ struct AnoRenderBridge
     AnoSpscRing commands; // logic -> render (RenderCommand)
     AnoSpscRing events;   // render -> logic (RenderEvent)
 
-    // Published latest-wins lanes. snapshot: render publishes, logic acquires.
-    // viewState: logic publishes, render acquires. Lanes store object
-    // representation as atomic words; typed access only ever happens through
-    // the publish/acquire copies.
-    // One ANO_THREAD_LINE region per direction, version leading its words:
-    // publish and acquire each move one line, and the two directions never share one.
+    // Latest-wins lanes. snapshot: render->logic. viewState: logic->render.
+    // Atomic word lanes; typed access only via publish/acquire copies.
+    // One ANO_THREAD_LINE per direction; version leads its words.
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t snapshotVersion; // render publishes
     _Atomic uint64_t snapshot[sizeof(RenderSnapshot) / sizeof(uint64_t)];
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t viewStateVersion; // logic publishes
     _Atomic uint64_t viewState[sizeof(AnoViewState) / sizeof(uint64_t)];
-    bool viewRejectWarned; // publisher-private: degenerate-pose warning fires once. Same
-                           // single producer as viewState, so plain (never read by render).
+    bool viewRejectWarned; // publisher-private: degenerate-pose warning once (never read by render)
 };
 
 // in:  bridge, heap, cmd_capacity_pow2, evt_capacity_pow2
@@ -208,10 +202,8 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
 void ano_render_bridge_destroy(AnoRenderBridge *bridge);
 
 // in:  cmd, a command being DROPPED before any consumer adopts its payload
-// out: nothing; releases the render-owned block the command carries, if it carries one
-// inv: sole decode point for what a RenderCommand owns. Drop paths only: a consumer that
-//      hands the block to a registry has already transferred ownership and must not call
-//      this. Honors bulk_owned, so a borrowed pointer is left alone.
+// out: nothing; releases the render-owned block if any
+// inv: sole decode of RenderCommand ownership. Drop paths only (not after registry handoff). Honors bulk_owned.
 void ano_render_command_release(const RenderCommand *cmd);
 
 // Non-inline logic endpoints (submit/lights/text/ui + poll/snapshot/view): ano_render_bridge.c.

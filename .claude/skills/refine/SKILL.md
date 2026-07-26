@@ -15,7 +15,7 @@ The target is already feature-complete and passing.
 
 ## Lock first, edit second
 
-- Deterministic driver over a matrix of inputs: sizes, flags, both sides of every branch the module exposes. Hash everything it produces 〜 return values, out-params, buffers written.
+- Deterministic driver over a matrix of inputs: sizes, flags, both sides of every branch the module exposes. Hash everything it produces: return values, out-params, buffers written.
 - Run it against the unmodified file. That hash is the lock.
 - Re-run after every step. A changed hash means the fold was wrong.
 - Driver lives in the scratchpad. If the module has no comparable test of its own, say so and offer to keep it.

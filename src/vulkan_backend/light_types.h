@@ -26,8 +26,7 @@ typedef enum LightType
     LIGHT_TYPE_SPOT        = 2, // position + direction + range + cones
 } LightType;
 
-// LightType domain size: extent of RendererState.shadowTypeUsed and the bridge-seam gate in
-// bridge/apply.c 〜 a new LightType must widen both.
+// LightType count: RendererState.shadowTypeUsed + bridge/apply.c seam gate. Widen both on add.
 enum { LIGHT_TYPE_COUNT = 3u };
 _Static_assert(LIGHT_TYPE_SPOT + 1 == LIGHT_TYPE_COUNT,
                "LightType grew: widen shadowTypeUsed and shadow_static_budget()");

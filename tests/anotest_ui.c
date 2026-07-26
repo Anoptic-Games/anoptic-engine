@@ -841,7 +841,7 @@ static void test_tiles(uint32_t soak)
     AnoUiBuilder b;
     demo_build(prims, clips, paints, stops, curves, &b);
     AnoUiScene s = ano_ui_scene(&b);
-    // Tiled path clips shadows at 3-sigma AABB; brute keeps the Gaussian tail.
+    // Tiled clips shadows at 3-sigma AABB. Brute keeps the Gaussian tail.
     CHECK(tiles_check(&s, "demo") <= 2e-3, "demo tiled matches brute within the shadow-cull tail");
 
     // Shadow-free random rrects on fractional tile-straddling positions: bit-identical.
@@ -872,8 +872,7 @@ static void test_tiles(uint32_t soak)
 
 /* Boundary inputs */
 
-// Caller-supplied counts and refs at the edges of their domains. The header contracts a full
-// array as ANO_UI_REF_NONE with no mutation, and an out-of-range ref as fail-closed transparent.
+// Edge counts/refs: full array -> REF_NONE no mutation; OOR ref -> transparent.
 
 static bool is_transparent(const float out[4])
 {
@@ -886,9 +885,7 @@ static AnoUiStop make_stop(float t)
     return st;
 }
 
-// ano_ui_paint_linear's stop-table fullness check must hold for any stopCount, including one
-// whose sum with the resident count wraps uint32 back under the cap. Controls: a real gradient
-// pushes and sorts, and an honest overflow refuses without mutating.
+// paint_linear stop-table fullness: wrap under cap, honest overflow, push+sort control.
 static void test_paint_stop_overflow(void)
 {
     enum { STOP_CAP = 16 };
@@ -923,10 +920,7 @@ static void test_paint_stop_overflow(void)
     CHECK(b.stopCount == 8 && b.paintCount == 1, "wrapping stopCount mutates nothing");
 }
 
-// ano_ui_path_fill must bound its contour count the way it bounds its quad budget: a path of
-// many empty contours is legal input the header answers with ANO_UI_REF_NONE ("the path is
-// empty"), never a scribble through the baker's scratch. Controls: a real square fills, commits,
-// and evaluates opaque, and the quad budget rejects an over-length contour without committing.
+// path_fill contour bound: empty contours -> REF_NONE; square fills; over-budget quads refuse.
 static void test_path_contour_bound(void)
 {
     enum { ZIG_LINES = 600, EMPTY_MOVES = 2000,
@@ -967,7 +961,7 @@ static void test_path_contour_bound(void)
     CHECK(zg == ANO_UI_REF_NONE, "over-budget quad count rejected");
     CHECK(b.primCount == 1 && b.curveCount == 9, "builder untouched by quad-budget rejection");
 
-    // one real triangle (qn > 0, valid bbox, so the emit pass runs) then many empty contours
+    // One real triangle (qn > 0, valid bbox) then many empty contours
     uint32_t nseg = 4u + EMPTY_MOVES;
     AnoUiPathSeg *segs = malloc((size_t)nseg * sizeof *segs);
     CHECK(segs != NULL, "empty-contour buffer allocated");
@@ -987,8 +981,7 @@ static void test_path_contour_bound(void)
         free(segs);
     }
 
-    // fresh builder per K over the contour-count boundary, with a large curve scratch so the
-    // emit pass runs to completion instead of stopping at capacity rejection
+    // Fresh builder per K at contour-count boundary; large curve scratch.
     static uint32_t bigCurves[BIG_CURVE_CAP];
     static AnoUiPathSeg segs2[4u + CRASH_K_HI];
     segs2[0] = (AnoUiPathSeg){ ANO_UI_SEG_MOVE, {  0.0f,  0.0f } };
@@ -1027,11 +1020,7 @@ static AnoUiScene stopwin_scene(uint32_t stopFirst, uint32_t stopCount)
                          .stops = g_stopwin_stops, .stopCount = 2 };
 }
 
-// ano_ui_ref_paint is the CPU mirror the GPU evaluator cites as its fail-closed reference, so
-// its stop-window check must hold for any stopFirst, including one whose sum with stopCount
-// wraps uint32 back inside the table. Controls: a valid window interpolates, NONE passes base
-// through, and an out-of-range paintRef, a plain out-of-range window, and stopCount 0 all fail
-// closed, so a reject-everything fix cannot pass.
+// ref_paint stop window: valid interpolates; NONE -> base; OOR/zero/wrap fail closed.
 static void test_paint_ref_stop_window(void)
 {
     const float base[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -1102,10 +1091,7 @@ static void eval_one_tile(const AnoUiScene *s, int32_t ox, int32_t oy, const uin
     ano_ui_ref_eval_tiled(s, ox, oy, 1, 1, offsets, entries, px, py, out);
 }
 
-// A tile entry word is a 31-bit prim index plus the solid bit, and it arrives from the caller:
-// a stale or hand-built stream is ordinary input. Every index outside the scene must fail closed
-// like its siblings. Controls: a module-built stream matches brute ano_ui_ref_eval bitwise, a
-// solid entry at the last valid index flat-fills, and a valid non-solid ADD entry accumulates.
+// Tile entry domain: OOR index fail-closed; built stream == brute; solid flat-fill; ADD accumulates.
 static void test_tile_entry_domain(void)
 {
     AnoUiScene s = entry_scene();
@@ -1121,7 +1107,7 @@ static void test_tile_entry_domain(void)
     CHECK(ok, "tile build fits the caps");
     CHECK(nEntries > 0, "tile build emits entries");
 
-    // the property the whole tiled lane exists to keep
+    // tiled == brute bitwise
     {
         uint32_t bad = 0;
         for (int32_t py = 0; py < ENTRY_GRID_PX; py++)
@@ -1136,7 +1122,7 @@ static void test_tile_entry_domain(void)
         CHECK(bad == 0, "module-built stream matches brute eval bitwise");
     }
 
-    // pixel (4,4) is far outside prim 3's box: a non-zero result proves the SDF was skipped
+    // (4,4) outside prim 3: solid skips SDF
     {
         const uint32_t e[1] = { 3u | ANO_UI_ENTRY_SOLID };
         float out[4];
@@ -1145,7 +1131,7 @@ static void test_tile_entry_domain(void)
               "solid entry at last valid index flat-fills");
     }
 
-    // grid shifted to (24,44) so pixel (28,48) sits inside both prims
+    // Grid at (24,44); (28,48) inside prims 0 and 2
     {
         const uint32_t e[2] = { 0u, 2u };
         float src0[4], src2[4], want[4], out[4];
@@ -1190,9 +1176,7 @@ static void test_tile_entry_domain(void)
         }
     }
 
-    // stale stream: entries built from the 4-prim scene, evaluated against a 1-prim view of the
-    // same buffers. Pixel (28,28) sits in a tile listing prims 0, 1 and 3; only prim 0 is in
-    // domain, so the result must be the 1-prim eval.
+    // Stale stream: 4-prim entries vs 1-prim scene; (28,28) -> prim 0 only.
     {
         AnoUiScene s1 = s;
         s1.primCount = 1;
@@ -1204,10 +1188,7 @@ static void test_tile_entry_domain(void)
     }
 }
 
-// ano_ui_tile_build sizes a tilesX * tilesY grid against the caller's caps and reports the fit
-// through *ok. A grid whose tile count wraps uint32 must come back false, not a true that
-// invites the caller to trust buffers that hold none of it. The scene is empty so the answer is
-// observed as *ok alone. Controls: a real 2x2 grid builds ok, and an undersized cap is refused.
+// tile_build grid caps: 2x2 ok; undersized refuse; tilesX*tilesY wrap -> *ok false.
 static void test_tile_build_grid_caps(void)
 {
     AnoUiScene s = { 0 };   // empty scene: primCount 0, nothing to scatter

@@ -21,11 +21,9 @@
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/ui_raster.h"
 
-// in: an empty ledger to fill (a live one must be dissolved by the caller first; this mints, it
-// does not free). Runs post-glfwInit 〜 the query answers NULL/0 before it.
-// out: (monitorInfos, monitorCount) published as one pair on every arm 〜 an owned array of
-// monitorCount entries, or empty-but-valid (NULL, 0) when the host lists no display or the array
-// is refused. Each modes pointer is GLFW-owned and dies with glfwTerminate.
+// in: empty Monitors (caller dissolves any live ledger first)
+// out: owned (monitorInfos, monitorCount), or (NULL, 0)
+// modes: GLFW-owned until glfwTerminate. Post-glfwInit only.
 void enumerateMonitors(Monitors* monitors) // Instance creation helper
 {
 	int count = 0;
@@ -226,7 +224,7 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 		resolution.height = mode->height;
 	}
 
-	if (monitorIndex == -1) // -1 wraps to UINT32_MAX 〜 windowed (structs.h)
+	if (monitorIndex == -1) // -1 wraps to UINT32_MAX: windowed (structs.h)
 	{
 		chosenMonitor = NULL;
 	}
@@ -271,9 +269,8 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 }
 
 
-// in: a ledger from enumerateMonitors, empty or filled
-// out: the pair dissolved count first, so no reader ever sees a count beside a freed array.
-// Must run before glfwTerminate: every modes pointer inside is GLFW-owned.
+// in: Monitors from enumerateMonitors
+// out: pair cleared, count first. Before glfwTerminate (modes are GLFW-owned).
 void cleanupMonitors(Monitors* monitors)
 {
 	MonitorInfo* infos = monitors->monitorInfos;

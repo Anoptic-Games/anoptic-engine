@@ -210,9 +210,8 @@ static int expand_cp(uint32_t cp, uint32_t *out, int cap)
 
 static int collate_kept(uint32_t cp);
 
-// Expand recursively. Keep collate_keep entries whose every NFD piece is itself CE-listed.
-// A redirect into a trimmed piece would sort by implicit weight and hide the cp's own listing,
-// so the trim is closed: drop the decomposition, let the direct CE rule. Needs parse_allkeys first.
+// Expand to full NFD. Keep collate_keep cps whose every NFD piece is CE-listed.
+// Drop the rest (direct CE wins). Needs parse_allkeys first.
 static void expand_decompositions(void)
 {
     static uint32_t pool2[sizeof decomp_pool / sizeof decomp_pool[0]];
@@ -454,9 +453,7 @@ static void build_two_stage(const uint16_t *map)
     }
 }
 
-// cp + delta, or 0 when that leaves the emitted table. Closing the trim this way keeps case
-// mapping an involution on the shipped set: the alternative is a mapping onto a record-0 cp that
-// reports uncased and uncategorized, so to_upper(to_lower(x)) != x.
+// cp + delta, or 0 when the target leaves the emitted table.
 static int32_t case_delta_kept(long cp, int32_t delta)
 {
     long t = cp + delta;
@@ -478,7 +475,7 @@ static void build_tables(void)
         record_t r = { case_delta_kept(cp, upper_delta[cp]),
                        case_delta_kept(cp, lower_delta[cp]), flags[cp] };
         size_t idx = SIZE_MAX;
-        // Field-wise: record_t has tail padding, so memcmp would split identical records.
+        // Field-wise (record_t has tail padding).
         for (size_t k = 0; k < record_count; k++) {
             if (records[k].upper_delta == r.upper_delta &&
                 records[k].lower_delta == r.lower_delta &&
@@ -501,9 +498,7 @@ static void build_tables(void)
     build_two_stage(record_of_cp);
 }
 
-// Both trims closed, checked over the arrays about to be emitted rather than over the source data,
-// so a keep-list edit or a UCD bump cannot reopen the hole silently. Runs before any file is
-// opened: a violation exits nonzero with the committed tables untouched.
+// Assert decomp and case trims closed on the about-to-emit arrays. Exit before any write on failure.
 static void assert_trim_closure(void)
 {
     for (size_t k = 0; k < decomp_count; k++) {

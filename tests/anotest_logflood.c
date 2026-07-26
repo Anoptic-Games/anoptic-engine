@@ -4,16 +4,8 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Coverage: drain-batch sizing vs deferred wide rendering (docs/BUGS_DONE.md, Log / Implementation).
-// g_batch is sized ring bytes + 16 per record on the claim that a record's rendered text fits its
-// ring footprint. Deferred records break the claim: "%*d" width 4000 occupies one 64-byte ring
-// line yet renders ~4016 batch bytes, so any drain pass over a backlog of ~164+ such records must
-// cross g_batchCap 〜 the per-record prefix memcpy and newline are unchecked, and the size_t room
-// subtraction then underflows, unbounding every later record into a multi-MB heap overwrite on
-// whichever thread runs the pass. Four producers outrun the drainer (~150 ns capture vs ~µs
-// render), so the backlog is guaranteed; the buggy build dies in the drain pass. Correct behavior
-// asserted here: the burst survives, drops nothing, and renders every wide field at full width.
-// The narrow control burst pins the adjacent correct path (rendered ~ stored, bound holds), so a
-// fix that drops or truncates records to dodge the overflow still fails. Exit 0 == pass.
+// Wide "%*d" width 4000: one 64-byte ring line -> ~4016 batch bytes. Backlog must not overrun g_batch.
+// Assert: wide burst drops nothing, full-width fields; narrow control keeps rendered ~ stored. Exit 0 == pass.
 
 #include <anoptic_log.h>
 #include <anoptic_threads.h>
@@ -80,14 +72,14 @@ int main(void)
     ano_log_set_level(ANO_INFO);
     CHECK(ano_log_output_dir(DIR_CTRL) == 0, "output -> control scratch");
 
-    // control: narrow deferred burst 〜 rendered ~ stored, the sizing claim holds, nothing lost
+    // control: narrow deferred burst, rendered ~ stored, nothing lost
     for (int i = 0; i < CTRL_RECORDS; i++)
         ano_log(ANO_INFO, "ctrl %d", i);
     ano_log_flush();
     printf("logflood: control burst drained (%d records)\n", CTRL_RECORDS);
     fflush(stdout);
 
-    // trigger: wide deferred burst 〜 buggy build dies in a drain pass before the joins return
+    // trigger: wide deferred burst. Drain must survive before joins return
     CHECK(ano_log_output_dir(DIR_WIDE) == 0, "output -> wide scratch");
     anothread_t prod[WIDE_PRODUCERS];
     for (intptr_t i = 0; i < WIDE_PRODUCERS; i++)

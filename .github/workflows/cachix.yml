@@ -1,20 +1,16 @@
-# Build the engine and push its runtime closure to the anoptic-games cachix cache.
-# Push is an explicit `cachix push` of the built outputs only 〜 the action's automatic
-# store-diff push would upload the whole toolchain and eat the 5 GB free tier.
-# Build the github: ref, NOT the checkout: `nix build .#x` on the runner evaluated to
-# different store paths than `nix run github:...` does for users (byte-identical outputs,
-# different drv hashes), so green pushes landed on paths nobody ever asks for.
+# Build engine, push runtime closures to anoptic-games cachix.
+# Explicit `cachix push` of built outputs only. Action auto-push would eat the 5 GB free tier.
+# Build github: ref, NOT checkout. Runner `.#x` paths differ from user `github:...` paths.
 name: cachix
 
 on:
   push:
-    # module-audio keeps release-build coverage while the audio line is hot; the
-    # pin step below is main-gated, so branch runs never repoint production pins.
+    # module-audio: release-build coverage while audio is hot.
+    # Pin step is main-gated; branch runs never repoint production pins.
     branches: [main, module-audio]
   workflow_dispatch:
 
-# One run per ref: overlapping runs raced pin updates (whichever finished last won the pin,
-# even if older). A newer push supersedes an in-flight run; its pins land minutes later anyway.
+# One run per ref. Cancel in-flight on newer push (avoids pin races).
 concurrency:
   group: cachix-${{ github.ref }}
   cancel-in-progress: true
@@ -41,23 +37,19 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
             accept-flake-config = true
-      # skipPush: the action still wires the cache as a substituter, so unchanged
-      # store paths are pulled instead of rebuilt.
+      # skipPush: still wires cache as substituter (pull unchanged paths).
       - uses: cachix/cachix-action@v16
         with:
           name: anoptic-games
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           skipPush: true
-      # Each target is pinned under a stable name (e.g. play-x86_64-linux) so the latest
-      # main build is immune from cachix GC; --keep-revisions 1 drops the previous pin.
-      # PIN ONLY ON MAIN: branch runs build, push, and verify 〜 full release-build
-      # coverage 〜 but never repoint the production pin names.
+      # Pin each target under a stable name (e.g. play-x86_64-linux). --keep-revisions 1.
+      # PIN ONLY ON MAIN. Branch runs build/push/verify; never repoint production pins.
       - name: Build, push, and pin runtime closures
         run: |
           set -euo pipefail
-          # retry CMD...: 3 attempts, 30s apart. Rides out transient failures (substituter
-          # fetch, github: tarball, cachix 5xx); a deterministic compile error just fails 3x.
-          # Messages go to stderr so command substitution stays clean.
+          # retry CMD...: 3 attempts, 30s apart (substituter / github: tarball / cachix 5xx).
+          # Messages to stderr; keeps command substitution clean.
           retry() {
             for i in 1 2 3; do
               if "$@"; then return 0; fi
@@ -85,10 +77,9 @@ jobs:
             curl -sf -o /dev/null "https://anoptic-games.cachix.org/$h.narinfo" || { echo "cache MISSING $p" >&2; exit 1; }
           done < outpaths.txt
 
-  # Manual-dispatch-only probe of the checkout-eval divergence (2026-07-15): the runner's
-  # `nix build .#x` hashed a different source copy than the github: tarball, without a
-  # dirty-tree warning. This prints both source narHashes and drvPaths side by side.
-  # Delete this job once the mechanism is identified.
+  # Manual-dispatch-only: checkout vs github: eval divergence probe (2026-07-15).
+  # Prints source narHashes and drvPaths side by side.
+  # Delete once the mechanism is identified.
   eval-divergence-probe:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

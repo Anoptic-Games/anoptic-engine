@@ -602,11 +602,10 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
 // One pacing turn: the wait a consumer that is merely behind needs to free a slot.
 #define ANO_AUDIO_PACE_US 1000u
 
-// in:  mx (mixer thread, bridge non-NULL), cpuNs (last block's render cost; 0 when the turn
-//      rendered nothing)
-// out: none. Publishes the latest-wins telemetry lane after the generator fills its fields.
-// inv: mixer thread only 〜 ano_audio_mixer_main never runs offline.
-// inv: blockIndex unchanged with cpuNs 0 == the mixer is alive and producing nothing.
+// in:  mx (mixer thread, bridge non-NULL), cpuNs (last block render cost; 0 if idle turn)
+// out: none (publishes latest-wins telemetry after generator fills its fields)
+// inv: mixer thread only; ano_audio_mixer_main never runs offline
+// inv: cpuNs 0 with unchanged blockIndex == alive, producing nothing
 static void publish_stats(AnoAudioMixer *mx, uint64_t cpuNs)
 {
     AnoAudioTelemetry t = {
@@ -628,12 +627,11 @@ void *ano_audio_mixer_main(void *arg)
 {
     AnoAudioMixer *mx = arg;
 
-    // Ring depth in block periods 〜 the consumer's whole queue. capacity >= 2 (ring_init floors it).
+    // Ring depth in block periods (= full consumer queue). capacity >= 2 (ring_init floors it).
     const uint64_t ringBlocks = (uint64_t)mx->blockRing.mask + 1u;
     const uint64_t periodUs   = (uint64_t)mx->blockFrames * 1000000ull / mx->sampleRate;
-    const uint64_t stallUs    = ringBlocks * periodUs;      // a whole drain with head unmoved
-    const uint64_t idleUs     = ringBlocks / 2u * periodUs; // half a drain: a consumer that comes
-                                                           // back is picked up with half the queue
+    const uint64_t stallUs    = ringBlocks * periodUs;      // whole drain, head unmoved
+    const uint64_t idleUs     = ringBlocks / 2u * periodUs; // half drain: resume with queue half full
     uint32_t lastHead  = atomic_load_explicit(&mx->blockRing.head, memory_order_relaxed);
     uint64_t stalledUs = 0;
 
@@ -648,14 +646,8 @@ void *ano_audio_mixer_main(void *arg)
             mx->listenerValid = true;
         }
 
-        // Pace off ring occupancy: the device drains one block per period. Full has two causes
-        // with opposite remedies 〜 a consumer that is merely behind keeps advancing blockRing's
-        // head, so the short wait wins back a slot; a consumer that has left its loop (a designed
-        // exit since the backends latch terminally) never advances it again, and the same short
-        // wait becomes a 1 kHz spin that renders nothing and, past the continue, publishes
-        // nothing either. head is the consumer's own cursor and the producer already reads it
-        // here, so telling the two apart needs no new shared state. A wrong 'gone' is harmless:
-        // the ring is full by definition, and the first idle wake sees head move and resumes.
+        // Ring full: short wait while head advances (consumer behind).
+        // Head stuck past stallUs: idleUs sleep (consumer gone). False gone resumes on next head move.
         if (ano_audio_ring_full(&mx->blockRing)) {
             uint32_t head = atomic_load_explicit(&mx->blockRing.head, memory_order_acquire);
             if (head != lastHead) {

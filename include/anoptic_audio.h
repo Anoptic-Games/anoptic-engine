@@ -21,7 +21,7 @@
 // Registered buffers: mono (spatializable) or stereo (pan = balance, never positional).
 #define ANO_AUDIO_CHANNELS 2
 
-// Pool ceilings. Preallocated at init. Runtime "allocate" is a state flip 〜 never a mixer-thread heap call.
+// Pool ceilings. Preallocated at init. Runtime allocate is a state flip, never a mixer-thread heap call.
 #define ANO_AUDIO_MAX_BUSES   16
 #define ANO_AUDIO_MAX_SOURCES 64
 #define ANO_AUDIO_MAX_BUFFERS 256
@@ -86,7 +86,7 @@ typedef enum AnoAudioFxParam
     ANO_AUDIO_P_COMP_RATIO,
     ANO_AUDIO_P_COMP_ATTACK_MS,
     ANO_AUDIO_P_COMP_RELEASE_MS,
-    ANO_AUDIO_P_COMP_MAKEUP,       // linear, clamped [0.25, 4] 〜 never implicit
+    ANO_AUDIO_P_COMP_MAKEUP,       // linear, clamped [0.25, 4], never implicit
 
     ANO_AUDIO_P_LIM_CEILING = 80,
     ANO_AUDIO_P_LIM_RELEASE_MS,
@@ -311,8 +311,7 @@ typedef struct AnoAudioEvent
             bool    isCadence, keyArrived, motifStated;
         } music;
 
-        // AEVT_MUSIC_SEEKED: adoption bar. Emitted when the snapshot is copied 〜
-        // before new music is audible (handshake: borrowed block free again).
+        // AEVT_MUSIC_SEEKED: adoption bar when snapshot copied, before audible. Borrowed block free.
         int32_t seekedBar;
     } u;
 } AnoAudioEvent;
@@ -323,14 +322,11 @@ bool ano_audio_poll_event(AnoAudioBridge *bridge, AnoAudioEvent *out);
 
 /* Sample buffers */
 
-// Register from logic. Helper copies into an owned block at submit; free never on mixer.
-// After RELEASE the block rides home in AEVT_BUFFER_RETIRED. Release stops sounding voices first;
-// retirement waits until the last voice quiets.
-// Teardown discharges the remainder: blocks still resident at ano_audio_shutdown 〜 live, queued
-// for registration, or retired but un-polled 〜 are freed by the engine. No block rides home once
-// shutdown begins; producers must not dereference or free an adopted block after it returns.
+// Register from logic. Copies to owned block at submit; never free on mixer.
+// RELEASE stops voices; block returns via AEVT_BUFFER_RETIRED after last voice quiets.
+// Teardown frees remaining resident, queued, or un-polled blocks. No AEVT after shutdown; do not free adopted blocks after return.
 
-// Register interleaved f32 (1–2 ch, engine rate). false = backpressure or bad args.
+// Register interleaved f32 (1-2 ch, engine rate). false = backpressure or bad args.
 bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,
                                const float *interleaved, uint64_t frames, uint32_t channels);
 
@@ -430,7 +426,7 @@ bool ano_audio_render_offline(const AnoAudioOfflineDesc *desc, float *out, uint6
 bool ano_audio_wav_write(const char *path, const float *interleaved,
                          uint64_t frames, uint32_t channels, uint32_t sampleRate);
 
-// Load WAV (PCM 16/24/32 or IEEE f32, 1–2 ch) to interleaved f32.
+// Load WAV (PCM 16/24/32 or IEEE f32, 1-2 ch) to interleaved f32.
 // Windowed-sinc to targetRate when rates differ. Free with ano_audio_block_free.
 // Logic thread only.
 float *ano_audio_wav_load(const char *path, uint32_t targetRate,

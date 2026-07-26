@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# compose_and_test.sh 〜 compose prelude + mod a{A} + mod b{B} + mod c{C} + testmain,
-# compile, and run the fitness battery. One candidate occupies its stage's slot; the
-# other two slots hold golden or frozen-winner sources. Module wrapping isolates each
-# stage's `use` imports so two independently generated winners never collide (E0252).
+# compose_and_test.sh: prelude + mod a{A} + mod b{B} + mod c{C} + testmain -> compile + fitness.
+# Candidate occupies its stage slot; other two golden/frozen.
+# Mod wrap isolates stage `use` imports (E0252).
 set -u
 
 usage() { cat <<'EOF'

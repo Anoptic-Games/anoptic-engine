@@ -537,9 +537,8 @@ static void emit_one(ano_loglevel_t level, uint64_t raw_ts, const char *text, ui
 /* The consumer: one single-active drain pass */
 
 // Drain committed records up to tail into batched writes. Returns lines reclaimed.
-// Invariant: >= ANO_LOG_BATCH_RESV batch bytes free at each record start, restored by mid-pass
-// flush 〜 rendered length may dwarf ring footprint (deferred wide fields), so blen can hit the
-// cap before tail. Flushing touches only g_batch; ring lines stay ours until the head store.
+// Invariant: >= ANO_LOG_BATCH_RESV free at each record start (mid-pass flush restores).
+// Flush touches g_batch only; ring lines ours until head store.
 static uint64_t drain_and_emit(void)
 {
     // head drainer-private; tail = relaxed count bound. Linearize at tag acquire; reclaim at head release.

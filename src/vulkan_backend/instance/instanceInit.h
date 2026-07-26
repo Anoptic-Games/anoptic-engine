@@ -47,8 +47,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window);
 
 void cleanupSwapChain(VulkanContext* ctx, RendererState* state);
 
-// Generic helper function for creating 2D image views
-// Failure answers VK_NULL_HANDLE, never an indeterminate handle 〜 callers check before storing it.
+// 2D image view. VK_NULL_HANDLE on failure; callers check before storing.
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels);
 
 // Swapchain colour views, one per presentable image. false leaves views NULL and viewCount 0.
@@ -80,9 +79,8 @@ bool updateMeshTransforms(VulkanContext* ctx, RenderEntity* entity, float move);
 // createColorResourcesChecked with the status dropped.
 void createColorResources(VulkanContext* ctx);
 
-// Creates a depth image and view for the current swapchain.
-// The status is the only failure channel: frame 0 / view 0 is filled first, so no field of the
-// published state distinguishes a later frame's refusal.
+// Depth image + view for the current swapchain.
+// Status only failure channel; frame/view 0 fill first.
 [[nodiscard]] bool createDepthResources(VulkanContext* ctx, RendererState* state);
 
 // Per-view half-res R32F depth pyramids, recreated with the swapchain
@@ -97,8 +95,8 @@ bool createBindlessTextureArray(VulkanContext* ctx, RendererState* state);
 // Creates the descriptor sets
 bool createDescriptorSets(VulkanContext* ctx, RendererState* state);
 
-// Points every set at the current scene buffers; sole re-point path for the per-frame TransformSSBO
-// (global/view, cull, update, scatter, lightsetup and shadowsetup binding 1), so entity growth needs one call
+// Re-points every set at the current scene buffers.
+// Sole TransformSSBO re-point path (global/view, cull, update, scatter, lightsetup, shadowsetup binding 1).
 void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state);
 
 // (Re)binds each frame's tonemap set to its HDR resolve view; rerun after a swapchain resize
@@ -114,8 +112,8 @@ void updateShadowDescriptorSets(VulkanContext* ctx, RendererState* state);
 // Finds available memory types appropriate for a given buffer
 uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
-// Helper function to decrease verbosity of transient command calls.
-// VK_NULL_HANDLE on failure: nothing is allocated on that arm, and it must not be recorded into.
+// Begins a transient one-shot command buffer.
+// VK_NULL_HANDLE on failure: nothing allocated; do not record into it.
 VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx);
 
 // Returns true if the given format has a stencil component

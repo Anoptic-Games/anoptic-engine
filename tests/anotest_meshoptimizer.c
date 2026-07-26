@@ -9,7 +9,7 @@
 #include <assert.h>
 #include <math.h>
 
-// Boundary cases below report instead of aborting, so they hold under NDEBUG where assert is out.
+// CHECKs report failures (NDEBUG-safe); assert aborts.
 static int failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
@@ -554,11 +554,9 @@ static void test_simplify_tetra_link() {
     assert(!has_dup_face(out, r));   // no non-manifold doubled face
 }
 
-// ano_build_meshlets and ano_build_meshlets_bound are a sizing pair: the header says to size the
-// output buffers from bound(), so build() may never emit a meshlet bound() did not account for,
-// and an emitted meshlet may never exceed the max_vertices / max_triangles it was called with.
-// bound() returns 0 for max_vertices < 3 and max_triangles < 1. Triggers run with deliberately
-// oversized buffers so a broken pair shows up as wrong values rather than corruption here.
+// bound()/build() sizing pair: built <= bound, meshlet verts/tris within max_*.
+// bound() returns 0 for max_vertices < 3 or max_triangles < 1.
+// Oversized buffers: broken pair fails CHECKs, not memory.
 static void test_meshlet_bound_pair_agreement() {
     printf("Running test_meshlet_bound_pair_agreement...\n");
 
@@ -586,8 +584,7 @@ static void test_meshlet_bound_pair_agreement() {
     CHECK(ano_build_meshlets_bound(3, 2, 64) == 0, "bound rejects max_vertices 2");
     CHECK(ano_build_meshlets_bound(3, 64, 0) == 0, "bound rejects max_triangles 0");
 
-    // max_vertices 2 cannot hold a triangle: build must emit exactly as many meshlets as
-    // bound() sized the buffers for, not one that breaks the limit
+    // max_vertices 2: built <= promised, no oversize meshlet
     {
         uint32_t indices[3] = { 0, 1, 2 };
         size_t promised = ano_build_meshlets_bound(3, 2, 64);   // 0
@@ -618,12 +615,8 @@ static void test_meshlet_bound_pair_agreement() {
     }
 }
 
-// ano_simplify (the guards-off entry point) must reject topologically illegal collapses just as
-// its guards-on twin does: the header promises a valid, degenerate-free mesh. On an open cone fan
-// any rim-onto-rim collapse leaves two survivors spanning the same {apex, rim, rim} triple, a
-// coincident opposite-wound pair with zero enclosed volume. Controls pin passthrough, a legal
-// border collapse, and the guards-on twin, so a reject-everything fix cannot pass. Deterministic:
-// the simplifier has no RNG and the cheapest candidate is unique.
+// Guards-off ano_simplify: illegal rim collapse on open cone must not emit dup faces.
+// Controls: passthrough, legal strip collapse, guards-on twin. Deterministic (no RNG).
 static void test_simplify_collapse_validity() {
     printf("Running test_simplify_collapse_validity...\n");
 

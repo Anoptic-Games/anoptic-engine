@@ -13,8 +13,7 @@
 
 AnoBassConfig ano_bass_config_default(void)
 {
-    // static: an object with static storage has its PADDING zeroed, and this
-    // struct is copied into the engine, whose bytes are its snapshot.
+    // static zeroes padding; engine copies as snapshot
     static const AnoBassConfig k = { .lo = 28, .hi = 50, .velocityOffset = 8,
                             .approachBeats = 1.0 };
     return k;
@@ -62,7 +61,7 @@ void ano_generate_bass(const AnoHarmonicContext *ctx, AnoMeter meter,
     velocity = velocity < 1 ? 1 : velocity > 127 ? 127 : velocity;
 
     if (pedalDegree) {
-        // nearest to the previous root on entry, then to itself: a held point
+        // nearest to prev root on entry, then to itself
         int pc = ano_scale_pitch_at(ctx->scale, pedalDegree, 4) % 12;
         int pedal = nearest_instance(pc, near, cfg->lo, cfg->hi);
         bass_note(&out->events[0], ctx, start, barLen, pedal, velocity, "pedal");
@@ -82,7 +81,7 @@ void ano_generate_bass(const AnoHarmonicContext *ctx, AnoMeter meter,
         // (pitch, weight) options: diatonic below, diatonic above, chromatic
         int below = target - 1;
         while (!ano_scale_contains(ctx->scale, below))
-            below--; // a diatonic tone always sits within 3 semitones
+            below--;
         int above = target + 1;
         while (!ano_scale_contains(ctx->scale, above))
             above++;

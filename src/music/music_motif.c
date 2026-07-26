@@ -11,8 +11,7 @@
 
 AnoMelodyConfig ano_melody_config_default(void)
 {
-    // static: an object with static storage has its PADDING zeroed, and this
-    // struct is copied into the engine, whose bytes are its snapshot.
+    // static zero-pads; returned copy is the snapshot
     static const AnoMelodyConfig k = {
         .rangeSemitones = 12, .barRestMax = 0.30, .spanMin = 2, .spanMax = 4,
         .planApex = false, .counterpoint = false,
@@ -348,9 +347,7 @@ static bool pc_member(int pitch, const uint8_t *pcs, uint32_t pcCount)
     return false;
 }
 
-// The transposition of the whole cell: score tuple is
-// (in_range, strong_hits, dist) with prefer_fit, else (in_range, dist,
-// strong_hits); max keeps the first maximal base.
+// score: prefer_fit ? (in_range, strong_hits, dist) : (in_range, dist, strong_hits); first max
 static int pick_base(const AnoMotif *m, AnoScale scale,
                      const uint8_t *chordPcs, uint32_t pcCount,
                      int lo, int hi, uint32_t strongMask, int ref, bool preferFit)

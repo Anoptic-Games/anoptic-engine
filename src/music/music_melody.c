@@ -32,7 +32,7 @@ static uint32_t pc_candidates(const uint8_t *pcs, uint32_t pcCount, int target,
         for (int p = lo + ((pcs[i] - lo) % 12 + 12) % 12; p <= hi && n < PC_CANDS_MAX; p += 12)
             out[n++] = p;
     }
-    // sort by (|p - target|, p) 〜 total, so pre-sort order is immaterial
+    // sort by (|p - target|, p)
     for (uint32_t i = 1; i < n; ++i) {
         int key = out[i];
         int ka = key - target < 0 ? target - key : key - target;
@@ -217,13 +217,12 @@ static uint32_t mel_place(const AnoMotif *cell, const AnoHarmonicContext *ctx,
         int offset = cell->contour[i];
         int pitch;
         if (i == 0 && slot == 0 && pinFirst != ANO_NEAR_NONE) {
-            pitch = pinFirst; // the tied continuation 〜 given, not chosen
+            pitch = pinFirst; // tied continuation (given)
         } else if (i == peakI && !(recovery && prev != ANO_NEAR_NONE)) {
             pitch = place_snap(guard, strongMask, ctx->chordPcs, ctx->chordPcCount,
                                peak, lo, hi, slot);
         } else if (recovery && prev != ANO_NEAR_NONE) {
-            // a leap resolves by an opposite step; from a chromatic pitch a
-            // true semitone step, never a snapped diatonic overshoot
+            // leap recovery: opposite step (semitone if chromatic)
             pitch = ano_diatonic_shift(mscale, prev, recovery);
             for (int k = 1; k <= 2; ++k) {
                 int p = prev + recovery * k;
@@ -255,8 +254,7 @@ static uint32_t mel_place(const AnoMotif *cell, const AnoHarmonicContext *ctx,
             }
         }
         if (guard && !(lo <= pitch && pitch <= hi)) {
-            // re-enter by stepping to the window's nearest scale tone; an
-            // octave fold would manufacture an unseen plunge
+            // step to nearest in-window scale tone
             int step = pitch > hi ? -1 : 1;
             pitch = pitch > hi ? hi : lo;
             while (!ano_scale_contains(mscale, pitch))
@@ -269,7 +267,7 @@ static uint32_t mel_place(const AnoMotif *cell, const AnoHarmonicContext *ctx,
         if (i == lastIndex && prev != ANO_NEAR_NONE) {
             int d = pitch - prev;
             if ((d < 0 ? -d : d) > 5) {
-                // bars never end mid-leap: contract to a step that holds the frame
+                // contract final leap to a step
                 int contracted = ano_diatonic_shift(mscale, prev, pitch > prev ? 1 : -1);
                 if (guard && (strongMask >> slot & 1u)
                     && guard_recovery_collides(guard, slot, contracted)) {
@@ -292,8 +290,7 @@ static uint32_t mel_place(const AnoMotif *cell, const AnoHarmonicContext *ctx,
     return cell->n;
 }
 
-// Fragmentary introduction: the first half, its tail nudged to a hanging
-// 2^/7^ 〜 standing down where the nudge would leap or break the frame.
+// First half; nudge tail to hanging 2^/7^ (stand down on leap/frame break).
 static uint32_t mel_introduce(const AnoMotif *motif, const AnoHarmonicContext *ctx,
                               AnoScale mscale, const AnoGenParams *params,
                               const AnoMelodyState *state, int lo, int hi,
@@ -409,7 +406,7 @@ static bool mel_anacrusis(AnoMusicEvent *events, uint32_t *eventCount,
         return false;
     uint8_t nextPcs[5];
     ano_chord_pitch_classes(ctx->nextChord, ctx->scale, nextPcs);
-    uint8_t goalPc = nextPcs[1]; // the 3rd: the sweet imperfect consonance
+    uint8_t goalPc = nextPcs[1]; // the 3rd
     int land = nearest_pc_pitch(&goalPc, 1, target->core.pitch, lo, hi);
     int d = land >= (int)target->core.pitch ? 1 : -1;
     int run[3];
@@ -455,8 +452,7 @@ static bool mel_anacrusis(AnoMusicEvent *events, uint32_t *eventCount,
     return true;
 }
 
-// C1 parallel doubling: a diatonic 3rd below, a 6th where the 3rd is not a
-// chord tone on a strong slot; unfit notes go undoubled.
+// C1 parallel doubling: diatonic 3rd below (6th if 3rd not chord tone on strong); skip unfit.
 static uint32_t mel_double_line(const AnoMusicEvent *events, uint32_t count,
                                 const AnoHarmonicContext *ctx, AnoMeter meter,
                                 uint32_t strongMask, AnoMusicEvent *out)
@@ -778,8 +774,7 @@ void ano_generate_melody(const AnoHarmonicContext *ctx, AnoMeter meter,
                                        : ctx->scale;
     bool faithful = false;
 
-    // B2 period answer: the consequent replays the antecedent's bar verbatim,
-    // standing down if the window moved or the frame would break.
+    // B2 period answer: replay antecedent bar; stand down if window/frame breaks.
     AnoPlacedNote placed[ANO_MOTIF_MAX];
     uint32_t placedN = 0;
     int anchor = 0;
@@ -837,8 +832,7 @@ void ano_generate_melody(const AnoHarmonicContext *ctx, AnoMeter meter,
         }
     }
 
-    // D1: host a pending tie by pinning the downbeat pick; a pin that would
-    // land afterbeat perfects against the last strong pair stands down.
+    // D1: pin pending tie on downbeat; stand down if afterbeat perfects vs last strong pair.
     int pin0 = ANO_NEAR_NONE;
     if (state->pendingTie != ANO_NEAR_NONE
         && lo <= state->pendingTie && state->pendingTie <= hi) {

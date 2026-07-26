@@ -2,9 +2,9 @@
 
 Remediation map for the 2026-07-21 census of `docs/BUGS.md`. Active defects live in `docs/BUGS.md`. Retired defects, fix records, and campaign history live in `docs/BUGS_DONE.md`.
 
-As of 2026-07-26 the board is **139 fixed of 151 tallied**, with **11 open** and **1 wontfix**. The systemic swoops named below are largely spent. The last three product-decision blockers are closed 〜 fix records in `docs/BUGS_DONE.md`; nothing open waits on a contract choice.
+As of 2026-07-26 the board is **139 fixed of 151 tallied**, with **11 open** and **1 wontfix**. Systemic swoops below are largely spent. Last three product-decision blockers closed; fix records in `docs/BUGS_DONE.md`.
 
-Open lines in `docs/BUGS.md` are unfinished code. Fixes below key only those `file:line` entries 〜 open does not mean undecided.
+Open lines in `docs/BUGS.md` are unfinished code. Fixes below key only those `file:line` entries.
 
 
 ## Accounting
@@ -29,7 +29,7 @@ The Fixed column in the bucket table is the **2026-07-24 one-off snapshot** (36 
 
 ## Fell-swoop buckets
 
-Disciplines that retire findings together. Per-key ledgers from the 2026-07-24 snapshot are retired: every verified key from that pass is in `docs/BUGS_DONE.md` or the active `docs/BUGS.md` board. The table and the swoop definitions stay as the census taxonomy.
+Disciplines that retire findings together. Per-key ledgers from the 2026-07-24 snapshot are retired into `docs/BUGS_DONE.md` or active `docs/BUGS.md`. Table and swoop definitions remain the census taxonomy.
 
 | Bucket | Verified | Fixed (2026-07-24) | Lead records | Verified/lead overlap | Distinct total |
 |---|---:|---:|---:|---:|---:|
@@ -87,7 +87,7 @@ Swoop: repair locally; pin with a focused regression test.
 
 ## Fine-grained source tags
 
-Tag assignments from the source census (not unique findings). The status tag `pending-design-decision` once marked five entries; those retired write-ups live under Settled open decisions in `docs/BUGS_DONE.md`. Not counted here; the tag currently marks nothing.
+Tag assignments from the source census (not unique findings). `pending-design-decision` once marked five entries; retired write-ups under Settled open decisions in `docs/BUGS_DONE.md`. Not counted here; tag currently marks nothing.
 
 | Source tag | Assignments |
 |---|---:|
@@ -122,7 +122,7 @@ Tag assignments from the source census (not unique findings). The status tag `pe
 
 ## Result-domain rule
 
-Failure modes are values when callers must react differently. Not `Result<T, E>` cosplay 〜 C interfaces that tell the truth.
+Failure modes are values when callers must react differently. Not `Result<T, E>` cosplay. C interfaces that tell the truth.
 
 - `bool` for genuine binary facts: found/not found, empty/nonempty, accepted/backpressure when those are the only outcomes.
 - A domain-local result type when outcomes imply different control flow: retry, degrade, reject, unwind, or abort initialization.
@@ -131,7 +131,7 @@ Failure modes are values when callers must react differently. Not `Result<T, E>`
 - Switch exhaustively without `default`, so adding a code forces every policy site to revisit.
 - Results stay domain-specific; there is no engine-wide error enum.
 
-Collapsed result domains cover the census's big families in practice: `ANO_FATAL` fallthrough, partial out-parameters, ownership leaks, retry exhaustion, and OOM mistaken for backpressure.
+Collapsed result domains cover the census's big families: `ANO_FATAL` fallthrough, partial out-parameters, ownership leaks, retry exhaustion, and OOM mistaken for backpressure.
 
 
 ## Fixes for open entries

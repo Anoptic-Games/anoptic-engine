@@ -22,10 +22,7 @@
 #include "vulkan_backend/text_raster.h"
 
 
-// Sole decode of "the global set layout carries binding 13, the task-cull Hi-Z pyramid sampler".
-// in: renderer state; out: combined-image-samplers per global set (0 or 1). Mirrors layouts.c:149's
-// bindingCount, which arms the 14th binding off this same flag; the pool budget and the binding-13
-// write below both read it, so neither can drift from the layout.
+// Binding-13 presence (task-cull Hi-Z sampler): 0 or 1. Mirrors layouts.c:149 bindingCount; pool + write below both read it.
 static inline uint32_t global_set_samplers(const RendererState* state)
 {
 	return state->taskCull ? 1u : 0u;
@@ -511,9 +508,7 @@ void updateHiZDescriptorSets(VulkanContext* ctx, RendererState* state)
 
 
 
-// Sole re-point path for the per-frame scene buffers: every set that names the TransformSSBO
-// (global/view, cull, update, scatter, lightsetup, shadowsetup) is written here, so entity growth
-// re-points all of them with one call.
+// Sole TransformSSBO re-point: global/view, cull, update, scatter, lightsetup, shadowsetup. Call on entity growth.
 void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 { // Central to init, must be called on asset uploads.
 
@@ -575,7 +570,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[0].dstSet = rendererState.frames[i].views[0].globalSet;
-		descriptorWrites[0].dstBinding = 0;   // Corresponds to binding in shader.
+		descriptorWrites[0].dstBinding = 0;
 		descriptorWrites[0].dstArrayElement = 0;
 		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		descriptorWrites[0].descriptorCount = 1;
@@ -825,9 +820,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 
         vkUpdateDescriptorSets(ctx->device, 3, lightsetupWrites, 0, NULL);
 
-        // Shadowsetup binding 1 is that same per-frame TransformSSBO. Entity growth recreates the
-        // buffer and re-points descriptors through this function alone, so every set that names it
-        // is written here; updateShadowDescriptorSets writes the same handle to keep its set complete.
+        // Shadowsetup binding 1: same TransformSSBO. Sole re-point on entity growth.
         VkWriteDescriptorSet shadowXformWrite = {};
         shadowXformWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         shadowXformWrite.dstSet = rendererState.frames[i].shadow.setupSet;

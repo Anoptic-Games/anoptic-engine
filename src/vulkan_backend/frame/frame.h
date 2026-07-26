@@ -67,8 +67,7 @@ void ano_collect_pick(uint32_t frameIndex);
 // Discard the in-progress timing window (lighting-mode change).
 void ano_profile_reset_window(void);
 
-// Frames per profiling flush window, shared by the [frame]/[frametime] pair and the [profile] line.
-// 2^7: exactly 1 s of frames at 128 fps, ~2 s at a 60 fps target, ~1 s at 120.
+// Frames per profiling flush window. Shared by [frame]/[frametime] and [profile].
 #define ANO_PERF_WINDOW_FRAMES 128u
 
 // Wall-clock frame-timing tally for one flush window. Zero-init = unseeded (prevUs == 0).

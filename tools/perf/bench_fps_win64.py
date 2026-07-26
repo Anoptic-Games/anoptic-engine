@@ -6,8 +6,8 @@ Siblings: bench_fps_linux.py, bench_fps_macos.py.
 
 Windows:
   - win32 window by PID, borderless resize, MoveWindow
-  - forced + verified foreground (SetForegroundWindow focus-steal-lock workaround; background/occluded mismeasures GPU passes)
-  - per-monitor-DPI-aware-v2: monitor rects/sizes are PHYSICAL pixels (scaled desktop otherwise reports logical sizes)
+  - forced + verified foreground (SetForegroundWindow focus-steal-lock workaround)
+  - per-monitor-DPI-aware-v2: monitor rects/sizes are PHYSICAL pixels
   - 'M' menu toggle as Win32 key message with real scancode
 
 Log lines (logs/<stamp>_ano.log), flushed every ANO_PERF_WINDOW_FRAMES (128):
@@ -16,8 +16,8 @@ Log lines (logs/<stamp>_ano.log), flushed every ANO_PERF_WINDOW_FRAMES (128):
   [profile mode=... res=WxH] total=<ms> (frusta N/42) ... swap=<MiB>
     res= = realized swapchain extent (render column). Older exes tabulate "?"
 
-Sweep from measured primary monitor: ladder filtered, topped by display-native.
-One row per point: avgFPS/p50 over [frame] samples, 1%/0.1% lows (1000/p99, 1000/p999, each median across [frametime] windows), maxms (run worst frame), then GPU-pass columns. Rows paste into docs/benchmarks/template.md.
+Sweep: ladder filtered to primary monitor, topped by display-native.
+Row: avgFPS/p50, 1%/0.1% lows (1000/p99, 1000/p999), maxms, GPU-pass columns. Paste into docs/benchmarks/template.md.
 
 Requires: Windows, pywin32. Dev-only.
 
@@ -30,8 +30,7 @@ Examples:
 """
 import argparse, ctypes, os, re, subprocess, sys, time
 
-# Per-monitor-DPI-aware v2 (-4) before win32: monitor rects are PHYSICAL px
-# (otherwise a scaled desktop reports logical sizes and you mislabel the render resolution).
+# Per-monitor-DPI-aware v2 (-4) before win32: monitor rects are PHYSICAL px.
 try: ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 except Exception:
     try: ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -73,8 +72,7 @@ def _find_window(pid):
 
 
 def _bring_to_front(hwnd):
-    """Defeat SetForegroundWindow lock (synthetic ALT), then confirm front.
-    A background/occluded window mismeasures the GPU passes -- never trust a row that isn't front."""
+    """Defeat SetForegroundWindow lock (synthetic ALT), then confirm front."""
     for _ in range(5):
         win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
         win32api.keybd_event(0x12, 0, 0, 0)                            # ALT down

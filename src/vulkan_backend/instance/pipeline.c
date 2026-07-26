@@ -38,9 +38,8 @@ static FILE* openEngineFile(const char* relative)
 	return fopen(path, "rb");
 }
 
-// inv: false leaves *buffer inert ({NULL, 0}) on every arm 〜 callers unwind without re-inerting
-// inv: size is ftell's long narrowed to uint32_t 〜 callers ship sub-4GiB assets; a larger file is
-//      out of contract, not detected
+// inv: false leaves *buffer inert ({NULL, 0}) on every arm
+// inv: size is ftell's long as uint32_t; >4GiB out of contract, undetected
 bool loadFile(const char* filename, struct Buffer* buffer)
 {
 	*buffer = (struct Buffer){0};
@@ -333,8 +332,7 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 
 		if (state->prototypes[i].implementations != NULL)
 		{
-			// Dissolve the pair count-first, mirroring the builders' commit-last: no observable
-			// point has implementationCount > 0 beside an array that is gone.
+			// Count-first: zero implementationCount before free
 			uint32_t count = state->prototypes[i].implementationCount;
 			state->prototypes[i].implementationCount = 0;
 			for (uint32_t j = 0; j < count; ++j)

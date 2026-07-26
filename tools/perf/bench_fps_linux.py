@@ -84,7 +84,7 @@ def _find_window(pid):
 
 
 def _strip_decorations(wid):
-    # Motif: decorations=0 -> borderless, so windowsize is the render size.
+    # Motif decorations=0 -> borderless; windowsize = render size.
     if shutil.which("xprop"):
         _run(["xprop", "-id", wid, "-f", "_MOTIF_WM_HINTS", "32c",
               "-set", "_MOTIF_WM_HINTS", "2, 0, 0, 0, 0"])
@@ -97,7 +97,7 @@ def _resize(wid, w, h, sync):
 
 
 def _bring_to_front(wid):
-    """Force foreground and confirm. A background/occluded window mismeasures the GPU passes -- never trust a row that isn't front."""
+    """Force + confirm foreground."""
     have_wmctrl = shutil.which("wmctrl") is not None
     for _ in range(5):
         _run(["xdotool", "windowactivate", "--sync", wid])
@@ -111,10 +111,10 @@ def _bring_to_front(wid):
 
 
 def _toggle_menu(wid):
-    # Focus, then XTEST 'm' (real event; GLFW ignores XSendEvent synthetics).
+    # Focus, then XTEST 'm' (GLFW ignores XSendEvent synthetics).
     _run(["xdotool", "windowfocus", "--sync", wid])
     if _run(["xdotool", "getwindowfocus"]) != wid:
-        return  # focus refused: skip rather than type 'm' into whatever IS focused
+        return  # focus refused: skip
     _run(["xdotool", "key", "--clearmodifiers", "m"])
 
 
@@ -137,7 +137,7 @@ def _median(a):
 
 
 def _warmup_cut(fps, seconds=WARMUP_S):
-    # Cut by elapsed time (window cadence scales with fps).
+    # Cut by elapsed time.
     t, k = 0.0, 0
     while k < len(fps) and t < seconds:
         t += (WINDOW_FRAMES / fps[k]) if fps[k] > 0 else seconds
@@ -258,8 +258,7 @@ def main():
     if not os.path.exists(exe):
         sys.exit(f"exe not found: {exe} (build it, e.g. the Release preset)")
     env = dict(os.environ)
-    # GLFW 3.4 prefers native Wayland when WAYLAND_DISPLAY is set; hide it so the
-    # engine comes up as an Xwayland client xdotool can drive (--env can restore).
+    # Drop WAYLAND_DISPLAY -> Xwayland (xdotool). --env can restore.
     env.pop("WAYLAND_DISPLAY", None)
     env.update(ENGINE_DEFAULTS)                  # harness defaults over ambient
     for kv in args.env:                          # --env wins over defaults

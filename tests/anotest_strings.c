@@ -394,11 +394,7 @@ static void test_sid(void)
           "SID32: usable as an array size");
 }
 
-// Collation of cased letters that reach their weights through a decomposition. A case pair the
-// module itself maps must stay a case pair everywhere: equal at the base level, adjacent under
-// sort, and in the same script band. Controls pin a healthy decomposing pair (O-caron), the case
-// table, an NFD sequence, and four case mappings that cross a block boundary, so neither a
-// weakened base-equality nor an over-broad table sweep can pass.
+// Case pairs via decomposition: O-caron control, ezh-caron, NFD, cross-block maps.
 static void test_collation_case_pairs(void)
 {
     anostr_t EZH_UP  = anostr_lit("\xC7\xAE");      // U+01EE

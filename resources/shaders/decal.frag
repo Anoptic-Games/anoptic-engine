@@ -1,10 +1,9 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-// SKELETON 〜 not in the CMakeLists shader manifest, not loaded by any pipeline.
-// Documents the DECAL DRAW STAGE fragment half (PIPELINE_DECAL). It reconstructs the
-// surface under the projector volume (depth read or forward UV), samples the decal
-// texture layer, and blends with the record's fade. Paired with decal.vert.
+// SKELETON: not in CMakeLists shader manifest, not loaded by any pipeline.
+// PIPELINE_DECAL frag: reconstruct surface (depth or UV), sample decal layer, blend fade.
+// Pair: decal.vert.
 
 struct DecalRecord {
     mat4 localTransform;

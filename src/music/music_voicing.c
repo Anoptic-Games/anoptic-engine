@@ -26,14 +26,10 @@ AnoVoicingConfig ano_voicing_config_default(void)
 
 typedef struct Cand { int p[MAX_VOICES]; } Cand;
 
-// out[] of ano_voice_chord is declared int[6] in music_theory.h; the final copy walks
-// Cand.p over the same slots, so the two extents may not drift.
+// Cand.p and ano_voice_chord out[6] share extent
 _Static_assert(MAX_VOICES == 6, "Cand.p and ano_voice_chord's out[6] index the same slots");
-
-// Candidate pc multisets in preference order (voice_pc_options): doubling
-// root-then-fifth (never the third); dropping fifth-then-root; at most two.
-// voices in [1, MAX_VOICES] by the caller's ingress; any pcCount 〜 a row fills at most
-// voices slots. Returns 0 only for pcCount == 0: zero options, the caller places nothing.
+// pc multisets: double root-then-fifth (never third); drop fifth-then-root; at most two.
+// Row fills <= voices slots. Returns 0 iff pcCount == 0.
 static uint32_t pc_options(const uint8_t *pcs, uint32_t pcCount, uint32_t voices,
                            uint8_t out[MAX_OPTIONS][MAX_VOICES])
 {
@@ -72,8 +68,6 @@ static uint32_t pc_options(const uint8_t *pcs, uint32_t pcCount, uint32_t voices
                 count++;
         }
     }
-    // count == 0 only when pcCount == 0: k = 0 always doubles pcs[0] otherwise, and the
-    // drop branch always trims to exactly voices.
     return count;
 }
 
@@ -107,13 +101,9 @@ static double voicing_cost(const int *cand, uint32_t n, const int *prev, uint32_
     return (double)movement + topSmoothness + perVoiceExcess;
 }
 
-// Inputs: chordPcs/pcCount pitch classes; prev/prevLen the previous voicing (prevLen 0 =
-// none); cfg, NULL taking the default 〜 voices past MAX_VOICES clamp, zero voices place
-// nothing. Outputs: out[0..V-1], *outCost when non-NULL, V
-// returned (0 when nothing places). Invariant: the candidate table is call-transient
-// scratch 〜 candCount starts at 0 every call and bounds every read, so no element read
-// here was written by an earlier call. One instance per composing thread, no state crosses
-// calls or threads, so a thread's results depend only on its own arguments.
+// Inputs: chordPcs/pcCount; prev/prevLen (0 = none); cfg (NULL = default). Voices > MAX_VOICES clamp.
+// Outputs: out[0..V-1], *outCost if non-NULL, V (0 if nothing places).
+// Invariant: cands is call-transient thread-local scratch; no state across calls.
 uint32_t ano_voice_chord(const uint8_t *chordPcs, uint32_t pcCount,
                          const int *prev, uint32_t prevLen,
                          const AnoVoicingConfig *cfg, int out[6], double *outCost)
@@ -121,8 +111,7 @@ uint32_t ano_voice_chord(const uint8_t *chordPcs, uint32_t pcCount,
     AnoVoicingConfig def = ano_voicing_config_default();
     if (!cfg)
         cfg = &def;
-    // ingress: every scratch extent and the caller's out[6] are MAX_VOICES wide, and the
-    // cost and copy stages index [V - 1], so V enters in [1, MAX_VOICES] or not at all
+    // V in [1, MAX_VOICES] or return 0
     if (cfg->voices == 0u)
         return 0;
     const uint32_t V = cfg->voices < MAX_VOICES ? cfg->voices : MAX_VOICES;
@@ -130,8 +119,7 @@ uint32_t ano_voice_chord(const uint8_t *chordPcs, uint32_t pcCount,
     uint8_t options[MAX_OPTIONS][MAX_VOICES];
     uint32_t optCount = pc_options(chordPcs, pcCount, V, options);
 
-    // call-transient scratch, one instance per composing thread; ~6 KiB, too fat for
-    // the audio-callback stack
+    // thread_local: ~6 KiB, too fat for the audio-callback stack
     static thread_local Cand cands[MAX_CANDS];
     uint32_t candCount = 0;
 

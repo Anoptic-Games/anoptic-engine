@@ -69,7 +69,7 @@ ano_fspath ano_fs_userpath(void)
     return result;
 }
 
-// Sets CWD to ano_fs_gamepath() so relative asset loads resolve. Output: true on success.
+// Sets CWD to ano_fs_gamepath(). Output: true on success.
 bool ano_fs_chdir_gamepath(void)
 {
     ano_fspath dir = ano_fs_gamepath();
@@ -77,8 +77,7 @@ bool ano_fs_chdir_gamepath(void)
 }
 
 // Output: 0 when `path` is a directory afterwards, -1 otherwise.
-// EEXIST is only success for a real directory: a file or dangling symlink squatting the
-// name would hand callers a path every create under it rejects with ENOTDIR.
+// EEXIST succeeds only if path is a real directory.
 int fs_mkdir(const char *path)
 {
     if (mkdir(path, 0755) == 0)

@@ -435,10 +435,8 @@ static bool bake_pack_glyph(mi_heap_t *scratch, StreamVec *stream, const BakeCon
 
 /* Kern extraction */
 
-// Per-face GPOS PairPos into shared dense matrix, compact to key-sorted pairs on caller heap.
-// Hands the block back through *outPairs/*outCount, total on every path (NULL/0 unless pairs exist);
-// the caller owns it and publishes it. Missing GPOS -> skip face. Malformed -> warn, keep any partial
-// dense already written. OOM only hard error. Oversized bakes (>1024 slots) skip.
+// Per-face GPOS PairPos -> dense matrix -> key-sorted pairs on caller heap.
+// *outPairs/*outCount total every path. Missing GPOS skip. Malformed warn+partial. OOM hard. >1024 skip.
 
 static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *glyphs,
                       uint32_t glyphCount, FT_Face *slotFace, const uint32_t *slotCp,
@@ -506,9 +504,9 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
 
 /* Bake entry */
 
-// Module thread. Scratch for temps; result blobs on caller heap.
+// Module thread. Scratch for temps. Result blobs on caller heap.
 // Per glyph: load outline -> decompose -> fill-right -> monotonize -> pack. Then GPOS kern.
-// Total on *out: every failure return leaves it zeroed with no caller-heap block live.
+// Failures leave *out zeroed with no caller-heap block live.
 
 int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
                               mi_heap_t *heap, AnoFontBake *out)
@@ -528,16 +526,16 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
     if (glyphCount > 4096u)
         return EINVAL;
 
-    // Caller-heap blobs, inert until the single publish below; fail: discharges them.
+    // Caller-heap blobs inert until publish. Fail discharges them.
     AnoGlyphEntry *glyphs = NULL;
     AnoGlyphRange *map = NULL;
     uint32_t      *points = NULL;
     AnoKernPair   *kerns = NULL;
     uint32_t       kernCount = 0;
     StreamVec      stream = { 0 }; // scratch-backed
-    int            rc = ENOMEM;    // arms refine; ENOMEM is the default
+    int            rc = ENOMEM;    // arms refine. ENOMEM is the default
 
-    // First acquisition: every arm below is inside this heap's scope, so no goto skips its init.
+    // First acquisition. Arms below stay in this heap's scope.
     mi_heap_t *scratch LOCALHEAPATTR = mi_heap_new();
     if (scratch == NULL)
         goto fail;
@@ -679,11 +677,8 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
     out->upem       = (uint32_t)metricsFace->units_per_EM;
     return 0;
 
-// Failure only; the success return is above. mi_free is null-safe and heap-agnostic (the block
-// carries its own segment), so an unacquired blob discharges as a no-op. Owns exactly the four
-// caller-heap blobs, none of them published: the publish above runs after the last arm.
-// Deliberately not ours: the scratch heap and everything on it (LOCALHEAPATTR releases it), and
-// *out, which stays zeroed from the memset because nothing writes it before the publish.
+// Fail path. Discharge unpublished caller-heap blobs (glyphs/map/points/kerns). mi_free null-safe.
+// Scratch via LOCALHEAPATTR. *out stays zeroed.
 fail:
     mi_free(glyphs);
     mi_free(map);

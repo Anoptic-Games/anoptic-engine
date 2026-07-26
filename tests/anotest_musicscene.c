@@ -93,7 +93,7 @@ static void record(Script *s, int soundingBar, const AnoAudioCommand *cmd)
         s->cue[s->n++] = (Cue){ composing_bar(soundingBar), *cmd };
 }
 
-// Rebuild engine on game thread from save (too slow for the callback).
+// Rebuild engine from save on the game thread.
 static AnoMusicEngine *reconstruct(const AnoMusicConfig *cfg, uint64_t seed,
                                    const Script *s, int toBar)
 {
@@ -107,7 +107,7 @@ static AnoMusicEngine *reconstruct(const AnoMusicConfig *cfg, uint64_t seed,
                 ano_music_apply_command(e, &s->cue[i].cmd);
         ano_music_advance_bar(e, &sink);
     }
-    // Cue at toBar is pending for the next bar 〜 apply after the loop.
+    // Apply pending toBar cue after the loop.
     for (uint32_t i = 0; i < s->n; ++i)
         if (s->cue[i].bar == toBar)
             ano_music_apply_command(e, &s->cue[i].cmd);
@@ -350,7 +350,7 @@ int main(int argc, char **argv)
     if (bars >= 8u)
         CHECK(keyArrivals > 0u, "the commanded modulation arrived");
 
-    // Steering displaces cadences; gate only when run is long enough (see musicdrive for deterministic cadence path).
+    // Cadence gate needs enough bars (see musicdrive).
     if (bars >= 16u)
         CHECK(cadences > 0u, "it cadenced, and the game was told");
     else

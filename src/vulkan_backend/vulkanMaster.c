@@ -41,17 +41,12 @@ GpuAllocator textureAllocator;
 
 struct VulkanGarbage vulkanGarbage = { NULL, NULL, NULL}; // THROW OUT WHEN YOU'RE DONE WITH IT
 
-// Set when initVulkan() fails at physical-device selection: no present device can run
-// the renderer (e.g. lavapipe lacks multisampled integer color). Test harnesses read
-// this to SKIP device tests instead of failing them.
+// True when initVulkan failed physical-device selection. Test harnesses SKIP.
 bool g_AnoVkNoSuitableGpu = false;
 
 static GLFWwindow* window;
 
-// Latched when the frame path hits a failure no swapchain recreate can cure (a refused acquire
-// discharge, a refused acquire, a refused presentation). Cleared by initVulkan: the flag describes
-// the live renderer, not the process. Set means drawFrame is closed for business and the window's
-// should-close flag is raised, so main's loop condition retires the renderer on its own terms.
+// Latched on unrecoverable frame failure. Cleared by initVulkan. drawFrame no-ops; window should-close raised.
 static bool renderUnrecoverable = false;
 
 static Monitors monitors =
@@ -128,9 +123,7 @@ void unInitVulkan() // A celebration
 	#endif
 }
 
-// out: true when nothing is open 〜 no window means no loop to keep running, and glfwWindowShouldClose
-// asserts a live handle. Total either side of the renderer's life, so main's loop condition is safe
-// before initVulkan mints the window and after unInitVulkan destroys it.
+// out: true when no window, or glfwWindowShouldClose. Safe before init and after teardown.
 bool anoShouldClose()
 {
 	if (window == NULL) return true;
@@ -176,11 +169,8 @@ void flush_deletion_queue(VulkanContext* ctx, RendererState* state, uint32_t fra
 
 
 
-// in: the site tag of the refusing arm, the VkResult it answered
-// out: renderUnrecoverable latched and the window's should-close flag raised, once per renderer.
-// ANO_FATAL never aborts, so the exit rides main's loop condition: the logic thread joins and
-// unInitVulkan runs in the settled shutdown order. No retry, no recovery 〜 no path in tree
-// re-creates the surface or the device.
+// in: refusing site tag, its VkResult
+// out: renderUnrecoverable latched, window should-close raised (once). Exit via main's loop.
 static void latchRenderUnrecoverable(const char* site, VkResult result)
 {
 	if (renderUnrecoverable) return; // one diagnostic per renderer, not one per frame
@@ -190,12 +180,9 @@ static void latchRenderUnrecoverable(const char* site, VkResult result)
 	glfwSetWindowShouldClose(window, GLFW_TRUE);
 }
 
-// in: this slot's imageAvailable, signalled by the acquire below
-// out: the semaphore unsignalled again on every path 〜 the graphics submit waits it, or the
-// discharge drain does. vkAcquireNextImageKHR demands an unsignalled semaphore with no pending
-// signal (VUID-vkAcquireNextImageKHR-semaphore-01779), and a skipped frame leaves the slot index
-// where it was, so the next drawFrame re-enters the acquire on this very semaphore.
-// A refused drain cannot restore that invariant, so it latches instead of returning quietly.
+// in: this slot's imageAvailable (signalled by the acquire below)
+// out: semaphore unsignalled (graphics submit wait, or drain)
+// Skipped frames re-enter acquire on the same semaphore; refused drain latches.
 static void dischargeAcquire(uint32_t frameIndex)
 {
 	VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
@@ -214,10 +201,8 @@ static void dischargeAcquire(uint32_t frameIndex)
 		latchRenderUnrecoverable("discharge queue idle", idled);
 }
 
-// Invariant: past a successful acquire this slot's imageAvailable carries a signal only the
-// graphics submit consumes, so every exit below the acquire goes through one of two doors 〜
-// `discharge` (nothing submitted: drain the signal, keep the slot) or the presentation tail
-// (submitted: the frame is in flight, the slot advances and its fence gates the next visit).
+// Invariant: after acquire, imageAvailable is consumed by graphics submit or `discharge`.
+// Present path advances the slot; discharge keeps it.
 void drawFrame()
 {
 	if (renderUnrecoverable) return; // latched: never re-enter the acquire on this renderer
@@ -381,7 +366,7 @@ bool initVulkan() // Initializes Vulkan
 		}
 	}
 	setResolution(initDimensions);
-	setMonitor(-1); // -1 wraps to UINT32_MAX 〜 windowed (structs.h)
+	setMonitor(-1); // -1 wraps to UINT32_MAX (windowed, structs.h)
 	setBorderless(0);
 
     vulkanGarbage.monitors = &monitors;
@@ -397,8 +382,7 @@ bool initVulkan() // Initializes Vulkan
 		return 0;
 	}
 
-	// Post-initWindow: glfwGetMonitors answers NULL/0 before glfwInit, and initWindow owns the
-	// only glfwInit in tree. Window selection is unaffected 〜 initWindow re-queries its own list.
+	// Post-initWindow: enumerate monitors (glfwInit owned by initWindow).
 	enumerateMonitors(&monitors);
 
 	requestPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);

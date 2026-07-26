@@ -41,11 +41,10 @@ bool createCommandPool(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfa
 
 bool createDataBufferShared(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, bool computeShared, VkBuffer* buffer, GpuAllocation* allocation)
 { // computeShared: CONCURRENT graphics+compute, for buffers the async light-cull reads off-queue
-	// Total out-params: every arm below leaves a defined handle and allocation.
+	// Both out-params defined on every arm.
 	*buffer = VK_NULL_HANDLE;
 	*allocation = (GpuAllocation){0};
 
-	// Outlives the vkCreateBuffer call below, which is all the create info borrows it for.
 	uint32_t fams[2] = { ctx->queueFamilyIndices.graphicsFamily, ctx->queueFamilyIndices.computeFamily };
 
 	VkBufferCreateInfo bufferInfo = {};
@@ -54,7 +53,7 @@ bool createDataBufferShared(VulkanContext* ctx, GpuAllocator* allocator, VkDevic
 	bufferInfo.usage = usage;
 	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	if (computeShared)
-	{ // asyncLc is gated on the two families differing, so the index list stays unique
+	{ // unique family indices
 		bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
 		bufferInfo.queueFamilyIndexCount = 2;
 		bufferInfo.pQueueFamilyIndices = fams;
@@ -63,7 +62,7 @@ bool createDataBufferShared(VulkanContext* ctx, GpuAllocator* allocator, VkDevic
 	if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, buffer) != VK_SUCCESS)
 	{
 		ano_log(ANO_ERROR, "Failed to create data buffer!");
-		*buffer = VK_NULL_HANDLE; // a failed create leaves the handle undefined
+		*buffer = VK_NULL_HANDLE;
 		return false;
 	}
 
@@ -98,7 +97,7 @@ bool createUniformBuffers(VulkanContext* ctx, RendererState* state)
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
 			GpuAllocation alloc;
-			// lightcullSet binding 0 is this buffer; the async light-cull dispatch reads it on the compute family.
+			// lightcullSet binding 0; compute reads when asyncLc
 			if (!createDataBufferShared(ctx, &gpuAllocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 				 state->asyncLc, &(rendererState.frames[i].views[v].uniformBuffer), &alloc))
 			{
@@ -218,7 +217,7 @@ bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, V
 	void* mappedMemory = stagingAlloc.mapped;
 	memcpy(mappedMemory, data, bufferSize);
 
-	// Copy to destination. One discharge point: the transient buffer never outlives the call.
+	// Copy to destination
 	bool copied = copyBuffer(ctx, stagingBuffer, dstBuffer, bufferSize);
 	if (!copied)
 	{
@@ -232,7 +231,7 @@ bool stagingTransfer(VulkanContext* ctx, const void* data, VkBuffer dstBuffer, V
 }
 
 VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx)
-{ // Used in init, also external. VK_NULL_HANDLE on failure; nothing is left allocated.
+{ // Used in init, also external. VK_NULL_HANDLE on failure; nothing left allocated.
 	VkCommandBufferAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -241,7 +240,7 @@ VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx)
 
 	VkCommandBuffer commandBuffer;
 	if (vkAllocateCommandBuffers(ctx->device, &allocInfo, &commandBuffer) != VK_SUCCESS)
-	{ // the out-param is undefined on failure, so it never leaves this arm
+	{
 		ano_log(ANO_ERROR, "Failed to allocate a transient command buffer!");
 		return VK_NULL_HANDLE;
 	}
@@ -261,11 +260,10 @@ VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx)
 }
 
 bool endSingleTimeCommandsChecked(VulkanContext* ctx, VkCommandBuffer commandBuffer)
-{ // in: a recording CB from beginSingleTimeCommands. out: false if end/create/submit/wait failed.
-	// The fence and the CB are discharged on every arm.
+{ // in: recording CB from beginSingleTimeCommands. out: false on end/create/submit/wait fail.
+	// Fence + CB freed on every arm.
 	bool ok = vkEndCommandBuffer(commandBuffer) == VK_SUCCESS;
 
-	// fenceLive, not the handle: a failed create leaves the out-param undefined.
 	VkFenceCreateInfo fenceInfo = {};
 	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	VkFence fence = VK_NULL_HANDLE;
@@ -279,7 +277,6 @@ bool endSingleTimeCommandsChecked(VulkanContext* ctx, VkCommandBuffer commandBuf
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &commandBuffer;
 
-		// A rejected submit never signals its fence, so the wait rides the submit's success.
 		ok = vkQueueSubmit(ctx->graphicsQueue, 1, &submitInfo, fence) == VK_SUCCESS;
 		ok = ok && vkWaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
 	}
@@ -328,7 +325,7 @@ bool createCommandBuffer(VulkanContext* ctx, RendererState* state)
 			ano_log(ANO_FATAL, "Failed to allocate command buffers!");
 			return false;
 		}
-		// Async light-cull: uploads + shared compute prelude in their own CB, submitted ahead of main.
+		// Async light-cull prelude CB, submitted ahead of main.
 		if (state->asyncLc
 			&& vkAllocateCommandBuffers(ctx->device, &allocInfo, &(rendererState.frames[i].preludeCommandBuffer)) != VK_SUCCESS)
 		{

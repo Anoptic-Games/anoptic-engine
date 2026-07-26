@@ -52,9 +52,7 @@ static bool feq(double a, double b)
 
 /* Public-API boundary walks */
 
-// The cases below drive anoptic_music.h from the outside: config fields, overrides and the
-// synth seam at the edges of their documented domains. AnoMusicMeaning republishes the engine's
-// choices to gameplay, so its fields are the observable the boundary contracts are asserted on.
+// Public anoptic_music.h walks: config, overrides, synth seam. Assert on AnoMusicMeaning.
 
 typedef struct CadenceWalk
 {
@@ -65,10 +63,8 @@ typedef struct CadenceWalk
     int8_t firstBad;     // first out-of-enum value seen
 } CadenceWalk;
 
-// Walk `bars` bars of an engine built from cfg on the default static path (8-bar phrases,
-// dramaturg off). hasOverride pins cadence_policy to ov before the first bar. plan != NULL
-// compares each flagged bar against plan[(bar / 8) % planCount]; expect >= 0 compares against
-// expect; both are only meaningful for in-domain inputs.
+// Inputs: cfg, optional cadence_policy ov, bars. Default static path, dramaturg off.
+// plan: flagged vs plan[(bar/8)%planCount]; expect>=0: vs expect.
 static CadenceWalk cadence_walk(const AnoMusicConfig *cfg, bool hasOverride, double ov, int bars,
                                 const int8_t *plan, uint32_t planCount, int expect)
 {
@@ -105,7 +101,7 @@ static CadenceWalk cadence_walk(const AnoMusicConfig *cfg, bool hasOverride, dou
     return w;
 }
 
-// Default config plus the melody layer, whose cadence formula is the sink every cadence bar runs.
+// Default config + melody layer (cadence sink).
 static AnoMusicConfig cadence_config(void)
 {
     AnoMusicConfig cfg = ano_music_config_default();
@@ -113,11 +109,8 @@ static AnoMusicConfig cadence_config(void)
     return cfg;
 }
 
-// ano_music_set_override("cadence_policy", v) takes a double, and meaning.cadencePolicy is
-// documented as an AnoCadencePolicy: a value outside the enum may never reach that public field
-// (nor the policy tables behind it). Controls: cadence bars occur without an override, and a
-// legal HALF override rides the same seam end to end and lands verbatim, so neither dropping the
-// override nor rejecting everything can pass.
+// cadence_policy override domain: out-of-enum must not reach meaning.cadencePolicy.
+// Controls: default walk + HALF override land in-enum.
 static void test_cadence_policy_domain(void)
 {
     AnoMusicConfig cfg = cadence_config();
@@ -132,7 +125,7 @@ static void test_cadence_policy_domain(void)
     CHECK(w.flaggedBars >= 1 && w.offPlan == 0, "HALF override lands on every flagged bar");
     CHECK(w.outOfEnum == 0, "HALF override reports only in-enum cadence policies");
 
-    // one past DECEPTIVE: refusing or clamping both satisfy the contract
+    // one past DECEPTIVE
     w = cadence_walk(&cfg, true, 3.0, 24, NULL, 0, -1);
     CHECK(w.cadenceBars >= 1, "policy 3: cadence machinery must not vanish");
     if (w.outOfEnum)
@@ -140,7 +133,7 @@ static void test_cadence_policy_domain(void)
                (int)w.firstBad, w.outOfEnum);
     CHECK(w.outOfEnum == 0, "policy 3: meaning.cadencePolicy stays a valid AnoCadencePolicy");
 
-    // below NONE: passes any one-sided != NONE guard and indexes backwards
+    // below NONE
     w = cadence_walk(&cfg, true, -3.0, 24, NULL, 0, -1);
     CHECK(w.cadenceBars >= 1, "policy -3: cadence machinery must not vanish");
     if (w.outOfEnum)
@@ -149,10 +142,8 @@ static void test_cadence_policy_domain(void)
     CHECK(w.outOfEnum == 0, "policy -3: meaning.cadencePolicy stays a valid AnoCadencePolicy");
 }
 
-// AnoMusicConfig carries cadencePolicies[8] plus cadencePolicyCount: a count past the array it
-// indexes may not reach the policy tables, and meaning.cadencePolicy must stay in enum whatever
-// the count says. Controls: a legal count-4 cycle lands per phrase and the full-capacity count 8
-// is still accepted with every slot read, so clamping below the array cannot pass either.
+// cadencePolicyCount domain vs cadencePolicies[8]. meaning.cadencePolicy stays in-enum.
+// Controls: count 4 and count 8 cycles land per plan.
 static void test_cadence_cycle_count_domain(void)
 {
     static const int8_t CYCLE4[8] = {
@@ -186,8 +177,7 @@ static void test_cadence_cycle_count_domain(void)
     CHECK(w.offPlan == 0, "count 8: every flagged bar reports its phrase's planned policy");
     CHECK(w.outOfEnum == 0, "count 8: only in-enum cadence policies reported");
 
-    // count 12 over a fully legal array: phrases past 7 index past cadencePolicies[8], so the
-    // plan itself is deliberately not asserted here, only the enum domain of the meaning
+    // count 12: past cadencePolicies[8]; assert enum domain only
     for (int i = 0; i < 8; ++i)
         cfg.cadencePolicies[i] = ALL_HALF[i];
     cfg.cadencePolicyCount = 12;
@@ -244,11 +234,8 @@ static ModeWalk mode_walk(int cfgMode, bool useMapper, bool hasOverride, double 
     return w;
 }
 
-// The mode value reaches the engine through two public seams, cfg.mode and the "mode" override,
-// and is republished in meaning.mode against its documented AnoMode contract. Neither seam may
-// carry a value outside the enum into the scale tables or back out to gameplay. Controls: a legal
-// config mode and a legal override both ride their seam verbatim, so dropping a seam or rejecting
-// everything cannot pass.
+// mode domain via cfg.mode and "mode" override; meaning.mode stays in AnoMode.
+// Controls: DORIAN config + LYDIAN override land verbatim.
 static void test_mode_domain(void)
 {
     ModeWalk w = mode_walk(ANO_MODE_DORIAN, false, false, 0.0, ANO_MODE_DORIAN);
@@ -273,7 +260,7 @@ static void test_mode_domain(void)
                w.firstBad, w.outOfEnum);
     CHECK(w.outOfEnum == 0, "override 99: meaning.mode stays a valid AnoMode");
 
-    // override seam, below the enum: a negative that survives an unsigned cast lands far away
+    // override seam, below enum
     w = mode_walk((int)ANO_MODE_NONE, true, true, -3.0, -1);
     if (w.outOfEnum)
         printf("  (override -3 walk reported out-of-enum meaning.mode %d on %d bars)\n",
@@ -289,8 +276,7 @@ typedef struct MotifWalk
     bool     created;
 } MotifWalk;
 
-// A well-formed 4-note arch cell: slots and durations inside a 4/4 bar, diatonic contour
-// offsets, n == 4.
+// 4-note arch cell, n == 4, in-bar rhythm + diatonic contour.
 static AnoMotif motif_hero_cell(void)
 {
     static const int RH[8] = { 0, 4, 4, 2, 6, 2, 8, 4 };
@@ -305,10 +291,8 @@ static AnoMotif motif_hero_cell(void)
     return m;
 }
 
-// poisonN 0 keeps the authored count, else it overwrites motif.n. The cell's first four
-// rhythm/contour entries are always well-formed, so the walk isolates the count domain.
-// Leniency 1.0 plus a standing request keeps the director's forced arm live at every phrase
-// boundary.
+// Inputs: poisonN (0 = keep n, else overwrite), bars.
+// Isolates motif.n domain; leniency 1.0 + standing request forces motif arm.
 static MotifWalk motif_walk(uint32_t poisonN, int bars)
 {
     static AnoMusicBar bar; // ~9 KB: keep it off the walk's frame
@@ -340,11 +324,8 @@ static MotifWalk motif_walk(uint32_t poisonN, int bars)
     return w;
 }
 
-// AnoMotif carries rhythm and contour arrays of ANO_MOTIF_MAX alongside an authored count n, and
-// n is what every transform and realizer iterates while writing those fixed-width buffers. A
-// count past the arrays must not reach them, and the engine must keep composing rather than going
-// silent. Control: a well-formed 4-note cell creates, composes and is actually stated, so a fix
-// that refuses authored motifs or clamps below the buffers they fit in cannot pass.
+// motif.n past ANO_MOTIF_MAX must not overrun rhythm/contour; engine keeps composing.
+// Control: valid 4-note cell creates, emits, and states.
 static void test_motif_count_domain(void)
 {
     enum { BARS = 32 };
@@ -355,12 +336,12 @@ static void test_motif_count_domain(void)
     CHECK(w.barsWithNotes >= BARS / 2, "notes keep arriving across the walk");
     CHECK(w.statedBars > 0, "the authored motif is stated");
 
-    // one past the buffers: a single-element overrun in the transforms and realizers
+    // one past the buffers
     w = motif_walk((uint32_t)ANO_MOTIF_MAX + 1u, BARS);
     CHECK(w.created, "n = MAX+1: engine still creates");
     CHECK(w.notes > 0, "n = MAX+1: the clamped engine still emits bars, not silence");
 
-    // a count that runs a megabyte past every ANO_MOTIF_MAX-wide sink
+    // n = 1<<20 past ANO_MOTIF_MAX sinks
     w = motif_walk(1u << 20, BARS);
     CHECK(w.created, "n = 1<<20: engine still creates");
     CHECK(w.notes > 0, "n = 1<<20: the clamped engine still emits bars, not silence");
@@ -375,9 +356,8 @@ typedef struct SeamTally
     bool     plumbingOk;  // score API calls all succeeded
 } SeamTally;
 
-// Drives the real seam: ano_music_advance_bar produces, ano_synth_score_* consumes 〜 the same
-// AnoMusicBar payload the live pump hands the synth. hot pins velocity_center to 150 through the
-// public override.
+// advance_bar -> ano_synth_score_* on the live AnoMusicBar path.
+// hot: velocity_center override 150.
 static void seam_drive(uint32_t bars, bool hot, SeamTally *out)
 {
     *out = (SeamTally){ .plumbingOk = true };
@@ -427,10 +407,8 @@ static void seam_drive(uint32_t bars, bool hot, SeamTally *out)
     ano_music_destroy(eng);
 }
 
-// AnoNoteEvent documents velocity 1..127 and pitch 0..127, and the synth renders amplitude
-// trusting that range, so every composer event crossing into the synth must honor it 〜 including
-// under a velocity_center override the public control plane accepts. Control: the same span with
-// default dynamics stays in contract with the arp lane live, so muting the arp cannot pass.
+// Composer events at synth seam: velocity 1..127, pitch 0..127 (incl. hot velocity_center).
+// Control: default dynamics + arp live stay in contract.
 static void test_synth_seam_event_ranges(void)
 {
     const uint32_t bars = 16u;
@@ -519,8 +497,7 @@ typedef struct DetSpanJob
     uint64_t h;
 } DetSpanJob;
 
-// det_run_span on a thread that has never composed before: a first-touch thread must reach the
-// same stream as the main thread, so no per-thread scratch may carry state in.
+// First-touch thread: det_run_span must match main-thread stream.
 static void *det_span_thread(void *arg)
 {
     DetSpanJob *j = arg;
@@ -534,8 +511,7 @@ typedef struct DetDisturber
     uint64_t    seed;
 } DetDisturber;
 
-// The off-thread seek half: an independent engine advancing on its own thread while the caller
-// keeps composing, the shape the hosting doc prescribes.
+// Concurrent disturber: independent engine advances while caller composes.
 static void *det_disturb(void *arg)
 {
     DetDisturber *d = arg;
@@ -548,11 +524,8 @@ static void *det_disturb(void *arg)
     return NULL;
 }
 
-// The header promises the same config, seed and bar yield a byte-identical result, which makes
-// an engine's output independent of every other engine in the process. Controls: a solo replay
-// reproduces itself, the same span composed entirely on a foreign thread matches the main-thread
-// run (per-thread scratch carrying state would fail it), and a different seed still yields a
-// different stream (a composer flattened to a constant would pass every equality above).
+// Same (config, seed, bar) -> byte-identical across engines/threads.
+// Controls: solo replay, foreign-thread span, different seed diverges.
 static void test_engine_instance_independence(void)
 {
     size_t ss = ano_music_snapshot_size();
@@ -682,7 +655,7 @@ int main(void)
     }
 
     // --- gauss (cached pair) ---
-    // V[1] is sin-leg; ucrt vs glibc 2 ULP 〜 exact per-platform vectors.
+    // V[1] is sin-leg; ucrt vs glibc 2 ULP. Exact per-platform vectors.
     ano_music_rng_seed(&r, 99);
     {
 #ifdef _WIN32
@@ -3502,7 +3475,7 @@ static const LintVio L4_IMIT[] = { { "imitation", 8 } };
             BAD[0].core.pitch = 25;   // bass below its floor, chromatic, degree a lie
             BAD[1].core.pitch = 99;   // a drum off the map
             BAD[3].core.pitch = 90;   // pad above its ceiling, chromatic, non-chord
-            BAD[6].core.start = 0.55; // off the grid 〜 its doubling loses its source
+            BAD[6].core.start = 0.55; // off the grid: doubling loses its source
             BAD[12].degree = 7;       // an annotation that contradicts the scale
             BAD[30].core.tie = ANO_MUSIC_TIE_IN; // continues a note that never sounded
             BAD[62].core.pitch = 73;             // chromatic, with no licensing role

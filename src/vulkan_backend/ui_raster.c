@@ -121,8 +121,7 @@ static void ui_compose(RendererState* state)
         {
             AnoUiPaint pa = blk->paints[i];
             pa.stopFirst += ns;
-            // Scroll translates the gradient with content: shift the xform origin in
-            // logical space with the authored columns, then the surface fold.
+            // Scroll: shift paint xform origin with content.
             pa.xform[2] -= pa.xform[0] * sx + pa.xform[1] * sy;
             pa.xform[5] -= pa.xform[3] * sx + pa.xform[4] * sy;
             ano_ui_paint_scale(&pa, s);
@@ -138,7 +137,7 @@ static void ui_compose(RendererState* state)
             g.origin[0] = (g.origin[0] + sx) * s;
             g.origin[1] = (g.origin[1] + sy) * s;
             for (int k = 0; k < 4; k++)
-                g.inv[k] /= s; // px -> em shrinks as the glyph grows
+                g.inv[k] /= s; // px -> em
             state->uiPendingGlyphs[ng++] = g;
         }
     }
@@ -277,8 +276,7 @@ void ano_vk_ui_block_set(RendererState* state, uint32_t ui_id, const RenderUiBlo
     state->uiComposeDirty = true;
 }
 
-// Overlay surface scale changed: re-fold the retained logical blocks at the new
-// scale. A pinned self-test canvas stays pinned.
+// Dirty compose on rescale. Pinned canvas stays pinned.
 void ano_vk_ui_rescale(RendererState* state)
 {
     if (state->uiOverlay && state->uiPendingPrims != NULL)
@@ -427,7 +425,7 @@ void ano_vk_ui_write_sets(VulkanContext* ctx, RendererState* state)
             writes[w].pBufferInfo = &infos[w];
         }
         vkUpdateDescriptorSets(ctx->device, 7, writes, 0, NULL);
-        fr->uiTileVersion = 0; // a (re)bound slot buffer holds no tiles yet, force a rebuild
+        fr->uiTileVersion = 0; // force tile rebuild
     }
 }
 

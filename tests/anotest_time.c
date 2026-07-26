@@ -64,7 +64,7 @@ int testTimeStamps() {
 
 /* Resolution tests: assert waits land near target across every scale. */
 
-#define SLEEP_SAMPLES   8   // best-of-N: scheduler hiccups inflate the worst case, not the best
+#define SLEEP_SAMPLES   8   // best-of-N
 #define BUSY_SAMPLES    5
 
 // ano_sleep case: never early (hard), best within ceil. skipCeil drops ceil (macOS nix sandbox).
@@ -72,10 +72,8 @@ int testTimeStamps() {
 //   out: int, 0 pass, 1 fail
 static int sleepCase(uint64_t us, int skipCeil) {
     uint64_t want = us * 1000ULL;                       // ns
-    // Never-early floor: clock quantization only, not Sleep()-style truncation.
     uint64_t floorSlack = want / 100ULL + 20000ULL;     // 1% + 20us
-    // Achievable-resolution ceiling on the best sample.
-    uint64_t ceil = want + (want / 2ULL > 2000000ULL ? want / 2ULL : 2000000ULL);
+    uint64_t ceil = want + (want / 2ULL > 2000000ULL ? want / 2ULL : 2000000ULL); // ceil on best
 
     uint64_t best = UINT64_MAX;
     int early = 0;
@@ -177,7 +175,7 @@ static int testGranularity(void) {
     uint64_t backward = 0;
     for (int i = 0; i < GRAIN_SAMPLES; i++) {
         uint64_t now = ano_timestamp_ticks();
-        uint64_t d = now - prev;    // monotonic counter, so the delta never underflows
+        uint64_t d = now - prev;    // ticks delta
         prev = now;
         if (d != 0 && d < minDelta)
             minDelta = d;

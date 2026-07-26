@@ -21,7 +21,7 @@ case $1 in
     run_tests=0
     ;;
   3)
-    # Headless engine (no GPU; runs in WSL). TESTS=OFF: stale build/Headless cache must not keep ANOPTIC_TESTS=ON.
+    # Headless (no GPU, WSL). TESTS=OFF clears stale cache
     build_type="Release"
     build_dir="Headless"
     toolchain_file="clang-linux-x64.cmake"
@@ -85,7 +85,7 @@ esac
 script_dir=$(dirname "$0")
 toolchain_path="$script_dir/cmake/platforms/${toolchain_file}"
 
-# Platform: macOS uses Nix shell clang when present, else Homebrew LLVM. Other platforms use toolchain files.
+# Platform: Darwin Nix/Homebrew clang, else toolchain file
 if [ "$(uname -s)" = "Darwin" ]; then
     if [ -n "$IN_NIX_SHELL" ] && command -v clang >/dev/null 2>&1; then
         platform_args="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
@@ -107,7 +107,7 @@ fi
 generator_args=""
 if command -v ninja >/dev/null 2>&1; then
     generator_args="-G Ninja"
-    # Reset a build dir whose cache has a different generator or source root.
+    # Wipe cache on generator or source root mismatch
     cache="./build/${build_dir}/CMakeCache.txt"
     src="$(pwd -P)"
     if [ -f "$cache" ] && ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
@@ -131,7 +131,7 @@ cmake --build ./build/${build_dir} --target ano_scrub
 # Build
 cmake --build ./build/${build_dir} --parallel
 
-# Engine-only profiles must produce a binary, fail loudly if Vulkan was missing.
+# Engine profile: require binary (no Vulkan skips it)
 if [ ${run_tests} -eq 0 ] && [ ! -e "./build/${build_dir}/anopticengine" ]; then
     echo "Error: no anopticengine binary was produced." >&2
     echo "CMake found no Vulkan SDK, so the renderer (and the engine target) was skipped" >&2

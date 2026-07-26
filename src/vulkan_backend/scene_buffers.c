@@ -18,9 +18,8 @@
 
 //Init and cleanup functions
 
-// Sole mint point for this file's scene buffers. in: create info, memory props; out: handle, backing
-// allocation. Total out-params: every failure arm leaves VK_NULL_HANDLE + a zeroed allocation, so the
-// cleanup pass's `if (buffer[i])` destroy gate never sees a driver-undefined or already-destroyed handle.
+// Sole mint for this file's scene buffers. in: create info, memory props; out: handle, allocation.
+// Failures leave VK_NULL_HANDLE + zeroed allocation.
 [[nodiscard]] static bool mintSceneBuffer(VulkanContext* ctx, const VkBufferCreateInfo* info,
                                           VkMemoryPropertyFlags props,
                                           VkBuffer* buffer, GpuAllocation* allocation) {
@@ -40,9 +39,7 @@
         vkDestroyBuffer(ctx->device, minted, NULL);
         return false;
     }
-    // A refused bind leaves the buffer created but unbacked while the suballocated mapping still
-    // reads live: every mapped write would land outside what the buffer references. The arena span
-    // is monotonic, so nothing is reclaimed here.
+    // Bind failed: destroy unbacked buffer; arena span unreclaimed.
     if (vkBindBufferMemory(ctx->device, minted, alloc.memory, alloc.offset) != VK_SUCCESS) {
         vkDestroyBuffer(ctx->device, minted, NULL);
         return false;
@@ -392,9 +389,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     return true;
 }
 
-// The pool's refusal rides straight into the two absent-mesh lanes 〜 a chain base becomes
-// AnoRenderableDesc.mesh_index, which becomes slotMeshIdx 〜 so it must be the word both already
-// read as "no geometry", never a slot. The one seam where all three spellings are visible.
+// ANO_MESH_NONE / NO_MESH_INDEX / ANO_RENDER_NO_MESH must be one absent-mesh word.
 _Static_assert(ANO_MESH_NONE == NO_MESH_INDEX && ANO_MESH_NONE == ANO_RENDER_NO_MESH,
                "mesh refusal must spell the absent-mesh word its consuming lanes read");
 
@@ -428,8 +423,7 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
                                                     ctx->transferQueue,
                                                     cubeVertices, 8, cubeIndices, 36);
 
-    // Every unaddressable mesh degrades to this slot, so init without it is a lie: unwind. Covers
-    // both refusal spellings 〜 ANO_MESH_NONE (pool full or transfer failed) and a wrong grant.
+    // Fallback must land at FALLBACK_MESH_INDEX; else unwind.
     if (fallbackMeshIdx != FALLBACK_MESH_INDEX) {
         ano_log(ANO_ERROR, "Fallback mesh was assigned index %u instead of %u!", fallbackMeshIdx, FALLBACK_MESH_INDEX);
         return false;

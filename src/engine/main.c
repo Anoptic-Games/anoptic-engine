@@ -21,7 +21,7 @@
 #include <anoptic_text.h> // logic-side shaping over anoRenderTextBake()
 #include <anoptic_ui.h>
 // Composer runs INSIDE the audio callback (src/music/ANOPTIC_MUSICGEN.md).
-// Logic never touches it 〜 steers over the audio bridge and hears bars as they sound.
+// Logic steers over the audio bridge; never touches the composer.
 #include <anoptic_audio.h>
 #include <anoptic_music.h>
 #include <anoptic_synth.h>
@@ -322,8 +322,8 @@ static AnoRenderSubmitResult submit_menu(AnoRenderBridge* bridge, const AnoFontB
 
 /* Music World */
 
-// Main-thread bring-up before the logic producer; teardown after join 〜 same discipline as the render bridge: no submit may race destruction.
-// Composer lives on the audio thread (mixer callback), two bars ahead of the playhead. Logic reaches music ONLY through the audio bridge.
+// Main-thread bring-up before logic producer; teardown after join. No submit may race destruction.
+// Composer on audio thread (mixer callback), two bars ahead. Logic talks only through the audio bridge.
 
 #define MUSIC_RATE 48000u
 #define MUSIC_SEED 2718u
@@ -357,10 +357,8 @@ static void music_config(AnoMusicConfig *c)
 
 static void music_world_stop(bool drain);
 
-// false -> silent run (non-fatal). Total on failure: every arm unwinds through fail:, so a
-// refused start is indistinguishable from never-started 〜 g_synth/g_music NULL, audio world
-// down, no mixer thread. That is what main's warning and the logic thread's anoAudioBridge()
-// fetch already assume, and it is what makes a retry safe.
+// false -> silent run (non-fatal).
+// Fail path: fail: -> music_world_stop(false). Leaves g_synth/g_music NULL, audio world down.
 static bool music_world_start(void)
 {
 	AnoMusicConfig cfg;
@@ -422,21 +420,14 @@ static bool music_world_start(void)
 	        (unsigned)MUSIC_SEED);
 	return true;
 
-// One discharge owner. Safe from every partial state 〜 see music_world_stop. Drains nothing:
-// transport_start sits below the last arm, so no arm reaches here with a transport running,
-// and the arms above ano_audio_init have no mixer thread to wait on at all. The label stays
-// silent; the one arm needing a diagnostic logs at the arm.
+// Partial-state unwind: music_world_stop(false). No drain (transport never started above).
 fail:
 	music_world_stop(false);
 	return false;
 }
 
-// drain: true when the transport ran 〜 stage IDLE and let the mixer's stop and the voice tails
-//        clear the device before the world goes down. music_world_start's unwind passes false.
-// Total from any partial state: ano_synth_transport_stop takes no NULL and is guarded on
-// g_synth, ano_audio_shutdown no-ops when the audio world never came up, ano_synth_destroy and
-// ano_music_destroy both take NULL. Idempotent 〜 after a refused start both of main's calls
-// find everything already discharged.
+// drain: true -> stop transport + wait for mixer/tails. music_world_start unwind passes false.
+// Total from any partial state. Idempotent.
 static void music_world_stop(bool drain)
 {
 	if (drain && g_synth != NULL) {
@@ -498,7 +489,7 @@ static int music_hit(const MusicLayout* m, float x, float y)
 
 static float clamp01f(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 
-// Filled from AEVT_MUSIC_BAR 〜 arrives on the bar's DOWNBEAT, not when composed, so a cadence lights when audible.
+// Filled from AEVT_MUSIC_BAR on the bar's downbeat (not when composed).
 typedef struct MusicState {
 	float valence, energy, tension; // the three axes, as the panel holds them
 	int   bar, keyTonic, mode, chordDegree;
@@ -650,7 +641,7 @@ static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFont
 		ui_label(&b, bake, anostr_view(tenText, (size_t)tl), 15.0f, tenRow, dim, glyphs,
 		         &gcount);
 
-	// AEVT_MUSIC_BAR readout: composer telling the game what it just played (panel shows; a game would react).
+	// AEVT_MUSIC_BAR readout.
 	char line1[64], line2[64];
 	int n1, n2;
 	if (st->bar >= 0) {
@@ -827,7 +818,7 @@ hudDone:
 	float    vpW = 0.0f, vpH = 0.0f; // last-known logical viewport (RenderSnapshot)
 	float    barVpH = 0.0f;          // bar layout height
 
-	// Music panel: logic owns layout + input; never touches the composer 〜 steers with commands and listens back via the audio bridge.
+	// Music panel: layout + input. Steers via commands; listens on the audio bridge.
 	AnoAudioBridge* ab = anoAudioBridge(); // NULL if music_world_start failed
 	MusicState mus = { .valence = 0.30f, .energy = 0.35f, .tension = 0.20f, .bar = -1 };
 	bool musicVisible = false, musicDirty = false, affectDirty = false, flashOn = false;
@@ -1132,14 +1123,15 @@ int main()
                 mainStack >> 10, (size_t)ANO_THREAD_STACK_SIZE >> 10);
 
 #ifndef HEADLESS_BUILD
-    // GLFW pins window/events to the main thread (mandatory on macOS). Vulkan + GLFW run here. initVulkan creates the bridge before the producer starts, with no readiness handshake.
+    // GLFW + Vulkan on main (window/events pinned; mandatory on macOS).
+    // initVulkan creates the bridge before the producer; no readiness handshake.
     if (!initVulkan())
     {
         ano_log(ANO_FATAL, "Vulkan initialization failed.");
         return -1;
     }
 
-    // Audio world before the producer exists 〜 same ordering as the render bridge: nothing may submit into a bridge being destroyed. false -> silent run.
+    // Audio world before the producer. false -> silent run.
     if (!music_world_start())
         ano_log(ANO_WARN, "Music: the audio world did not come up; running silent.");
 

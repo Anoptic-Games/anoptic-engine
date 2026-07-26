@@ -4,9 +4,8 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // UI per-tile prim lists: CPU-coarse stage of the scaling ladder (ui-render.md §3.7).
-// Dense tilesX*tilesY grid of 8px tiles; each prim scatters into overlapping tiles
-// (counting sort) so the GPU walks only a tile's prims. Runs at compose cadence.
-// Solid bit = prim fully covers the tile 〜 GPU skips SDF, takes flat fill. Pure, any thread.
+// Dense tilesX*tilesY grid of 8px tiles. Counting-sort scatter into overlapping tiles.
+// Solid bit = full tile cover -> GPU flat fill (skip SDF). Pure, any thread. Compose cadence.
 //
 // PERF TODO (ui-render.md §3.7.3-4, deferred, measurement-gated):
 //  - opaque-truncation: opaque solid OVER resets its tile list to just it (bounds list depth)
@@ -21,7 +20,7 @@
 /* AABB */
 
 // In: prim (identity inv, v0). Out: padded pixel AABB (half+1px AA; SHADOW +3*sigma+1px).
-// Matches ui_box_hits / ui_pending_bounds so tiles cover exactly what the brute cull accepts.
+// Matches ui_box_hits / ui_pending_bounds.
 void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2])
 {
     float pad = p->kind == ANO_UI_SHADOW ? 3.0f * p->param[0] + 1.0f : 1.0f;
@@ -31,9 +30,8 @@ void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2])
     outMax[1] = p->origin[1] + p->half[1] + pad;
 }
 
-// Opaque RRECT fill fully covering tile [tx0,ty0)-(tx1,ty1)? True only when the tile sits
-// inside the coverage-1 core (inset by largest corner radius + 0.5px AA half-window) 〜
-// exact classification, never an approximation.
+// Opaque RRECT fill fully covering tile [tx0,ty0)-(tx1,ty1)?
+// True inside coverage-1 core (max corner radius + 0.5px AA inset). Exact.
 static bool prim_solid_over(const AnoUiPrim *p, float tx0, float ty0, float tx1, float ty1)
 {
     if (p->kind != ANO_UI_RRECT || p->param[0] != 0.0f)

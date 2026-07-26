@@ -4,8 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Variable-time delay primitive + Schroeder allpass + feedback comb.
-// Fractional reads clamp delay into [1, mask - 1]. The line holds mask + 1 samples of masked
-// history, so any tap <= mask - 1 and its i + 1 neighbour are always written slots.
+// Frac reads clamp to [1, mask - 1]. Line is mask + 1 samples. Taps <= mask - 1 and i + 1 stay written.
 // Buffer zeroed from mi_heap_calloc.
 
 #ifndef ANO_DSP_DELAY_H
@@ -15,7 +14,7 @@
 #include <stdint.h>
 #include <mimalloc.h>
 
-// Allocation floor in samples. Power of two >= 2, so mask >= 1 for every line.
+// Allocation floor in samples. Power of two >= 2 (mask >= 1).
 #define ANO_DSP_DELAY_MIN_CAP 2u
 static_assert(ANO_DSP_DELAY_MIN_CAP >= 2u, "delay floor keeps mask >= 1 so mask - 1 cannot wrap");
 static_assert((ANO_DSP_DELAY_MIN_CAP & (ANO_DSP_DELAY_MIN_CAP - 1u)) == 0u,
@@ -60,9 +59,8 @@ static inline float ano_dsp_delay_read_int(const AnoDspDelay *d, uint32_t delay)
     return d->buf[(d->w - delay) & d->mask];
 }
 
-// Fractional tap, linear interp. Clamps into [1, mask - 1]: mask >= 1 by pow2 init, so the
-// ceiling cannot wrap and the (uint32_t) conversion is always in range. A degenerate 2-slot
-// line (mask == 1) collapses the tap to 0 -- defined, in-buffer, no interpolation.
+// Fractional tap, linear interp. Clamps to [1, mask - 1].
+// Degenerate mask == 1: tap collapses to 0, no interp.
 static inline float ano_dsp_delay_read_frac(const AnoDspDelay *d, float delay)
 {
     float dmax = (float)(d->mask - 1u);

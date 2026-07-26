@@ -10,9 +10,8 @@
 #include <stdlib.h>
 
 // Additive lane: ONE/ONE commutative blend, no sort. Shares FLAT geometry stage and 3-set layout. Fragment is additive.frag.
-// Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
-// argument, so a refused mint zeroes the handle and the build carries on.
-// Commit-last idiom: implementationCount is published only once its array exists.
+// Cache idiom: refused mint -> VK_NULL_HANDLE, build continues.
+// Commit-last idiom: publish implementationCount only after the array exists.
 bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
 	// 1. Setup cache
@@ -62,10 +61,7 @@ bool ano_pipeline_additive_init(VulkanContext* ctx, RendererState* state, Pipeli
 		PBR_FEATURE_DOUBLE_SIDED;   // cullMode NONE
 
 	// Load shaders: mesh on capable devices, vertex on fallback.
-	// Unwind idiom: blobs and modules are held from the first load to the tail discharge, so every
-	// refusal in between takes `goto fail`, which discharges unconditionally (free(NULL) and
-	// destroying VK_NULL_HANDLE are both no-ops). A refused load clears its own buffer first:
-	// loadFile leaves data dangling on a short read.
+	// Unwind idiom: hold blobs/modules until fail/tail; refused load clears buffer (loadFile dangles on short read).
 	struct Buffer geomShaderCode = {0}, fragShaderCode = {0};
 	VkShaderModule geomShaderModule = VK_NULL_HANDLE, fragShaderModule = VK_NULL_HANDLE;
 	VkShaderModule taskModule = VK_NULL_HANDLE;

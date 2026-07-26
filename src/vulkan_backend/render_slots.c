@@ -88,8 +88,7 @@ uint32_t render_slots_alloc(RenderSlotTable *t, uint32_t render_id)
     return slot;
 }
 
-// Unpublishes the first n elements of a batch. slotHighWater never moved, so
-// nothing else to undo.
+// Unpublishes the first n batch elements. slotHighWater unchanged.
 static void alloc_range_rollback(RenderSlotTable *t, const uint32_t *render_ids,
                                  uint32_t base, uint32_t n)
 {
@@ -99,26 +98,19 @@ static void alloc_range_rollback(RenderSlotTable *t, const uint32_t *render_ids,
     }
 }
 
-// Contiguous slot range for a bulk spawn, taken from the high-water region.
-// in: table, render_ids (count entries, each unmapped and distinct from the rest;
-//     the UNMAPPED sentinel is out of domain), count > 0
-// out: base slot, or UNMAPPED on a sentinel id, an already-mapped id, an intra-batch
-//      duplicate, at capacity, or on OOM
-// inv: every failure arm leaves all mappings untouched 〜 a mid-batch refusal walks
-//      back the prefix it published; slotHighWater advances only once the batch is
-//      whole. This walk is the only publisher, so an id found mapped mid-walk is
-//      either live or a duplicate earlier in the same batch; both are refused, since
-//      republishing would strand the slot the first publish took.
+// Contiguous slot range for a bulk spawn from the high-water region.
+// in: table, render_ids (count, each unmapped and distinct; UNMAPPED out of domain), count > 0
+// out: base slot, or UNMAPPED on sentinel/mapped/duplicate/capacity/OOM
+// inv: failures leave mappings untouched; mid-batch refusal rolls back the prefix
+//      slotHighWater advances only once the batch is whole
 uint32_t render_slots_alloc_range(RenderSlotTable *t, const uint32_t *render_ids, uint32_t count)
 {
     if (count == 0u) return ANO_RENDER_SLOT_UNMAPPED;
-    // A contiguous range comes only from the high-water region. Bulk spawn extends it.
     if ((uint64_t)t->slotHighWater + count > t->slotCapacity) return ANO_RENDER_SLOT_UNMAPPED;
 
     uint32_t base = t->slotHighWater;
     for (uint32_t i = 0; i < count; i++) {
-        // Sentinel/OOM, or an id already mapped: live, or a duplicate earlier in this batch.
-        // || sequences the read after reserve returned true, so the index is in bounds.
+        // Sentinel/OOM, or id already mapped (live or intra-batch duplicate).
         if (!logical_reserve(t, render_ids[i]) ||
             t->logicalToSlot[render_ids[i]] != ANO_RENDER_SLOT_UNMAPPED) {
             alloc_range_rollback(t, render_ids, base, i);
@@ -207,7 +199,7 @@ uint32_t render_slots_compact(RenderSlotTable *t)
 {
     if (!t || t->freeCount == 0u) return 0u;
 
-    // Sort ascending so the trailing free run is a suffix.
+    // Ascending: trailing free run is a suffix.
     qsort(t->freeSlots, t->freeCount, sizeof(uint32_t), cmp_u32_asc);
 
     uint32_t before = t->slotHighWater;

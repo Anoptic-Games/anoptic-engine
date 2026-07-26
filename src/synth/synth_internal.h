@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private synth world: voice pool, patch constants, BeatClock, frame-stamped schedule, per-block controls (cutoff, sweeps, duck, shimmer).
-// Logic thread while idle AND no live mixer hooks; mixer thread once any transport has started. Render: no alloc, no locks. Stochastic seeds at transport_start.
-// transport_start only STAGES (epoch bump + startFrame publish); the first mixer-side hook after it runs the reset 〜 logic must never touch runtime state past the first start.
-// DSP primitives from src/audio/dsp/ (sanctioned cross-module private include).
+// Private synth: voices, patches, BeatClock, schedule, per-block controls.
+// Idle = logic thread (no mixer hooks). Live = mixer. Render: no alloc, no locks. Seeds at transport_start.
+// transport_start stages epoch + startFrame. First mixer hook resets. Logic never touches runtime after start.
+// DSP: src/audio/dsp/ (sanctioned private include).
 
 #ifndef ANO_SYNTH_INTERNAL_H
 #define ANO_SYNTH_INTERNAL_H
@@ -161,7 +161,7 @@ struct AnoSynth
     float   *bell;
     uint64_t bellFrames;
 
-    // Score: anchors/bars/notes are rings live, arrays batch. Counts/cursors absolute; mask = (cap-1) live, UINT32_MAX batch 〜 same deadline loop / generator serve both.
+    // Score: rings live, arrays batch. Counts absolute. mask = cap-1 live, UINT32_MAX batch. Same deadline loop serves both.
     double         barQuarters;
     AnoSynthAnchor *anchors;
     uint32_t       anchorCount, anchorCap, anchorMask;
@@ -184,11 +184,10 @@ struct AnoSynth
     AnoMusicBar     musicBar; // pump scratch (~7 KB)
     uint32_t        musicBarUs, musicBarUsMax;
 
-    // Engine bar numbering vs schedule: constant beat offset (attach mid-piece / SEEK). Zero if schedule started at engine bar 0.
+    // Beat offset: engine bar vs schedule (attach mid-piece / SEEK). 0 if schedule at engine bar 0.
     double musicBeatOffset;
 
-    // evt/cmd queues are mixer-thread-only once any transport has started: producers
-    // (synth_emit / synth_apply_bar) and consumers (poll / commands) all run under the hooks.
+    // evt/cmd queues: mixer-only after transport start (emit/apply_bar + poll/commands under hooks).
     AnoAudioEvent evtQueue[ANO_SYNTH_EVENT_QUEUE];
     uint32_t      evtHead, evtTail; // absolute; head - tail = depth
 
@@ -197,13 +196,11 @@ struct AnoSynth
     AnoAudioCommand cmdQueue[ANO_SYNTH_CMD_QUEUE];
     uint32_t        cmdHead, cmdTail;
 
-    // Transport handshake, logic -> mixer: its own ANO_THREAD_LINE region, apart
-    // from the mixer-owned runtime fields on either side.
+    // Transport handshake (logic -> mixer), own ANO_THREAD_LINE.
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t startFrame; // IDLE = generator touches nothing
     _Atomic uint64_t transportEpoch; // logic bumps per transport_start; staged-reset ticket
 
-    // Mixer-owned from here; epochSeen opens the line so hook-time writes never
-    // touch the logic-written pair above.
+    // Mixer-owned below. epochSeen gates hook writes off the logic pair above.
     _Alignas(ANO_THREAD_LINE) uint64_t epochSeen; // last epoch whose reset has run
     uint32_t noteCursor, barCursor;
     uint32_t dropped;

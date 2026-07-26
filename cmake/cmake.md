@@ -1,16 +1,14 @@
 # Build System
 
-The `cmake/` directory in contains build system toolchain configurations.
+Toolchain configurations.
 
 ## Directory Structure
 
-The directory structure for `cmake/`:
-
 ```
 cmake/
-└── platforms/            # Toolchain files for cross-compiling
+└── platforms/            # Cross-compile toolchains
 ```
 
-## Purpose of Each Subdirectory
+## Subdirectories
 
-- `platforms/`: Contains the toolchain  files for compiling on different platforms and compilers. Specifies which tools and architectures to be used.
+- `platforms/`: Toolchain files per platform and compiler.

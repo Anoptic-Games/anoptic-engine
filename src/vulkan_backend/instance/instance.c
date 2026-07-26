@@ -43,7 +43,7 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 	createInfo.pApplicationInfo = &appInfo;
 
 	#ifdef __APPLE__
-	// MoltenVK portability driver requires this flag
+	// MoltenVK portability flag
 	createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 	#endif
 
@@ -83,7 +83,7 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 	{
 		ano_log(ANO_FATAL, "Failed to create Vulkan instance! Error code: %d", result);
 		free(extensions);
-		return result; // Returning the actual error is usually better than hardcoding VK_ERROR_INITIALIZATION_FAILED
+		return result;
 	}
 
 	#ifdef DEBUG_BUILD

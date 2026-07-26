@@ -1,11 +1,8 @@
 #version 450
 
-// Per-light fragment runtime precompute. One invocation per light: resolve the light's world position
-// and forward direction from its driving entity transform, AND pack the rest of the light's per-fragment
-// working set (premultiplied radiance, range, cone cosines, type) into ONE 64B record. The fragment
-// passes then do a single load per light instead of the old 80B LightData + 32B pose (and the 64B mat4
-// reload + derivation is gone entirely). Runs after update.comp+scatter finalize the live transforms and
-// before the geometry passes. All values are bit-identical to the old inline fragment code.
+// Per-light fragment runtime precompute (one inv/light).
+// World pos/dir from entity transform; pack radiance/range/cone/type into one 64B LightRuntime.
+// After update.comp+scatter; before geometry. Bit-identical to prior inline fragment code.
 
 layout(local_size_x = 64) in;
 
@@ -35,9 +32,7 @@ layout(set = 0, binding = 1) readonly buffer LightSSBO {
     LightData lights[];
 };
 
-// Per-light fragment runtime set, consumed by flat.frag / transmission.frag (their set 0 binding 12).
-// One 64B record holding everything the froxel light loop needs. Layout MUST match the LightRuntime
-// mirror in flat.frag / transmission.frag.
+// Consumed by flat.frag / transmission.frag (set 0 binding 12). Layout MUST match their LightRuntime.
 struct LightRuntime {
     vec4 posRange;   // xyz = world position,  w = range
     vec4 dirType;    // xyz = world forward,    w = float(type)
@@ -60,8 +55,7 @@ void main() {
 
     LightData light = lights[i];
     mat4 lx = transforms[light.transformIndex];
-    // Identical derivation to the old flat.frag / shadowsetup.comp:125-127. Disabled lights are still
-    // written (harmless); the froxel light-cull excludes them from the fragment loop.
+    // Disabled lights still written; froxel cull skips them.
     vec3 worldPos = (lx * vec4(light.localOffset, 1.0)).xyz;
     vec3 aim = dot(light.localDir, light.localDir) > 0.0 ? light.localDir : vec3(0.0, 0.0, -1.0); // zero -> -Z
     vec3 worldDir = normalize(mat3(lx) * aim);

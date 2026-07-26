@@ -19,9 +19,8 @@
 
 // Hardware interference sizes. Compile-time only (_Alignas / struct layout); not a runtime query.
 // ANO_CACHE_LINE: true coherency grain for packing / line-granular reservation (128 Apple aarch64, else 64).
-// ANO_THREAD_LINE: false-sharing isolation for hot per-thread atomics 〜 _Alignas cursors to it.
-// 128 on every target: Apple Silicon line is 128; x86-64 adjacent-line prefetch moves the 128-byte
-// buddy pair as one, so 64-byte separation still ping-pongs.
+// ANO_THREAD_LINE: false-sharing isolation for hot per-thread atomics. Align cursors to it.
+// Default ANO_THREAD_LINE is 128 on every target.
 // Override: -DANO_CACHE_LINE=N / -DANO_THREAD_LINE=N.
 #ifndef ANO_CACHE_LINE
 #if defined(__APPLE__) && defined(__aarch64__)

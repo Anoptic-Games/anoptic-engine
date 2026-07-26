@@ -177,9 +177,8 @@ static void shadow_expose_rebuild_frustum(RendererState* st, uint32_t s) {
 }
 
 // Refresh frustum influence sphere from parent base pose + offset.
-// A parent WITH motion gets a stale-by-design sphere, never consulted.
-// Range is producer-supplied and restaged on every static UPDATE, so the bounded arm is entered
-// in accept form: anything that is not a positive range 〜 including NaN 〜 goes unbounded.
+// Parent WITH motion: stale-by-design sphere, never consulted.
+// Accept form: non-positive range (incl. NaN) -> unbounded.
 static void shadow_volume_recompute(RendererState* st, uint32_t s) {
     ShadowCasterVolume* v = &st->shadowVolume[s];
     uint32_t p = v->parentSlot;

@@ -78,9 +78,7 @@ static inline size_t align_up(size_t size, size_t alignment) {
     return (size + alignment - 1) & ~(alignment - 1);
 }
 
-// Reserve `bytes` at the running cursor; returns the offset and leaves the cursor 16-aligned past
-// it. Carves chain through the cursor rather than by naming the previous field, so they cannot be
-// mis-ordered, and the final cursor is the block size.
+// Reserve `bytes` at cursor; return offset, advance 16-aligned. Final cursor = block size.
 static inline size_t carve(size_t* cur, size_t bytes) {
     size_t at = *cur;
     *cur = align_up(at + bytes, 16);
@@ -560,9 +558,7 @@ static inline float ano_quadric_error(const ano_quadric_t* q, const float* p) {
     return q->w > 1e-12f ? r / q->w : r;
 }
 
-// Collapse chain with path halving. collapse[i]==i survives.
-// Unnormalized face normal of welded triangle (a,b,c) in npos. Returns |n|^2, i.e. (2*area)^2:
-// callers compare it against a squared epsilon, or sqrt it to normalize.
+// Unnormalized face normal of welded triangle (a,b,c) in npos. Returns |n|^2, i.e. (2*area)^2.
 static inline float ano_face_cross(const float* npos, uint32_t a, uint32_t b, uint32_t c, float* n) {
     float e1[3], e2[3];
     v3_sub(&npos[b*3], &npos[a*3], e1);
@@ -571,6 +567,7 @@ static inline float ano_face_cross(const float* npos, uint32_t a, uint32_t b, ui
     return dot_product(n, n);
 }
 
+// Collapse chain with path halving. collapse[i]==i survives.
 static uint32_t ano_resolve(uint32_t* collapse, uint32_t i) {
     while (collapse[i] != i) {
         collapse[i] = collapse[collapse[i]];
@@ -691,13 +688,8 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
     float extent = ano_simplify_scale(vertex_positions, vertex_count, vertex_positions_stride);
     float invscale = extent > 0.0f ? 1.0f / extent : 1.0f;
 
-    // Scratch: one scoped heap owns the pass, carved into blocks by index domain. Arrays indexed
-    // by the same thing share a block, so the 20 acquisitions this used to make are 4 (5 with
-    // guards on) and there is no free epilogue 〜 mi_heap_destroy at scope exit is the discharge,
-    // which is also why the OOM arm below simply returns. Blocks stay separate where lifetime or
-    // arity differs: weld dies at the end of the weld pass, and the guards-on set never exists on
-    // the base path. Sub-arrays are 16-aligned, over the strictest member here (u64 / quadric).
-    // Sizes are exact: sizing and placement read the same offset variables, never a second list.
+    // Scratch: scoped heap carved by index domain. Shared-domain arrays share a block.
+    // Separate: weld (freed after weld), guards-on. 16-aligned. Exact sizes via carve offsets.
     size_t weldCap = ano_ceil_pow2(vertex_count * 2 + 16);
     size_t ecap    = ano_ceil_pow2(tri0 * 4 + 16);
 
@@ -890,9 +882,7 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
         }
     }
 
-    // Growth cap: QEM is ~0 anywhere on a coplanar surface, so nothing else bounds triangle GROWTH;
-    // chained in-plane collapses otherwise bridge a floor/wall. Cap resulting edge / move at
-    // edge_len_factor * mean source edge (unit-extent). <=0 -> maxEdge2=FLT_MAX (guards off).
+    // Growth cap: edge_len_factor * mean source edge (unit-extent). <=0 -> maxEdge2=FLT_MAX (off).
     float maxEdge2 = FLT_MAX;
     if (edge_len_factor > 0.0f && tris > 0) {
         double edgesum = 0.0;
@@ -909,8 +899,7 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
         float mean_edge = (float)(edgesum / (double)(tris * 3));
         if (mean_edge > 0.0f) {
             float m = edge_len_factor * mean_edge;
-            // Abs backstop: on coarse flats factor*mean can itself span the surface; clamp to
-            // ANO_SIMPLIFY_ABS_EDGE_FRAC of bbox axis (extent==1). Inert on dense meshes.
+            // Abs backstop: clamp to ANO_SIMPLIFY_ABS_EDGE_FRAC of bbox axis (extent==1).
             if (m > ANO_SIMPLIFY_ABS_EDGE_FRAC) m = ANO_SIMPLIFY_ABS_EDGE_FRAC;
             maxEdge2 = m * m;
         }
@@ -1049,8 +1038,7 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
                     float olen2 = dot_product(on, on);
                     if (dot_product(on, nn) <= 0.25f * sqrtf(olen2 * nlen2)) flip = 1;
                     else {
-                        // Growth cap (anti-bridge): reject if any resulting edge exceeds maxEdge2.
-                        // Fold misses this 〜 a bridge keeps its facing.
+                        // Growth cap: reject if any resulting edge exceeds maxEdge2.
                         float ne3[3]; v3_sub(o2, o1, ne3);
                         if (dot_product(ne1, ne1) > maxEdge2 || dot_product(ne2, ne2) > maxEdge2 ||
                             dot_product(ne3, ne3) > maxEdge2) flip = 1;
@@ -1060,8 +1048,7 @@ size_t ano_simplify_ex(uint32_t* destination, const uint32_t* indices, size_t in
             if (flip) continue;
 
             collapse[v] = j; locked[v] = 1; locked[j] = 1;
-            // Guard 6: lock all corners of v's incident tris so the edge-cap is a per-pass invariant
-            // (not a ~3x per-collapse bound against mutated geometry). Inert when off.
+            // Guard 6: lock all corners of v's incident tris. Per-pass edge-cap invariant. Inert when off.
             if (maxEdge2 != FLT_MAX) {
                 for (uint32_t a = 0; a < adjCounts[v]; ++a) {
                     uint32_t t = adjData[adjOff[v] + a];

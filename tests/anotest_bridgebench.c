@@ -3,16 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Bench: both interlinks' seqlock hot ops, tails not means. Part 1, audio bridge:
-// live mixer (synth + composer + null device), every logic-side publish_listener /
-// acquire_telemetry timed, plus the mixer's own per-block blockCpuNs (deduped by
-// blockIndex). Part 2, render bridge twin: a synthetic render thread publishes
-// snapshots and drains viewState at 1 kHz while logic's acquire_snapshot /
-// publish_view are timed. Oracle for part 2: every acquired copy is internally
-// consistent (frameId mirrored into vpWidth/vpHeight; seq mirrored into eye[]) 〜
-// zero torn reads. A/B vehicle for lane-layout work.
-// DISABLED in ctest; run by hand. argv[1] = soak seconds per part (default 20, min 5).
-// Exit 0 unless the mixer never heartbeats, no blocks are observed, or a read tears.
+// Bench: audio + render bridge seqlock hot ops (tails, not means).
+// Part 1: live mixer; time publish_listener / acquire_telemetry / blockCpuNs.
+// Part 2: synthetic render twin; time acquire_snapshot / publish_view; tear oracle.
+// Hand-run only. argv[1] = soak seconds/part (default 20, min 5).
+// Fail: no mixer heartbeat, no blocks, or torn read.
 
 #include <math.h>
 #include <stdio.h>

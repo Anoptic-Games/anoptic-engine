@@ -1,10 +1,7 @@
-// Layered Power CDF shadow maps (LVSM-style). Partition light-space depth into ANO_SHADOW_CDF_LAYERS
-// bands; per band store coverage (footprint fraction whose nearest occluder is in the band) and
-// M = coverage*meanDepth. Occlusion = sum_k coverage * soft step from the band's mean occluder depth.
-// Band edges bucket the ENCODE only.
-// Storage packs two (coverage, M) pairs per RGBA16 texel (band0/1 in sublayer A, band2/3 in sublayer B).
-// Uniform splits: band k spans [k/N, (k+1)/N]. Keep N + packing in sync with structs.h.
-// Shared by the atlas write (shadow_depth.frag, MRT) and the reconstruct (shadow_sample.glsl).
+// Layered Power CDF (LVSM). Band k: (coverage, M=coverage*meanDepth). Occ = sum cov * softstep(mean).
+// Band edges bucket ENCODE only. Pack: two (cov,M) pairs per RGBA16 (A=band0/1, B=band2/3).
+// Uniform splits [k/N,(k+1)/N]. Keep N+packing in sync with structs.h.
+// Shared by shadow_depth.frag (MRT write) and shadow_sample.glsl (reconstruct).
 
 #ifndef ANO_SHADOW_CDF_GLSL
 #define ANO_SHADOW_CDF_GLSL
@@ -17,8 +14,7 @@
 const int   ANO_CDF_LAYERS = 4;
 const float ANO_CDF_LAYER_W = 0.25; // 1.0 / ANO_CDF_LAYERS
 
-// Encode nearest-occluder depth z in [0,1] into the two MRT sublayer texels: one-hot (coverage=1, M=z)
-// in the band containing z, zero elsewhere. Cleared texels stay (0,0,0,0) = lit.
+// Encode z in [0,1] as one-hot (coverage=1, M=z) in its band across subA/subB. Cleared = (0,0,0,0) lit.
 void anoEncodeLayered(float z, out vec4 subA, out vec4 subB) {
     subA = vec4(0.0);
     subB = vec4(0.0);
@@ -29,11 +25,10 @@ void anoEncodeLayered(float z, out vec4 subA, out vec4 subB) {
     else             { subB.z = 1.0; subB.w = z; }
 }
 
-// Layered visibility. subA/subB = the two prefiltered sublayer texels, zr = receiver light-space depth
-// in [0,1], depthBias = occluder offset, contactSoft = soft-step width above each band's mean. Returns
-// the lit factor in [0,1]. occ = sum_k cov_k * smoothstep(mean_k, mean_k + contactSoft, zr).
+// Lit factor [0,1] from prefiltered subA/subB. zr = receiver depth [0,1].
+// occ = sum_k cov_k * smoothstep(mean_k, mean_k + contactSoft, zr - depthBias).
 #if ANO_CDF_FP16
-// fp16 band walk: (coverage, M) pairs in fp16; zr, bias, and the contact smoothstep stay fp32.
+// fp16 band walk; zr/bias/smoothstep stay fp32.
 float anoLayeredShadow(vec4 subA32, vec4 subB32, float zr, float depthBias, float contactSoft) {
     const float EPS = 1e-4;
     zr -= depthBias;

@@ -21,10 +21,7 @@ static_assert(sizeof ((AnoMusicConfig *)0)->cadencePolicies == CADENCE_CYCLE_MAX
               && sizeof ((AnoEngineConfig *)0)->cadencePolicies == CADENCE_CYCLE_MAX,
               "cadence cycle capacity must match both configs");
 
-// Authored motif capacity: AnoMotif.n is the count the realizers and transforms iterate
-// (music_motif.c pitches_at / ano_motif_invert / ano_realize_*), and every one of them
-// writes an ANO_MOTIF_MAX-wide buffer. The ingress clamp below is bounded by
-// ANO_MOTIF_MAX, so the bound and the buffers must not drift apart.
+// Motif clamp bound == rhythm/contour extent == ANO_MOTIF_MAX.
 static_assert(sizeof ((AnoMotif *)0)->rhythm / sizeof(AnoRhythmNote) == ANO_MOTIF_MAX
               && sizeof ((AnoMotif *)0)->contour / sizeof(int) == ANO_MOTIF_MAX,
               "motif clamp bound must equal the motif buffers' extent");
@@ -32,9 +29,7 @@ static_assert(ANO_MOTIF_MAX
                   <= sizeof ((AnoPeriodPlanner *)0)->openingMelody[0] / sizeof(AnoPlacedNote),
               "planner opening-melody row must hold a full motif");
 
-// Value domains for the two ingress fields that index static tables downstream:
-// mode reaches ano_mode_intervals' [ANO_MODE_COUNT][7], policy the [3]-wide cadence
-// tables. In: any double (an int converts). Out: true only in contract. NaN fails both.
+// mode/cadence table-index ingress. In: any double. Out: true only in contract. NaN fails both.
 static bool mode_ok(double v)
 {
     return v >= ANO_MODE_NONE && v < ANO_MODE_COUNT;
@@ -79,10 +74,8 @@ AnoMusicConfig ano_music_config_default(void)
     return c;
 }
 
-// Public config -> conductor config. Generator tuning stays on defaults.
-// Out-of-contract mode / cadence values degrade to their documented sentinel (NONE);
-// the cadence count is clamped to the array, like motifLibraryCount below. keyTonic wraps
-// into its pitch class and an authored motif's note count is clamped to its own buffers.
+// Public config -> conductor config. Generator tuning stays default.
+// Clamps: mode/cadence -> sentinel, counts -> array, keyTonic -> pitch class, motif.n -> buffers.
 static void expand(const AnoMusicConfig *c, AnoEngineConfig *e)
 {
     *e = ano_engine_config_default();
@@ -108,9 +101,7 @@ static void expand(const AnoMusicConfig *c, AnoEngineConfig *e)
     e->hasDramaturg = c->hasDramaturg;
     e->dramaturg = c->dramaturg;
 
-    // the static path's params arrive in the public (bridge) shape; the ORDERED
-    // layer list the generators iterate is recovered from the bitmask in
-    // canonical order, which is the order the gate emits anyway
+    // Bridge params -> ordered layer list from bitmask.
     if (!c->hasMapper) {
         const AnoMusicalParams *p = &c->params;
         e->params.tempoBpm = p->tempoBpm;
@@ -218,8 +209,7 @@ static int override_id(const char *param)
     return -1;
 }
 
-// Installs one pin. Cadence policy and mode index static tables downstream, so an
-// out-of-contract value installs no pin at all: the natural source keeps the seam.
+// Install one pin. Out-of-contract cadence/mode: no pin.
 static void override_apply(AnoOverrides *o, int id, bool set, double v)
 {
     switch (id) {

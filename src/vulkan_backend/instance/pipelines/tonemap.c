@@ -16,8 +16,7 @@
 // Fullscreen tonemap pass: encodes the HDR resolve target to the swapchain.
 // in:  ctx, state (imageFormat = swapchain target format must be set)
 // out: true on success; populates state->tonemap{SetLayout,Layout,Cache,Pipeline}
-// Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
-// argument, so a refused mint zeroes the handle and init carries on.
+// Cache idiom: refused mint -> VK_NULL_HANDLE, init continues.
 bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 {
 	// One combined image sampler, fragment-only.
@@ -52,10 +51,7 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->tonemapCache) != VK_SUCCESS)
 		state->tonemapCache = VK_NULL_HANDLE;
 
-	// Unwind idiom: blobs and modules are held from here to the tail discharge, so every refusal in
-	// between takes `goto fail`, which discharges unconditionally (free(NULL) and destroying
-	// VK_NULL_HANDLE are both no-ops). A refused load clears its own buffer first: loadFile leaves
-	// data dangling on a short read.
+	// Unwind idiom: hold blobs/modules until fail/tail; refused load clears buffer (loadFile dangles on short read).
 	struct Buffer vertCode = {0}, fragCode = {0};
 	VkShaderModule vertModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE;
 	if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode)) { vertCode.data = NULL; goto fail; }

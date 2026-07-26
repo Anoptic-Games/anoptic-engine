@@ -99,10 +99,8 @@ static VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, 
 		}
 }
 
-// Surface capabilities plus the format and present mode selected from them.
-// Inputs: device (VkPhysicalDevice), surface (VkSurfaceKHR), preferredMode (uint32_t).
-// Output: bool; *out is a total out-param, zeroed on every false. False means unreadable
-// capabilities or a zero-format surface, so *out.format after true is one the surface listed.
+// Surface capabilities + chosen format and present mode.
+// Inputs: device, surface, preferredMode. Output: bool; *out total out-param, zeroed on false.
 static bool querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface, uint32_t preferredMode, SwapChainSupport* out)
 {
     *out = (SwapChainSupport){0};
@@ -353,24 +351,11 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
     gpu_alloc_reset(&swapchainAllocator);
 }
 
-// in:  live ctx; window may report a zero framebuffer (waits on events until it does not)
-// out: all nine swapchain-derived families re-minted at the new extent, every descriptor naming one
-//      re-pointed, command pools reset, frame fences cleared.
-//
-// Positional invariant. cleanupSwapChain destroys nine families and the creators below re-mint all
-// nine, yet only three rebind calls follow, because only five families are ever named by a descriptor:
-//   depth + depth-resolve (createDepthResources) -> updateHiZDescriptorSets, hizSets binding 2
-//   Hi-Z pyramid (createHiZResources)            -> updateHiZDescriptorSets, hizSets 0/1, cullSet 11, globalSet 13
-//   HDR resolve (createColorResourcesChecked)    -> updateTonemapDescriptorSets, tonemapSet 0
-//   text overlay (createColorResourcesChecked)   -> ano_vk_text_update_sets, textRasterSet 3 + textOverlaySet 0
-// The other four 〜 swapchain views, MSAA colour, MSAA pick-id, pick-id resolve 〜 are named by no set:
-// they appear only as rendering attachments or a transfer operand (record_views.c:83, :97, :104, :226,
-// :267). They need no rebind because the command buffer is reset and re-recorded every frame
-// (vulkanMaster.c:285), so each handle is read out of rendererState after this function replaced it.
-// hizSets above the new hizMipCount keep dead views and are never bound: hiz.c:33 bounds the dispatch
-// by that same count.
-// Obligation: a new swapchain-derived resource that any descriptor names gets its rebind call added
-// here, beside its creator. Nothing checks the correspondence 〜 it is held by hand, in this function.
+// in:  live ctx; zero framebuffer waits on events until non-zero
+// out: remint nine swapchain-derived families; rebind named descriptors; reset pools/fences
+// Rebind: depth/depth-resolve -> HiZ; Hi-Z -> HiZ/cull/global; HDR -> tonemap; text -> text sets
+// Attachment-only (views, MSAA colour/pick-id, pick-id resolve): no rebind
+// Obligation: new descriptor-named resource gets its rebind beside its creator here
 void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 {
 	// Wait for device idle
@@ -465,8 +450,7 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	rendererState.framebufferResized = false;
 }
 
-// Central init component. VK_NULL_HANDLE on failure: a failed vkCreateImageView leaves *pView
-// undefined, so the driver's out-param never reaches a caller.
+// Central init component. VK_NULL_HANDLE on failure (driver out-param never forwarded).
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels)
 {
 	VkImageViewCreateInfo viewInfo = {};
@@ -492,8 +476,7 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 
 
 // Swapchain colour views, one per presentable image. false leaves views NULL and viewCount 0.
-// The pair is published only once the array exists and every slot holds a live view, so a
-// non-zero viewCount always indexes that many live handles.
+// Published only once every slot holds a live view.
 bool createImageViews(VulkanContext* ctx, RendererState* state)
 {
     state->views = NULL;

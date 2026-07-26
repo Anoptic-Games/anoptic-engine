@@ -52,28 +52,20 @@ static void stage_command_fields(RendererState* s, const RenderCommand* c, uint3
         mover_refresh_slot(s, slot);
     if (fields & RFIELD_TRANSFORM)
         shadow_volumes_reparent(s, slot);
-    // Light-entity writes static palette only; index off runtime rows. Backstop bound on the lane:
-    // gate_light_domain already decided the row, so this only ever sees NO_LIGHT or a static row.
+    // Static palette only; row already gated.
     if ((fields & RFIELD_LIGHT) && c->light_index < ANO_STATIC_LIGHT_COUNT) {
-        // One decode for both regions: a static row rides its slot origin, so light_offset 〜
-        // runtime-registry vocabulary (backend.h) 〜 is deliberately not honored here.
+        // Static row: decode at slot origin; light_offset ignored.
         static const float kStaticOrigin[3] = {0};
         LightData L = light_data_from_params(&c->light, slot, kStaticOrigin);
         slot_upload_stage(&s->lightBuffer, f, c->light_index, &L);
-        // Revoke half of the static caster lifecycle (backend.h): the row is overwritten whole, so
-        // a payload that does not cast must not leave the old block bound. The grant half is
-        // CREATE-only and is taken in the RCMD_CREATE arm below, never here.
+        // Non-casting overwrite: revoke any bound static shadow block.
         if (!c->light.castsShadow) {
             unregister_static_shadow(s, c->light_index, f);
         } else if (c->kind == RCMD_UPDATE) {
-            // Both mirrors of the row's caster meet here: the payload just staged into LightData and
-            // the config the owned block holds. UPDATE grants nothing, so the two things it drops are
-            // said out loud on the row domain's own channel instead of evaporating 〜 the producer
-            // resent the whole payload (backend.h) and deserves to hear which half did not take.
+            // UPDATE: log caster mismatch; never grants.
             uint32_t ownedType;
             if (!static_shadow_row_casts(s, c->light_index, &ownedType)) {
-                // Covers both block-less causes: never granted, and a CREATE the budget/region
-                // refused. Re-create is the only remedy for either, and may be refused again.
+                // Never granted or grant refused.
                 ano_log(ANO_ERROR, "Render bridge: static row %u raised castsShadow on UPDATE but owns "
                         "no shadow block; grants are CREATE-only, so the row stays shadowless. "
                         "Re-create it (budget permitting) to grant.", c->light_index);
@@ -82,8 +74,7 @@ static void stage_command_fields(RendererState* s, const RenderCommand* c, uint3
                     ano_log(ANO_ERROR, "Render bridge: static row %u UPDATE names light type %u, its "
                             "shadow block holds %u; re-create the row to change type.",
                             c->light_index, (uint32_t)c->light.type, ownedType);
-                // The whole-row overwrite reaches the caster geometry too: refresh the volumes the
-                // row already owns from the restaged range. Never grants 〜 CREATE owns that half.
+                // Refresh owned volumes from restaged range; never grants.
                 refresh_static_shadow(s, c->light_index, slot, L.range);
             }
         }
@@ -113,24 +104,15 @@ static void stage_stream_frame(RendererState* state, uint32_t frameIndex)
     ts->dynOffset[frameIndex] = (uint32_t)((VkDeviceSize)slice * ts->sliceStride);
 }
 
-// Establish both light-payload domains on a drained command: the LightType, and the static palette
-// row a scene light-entity may name. Both are producer-supplied and unvalidated on the ring 〜 type
-// indexes shadowTypeUsed and rides LightData.type + ShadowFrustumConfig.lightType to the shaders,
-// light_index addresses the static region directly (backend.h). This is the one seam that decides
-// either, so no consumer downstream re-derives the domain; the bounds tests the consumers still
-// carry are fault-site backstops. Read only where the command actually carries a light.
-// in:  c, the drained command (render-thread local copy, mutated in place)
-// out: bool, false == drop the whole command. Only the light-addressed kinds can drop, and none
-//      of them owns a batch block, so the caller's skip can never strand one.
+// Gate LightType + static light_index on drained cmds that carry a light.
+// in:  c (mutated in place)
+// out: false == drop command (no batch block owned)
 [[nodiscard]] static bool gate_light_domain(RenderCommand* c)
 {
     switch (c->kind) {
     case RCMD_CREATE:
     case RCMD_UPDATE:
-        // Entity still lands; only its light payload is refused, in the protocol's own absent-light
-        // spelling. Naming a runtime-registry row on a scene light-entity is the same caller error
-        // as an out-of-enum type: refused once, here, and said out loud 〜 it used to evaporate
-        // between the RFIELD_LIGHT synthesis and both static-region consumers.
+        // Refuse bad type/row; entity lands unlit (NO_LIGHT).
         if (c->light_index != ANO_RENDER_NO_LIGHT &&
             ((uint32_t)c->light.type >= LIGHT_TYPE_COUNT || c->light_index >= ANO_STATIC_LIGHT_COUNT)) {
             ano_log(ANO_ERROR, "Render bridge: light payload refused (row %u, type %u); entity lands unlit.",
@@ -156,12 +138,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
     // Drain bridge -> delta staging. DESTROY dead-marks + retires (quarantine until drained).
     RenderCommand cmd;
     while (ano_render_next_command(&state->bridge, &cmd)) {
-        // Ahead of the gate: a dropped CREATE lands nothing, so its light domain is never decided
-        // and gate_light_domain must not announce "entity lands unlit" for it. Stays consumer-side
-        // rather than taking the bulk arm's allocator-refuses/consumer-hears shape 〜 the duplicate
-        // has to be refused before ensureEntityCapacity grows for a spawn that cannot happen, which
-        // is upstream of where render_slots_alloc's own backstop sits. Owns no block: dropping leaks
-        // nothing.
+        // Refuse live-id CREATE before gate/grow; owns no block.
         if (cmd.kind == RCMD_CREATE &&
             render_slots_resolve(&state->slots, cmd.render_id) != ANO_RENDER_SLOT_UNMAPPED) {
             ano_log(ANO_ERROR, "Render bridge: CREATE names live render_id %u; command dropped "
@@ -220,15 +197,13 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
 
         case RCMD_BULK_CREATE: {
             const RenderCreateBatch* b = cmd.batch;
-            // Empty batch is not a refusal: drop it before alloc_range can log one. Release is a
-            // no-op unless the empty block is render-owned, in which case breaking bare would leak.
+            // Empty batch: release and bail before alloc_range logs.
             if (!b || b->count == 0u) { ano_render_command_release(&cmd); break; }
             // alloc_range needs a contiguous run from the high-water mark.
             if (!ensureEntityCapacity(state, state->slots.slotHighWater + b->count, frameIndex)) {
                 ano_render_command_release(&cmd); break; // growth failed: drop the batch
             }
-            // Allocator refuses, consumer hears: alloc_range (render_slots.h) is batch-atomic over
-            // live ids, intra-batch duplicates, capacity and OOM, so a refusal reaches nothing below.
+            // alloc_range refuses live/dup/cap/OOM atomically.
             uint32_t base = render_slots_alloc_range(&state->slots, b->render_ids, b->count);
             if (base == ANO_RENDER_SLOT_UNMAPPED) {
                 ano_log(ANO_ERROR, "Render bridge: BULK_CREATE refused (live id, duplicate in batch, "

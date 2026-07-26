@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# run_fleet.sh 〜 one bounded squad contest. Every IU generates and clears fitness under
-# hard deadlines. Results persist per candidate; the first verified Sol pass starts one
-# fixed group clock; only fully green candidates can become champion.
+# run_fleet.sh: bounded squad contest.
+# Every IU generates and clears fitness under hard deadlines.
+# Results persist per candidate.
+# First verified Sol pass starts the fixed group clock.
+# Only fully green candidates can become champion.
 set -u -o pipefail
 
 usage() { cat <<'EOF'

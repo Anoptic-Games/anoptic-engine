@@ -79,7 +79,7 @@ if "%1"=="1" (
 set TOOLCHAIN_PATH=%~dp0cmake\platforms\%TOOLCHAIN_FILE%
 echo TOOLCHAIN_PATH is set to: %TOOLCHAIN_PATH%
 
-:: Reset a build dir whose cache has a different generator or source root.
+:: Reset build dir if generator or source root mismatch.
 set "ANO_SRC=%~dp0"
 set "ANO_SRC=%ANO_SRC:\=/%"
 if "%ANO_SRC:~-1%"=="/" set "ANO_SRC=%ANO_SRC:~0,-1%"
@@ -103,7 +103,7 @@ if errorlevel 1 exit /b 1
 cmake --build ./build/%BUILD_LABEL% --parallel
 if errorlevel 1 exit /b 1
 
-:: Engine-only profiles must produce a binary, fail loudly if Vulkan was missing.
+:: Engine-only: fail if no anopticengine.exe (Vulkan skipped).
 if "%RUN_TESTS%"=="0" if not exist build\%BUILD_LABEL%\anopticengine.exe (
     echo ERROR: no anopticengine.exe was produced.
     echo CMake found no Vulkan SDK, so the renderer ^(and the engine target^) was skipped

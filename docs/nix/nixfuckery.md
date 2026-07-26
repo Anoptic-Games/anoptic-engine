@@ -4,7 +4,7 @@ tl;dr: Nix is foobar on the system you're reading it on. Your job is to fix it.
 
 Note from Claude Fable (matei3d's session, macOS, 2026-07-12) to Claude Fable on cris's machine.
 
-Subject: the nix Linux renderer path 〜 what works, what was wrong, what is now fixed, and what you do next. Branch `nix-anygpu`, based on `feature-crashreport` at c9e99f2.
+Subject: the nix Linux renderer path. What works, what was wrong, what is now fixed, what you do next. Branch `nix-anygpu`, based on `feature-crashreport` at c9e99f2.
 
 ## Working today
 
@@ -16,9 +16,13 @@ Subject: the nix Linux renderer path 〜 what works, what was wrong, what is now
 
 ## What was wrong
 
-cris's `VK_LOADER_DEBUG=all` run settled it. The loader finds all nine host ICD manifests in `/usr/share/vulkan/icd.d`, then every dlopen fails: host manifests use bare sonames (`libGLX_nvidia.so.0`) and nix's `ld.so` reads neither `/etc/ld.so.cache` nor `/usr/lib`, so no driver file is ever located → `VK_ERROR_INCOMPATIBLE_DRIVER` (-9). Second wall behind it: transitive deps of host driver DSOs. Structural fact under both: proprietary NVIDIA userspace must match the host kernel module, so it can never be a build input. The fix injects drivers at runtime.
+cris's `VK_LOADER_DEBUG=all` settled it:
+- Loader finds all nine host ICD manifests in `/usr/share/vulkan/icd.d`; every dlopen fails.
+- Host manifests use bare sonames (`libGLX_nvidia.so.0`); nix's `ld.so` skips `/etc/ld.so.cache` and `/usr/lib` → `VK_ERROR_INCOMPATIBLE_DRIVER` (-9).
+- Second wall: transitive deps of host driver DSOs.
+- NVIDIA userspace must match the host kernel module → never a build input; inject at runtime.
 
-Dead theories: manifest masking (all found), glibc symbol direction (the pin's 2.42 is newer than the host's), the shell wrapper (standard makeWrapper, injects VK_LAYER_PATH, host layers enumerate fine).
+Dead theories: manifest masking (all found), glibc symbol direction (pin 2.42 newer than host), shell wrapper (standard makeWrapper, injects VK_LAYER_PATH, host layers enumerate fine).
 
 ## Fixed on this branch
 
@@ -33,13 +37,13 @@ Verified: evals on x86_64-linux and aarch64-darwin, drv wrapper contents, mesa m
 1. `cat /proc/driver/nvidia/version`.
 2. Zero-patch smoke test: `nix shell github:numtide/nix-gl-host -c nixglhost ./result/bin/anopticengine`. Sponza on the GeForce validates the whole design.
 3. `nix run .#nvidia`.
-4. `rm -rf build && nix run`. The wipe matters: the glfwInit failure is unexplained, env is ruled out (X11, `DISPLAY=:0`, no platform hint at `window.c:173`), prime suspect is a stale CMakeCache (`build.sh` only resets on generator or source-root mismatch).
+4. `rm -rf build && nix run`. Wipe first: glfwInit fail unexplained; env ruled out (X11, `DISPLAY=:0`, no platform hint at `window.c:173`); stale CMakeCache is prime suspect (`build.sh` resets only on generator/source-root mismatch).
 5. glfwInit still failing after a clean build → add a temporary `glfwGetError(&desc)` log at the `window.c:173` FATAL.
 6. `VK_LOADER_DEBUG=all` at every step. Success: the nixglhost manifest in the driver scan, a discrete GPU in the device table.
 
 ## Escape hatch
 
-`nixglhost` glibc version errors mean the host glibc is newer than the pin's 2.42. Then: `NIXPKGS_ALLOW_UNFREE=1 nix run --impure github:nix-community/nixGL#nixVulkanNvidia -- ./result/bin/anopticengine` 〜 nixGL fetches NVIDIA userspace at the detected version. Report which one works.
+`nixglhost` glibc version errors mean the host glibc is newer than the pin's 2.42. Then: `NIXPKGS_ALLOW_UNFREE=1 nix run --impure github:nix-community/nixGL#nixVulkanNvidia -- ./result/bin/anopticengine`. nixGL fetches NVIDIA userspace at the detected version. Report which one works.
 
 ## Do not chase
 

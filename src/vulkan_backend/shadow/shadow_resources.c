@@ -17,8 +17,7 @@
 // Per frame: GPU-written frustum SSBO + RGBA16 CDF atlas + blur temp (2D arrays: per-sublayer render + array sample views).
 // Shared: transient caster-depth (one slice/frustum) + shadow config/info SlotUploads.
 // in: ctx, state; out: frames[].shadow.*, shadowDepth*, shadow{Config,Info}
-// false on any failed create, on a refused bind (the object exists but is unbacked), or on a
-// refused transient-CB mint, which is never recorded into.
+// false on failed create, refused bind (unbacked), or refused transient-CB mint.
 bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     VkDeviceSize frustumSize = (VkDeviceSize)sizeof(CullView) * ANO_SHADOW_FRUSTUM_COUNT;
 
@@ -89,7 +88,6 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
             }
 
             // Seed ALL layers to SHADER_READ (transitionImageLayout spans only layer 0).
-            // A refused mint answers VK_NULL_HANDLE; the seed barrier never runs on it.
             VkCommandBuffer seedCmd = beginSingleTimeCommands(ctx);
             if (seedCmd == VK_NULL_HANDLE) return false;
             VkImageMemoryBarrier seed = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -99,8 +97,6 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
                 .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS } };
             vkCmdPipelineBarrier(seedCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 0, 0, NULL, 0, NULL, 1, &seed);
-            // A refused submit never runs the barrier: the atlas would stay UNDEFINED under a
-            // successful return, and the first sample would read it in the wrong layout.
             if (!endSingleTimeCommandsChecked(ctx, seedCmd)) return false;
         }
     }

@@ -12,15 +12,12 @@
 // Shared linear-algebra value types (column-major float POD, trivially copyable, std430).
 // Canonical across render, ECS, and the logic<->render bridge.
 // Ops still in render/vertex.h until a non-render caller needs them.
-// Each type carries its std430 base alignment, so a C struct mirroring a GLSL block
-// cannot land a member off-rule by accident of declaration order.
+// Each type carries its std430 base alignment.
 
-// Column-major 4x4: m[i][j] is column i, row j 〜 m[i] is a contiguous column, m[3] the
-// translation. Matches GLSL's mat4, so an upload is a memcpy with no transpose. (Every C
-// [4][4] stores m[i] contiguously; the convention is what m[i] names.) Conventions of
-// record: docs/math-conventions.md. Arg decays to float(*)[4], member is 64 bytes.
-// C forbids an alignment specifier on a typedef (C23 6.7.6), so the 16 std430 requires
-// rides the array type as an attribute; the assertions below are the contract of record.
+// Column-major 4x4: m[i][j] = column i, row j. m[i] contiguous column, m[3] translation.
+// Matches GLSL mat4 (memcpy upload, no transpose). See docs/math-conventions.md.
+// Arg decays to float(*)[4], member is 64 bytes.
+// Align attribute on the array type (C23 6.7.6 forbids it on typedef). Assertions below.
 typedef float mat4[4][4] __attribute__((aligned(16)));
 
 typedef struct Vector2
@@ -28,10 +25,8 @@ typedef struct Vector2
     alignas(8) float v[2];
 } Vector2;
 
-// The one type here that does NOT carry its std430 base alignment (16 for vec3): Vector3 is
-// the tightly packed vertex-stream element (Vertex, vertex.h), where 16 would pad the stream
-// by half for no GPU rule. No block in the tree declares a vec3 member; every one uses
-// Vector4. A block that needs one must too.
+// Packed vertex-stream vec3 (Vertex, vertex.h). No std430 alignas(16).
+// No GLSL block declares a vec3 member; use Vector4.
 typedef struct Vector3
 {
     float v[3];

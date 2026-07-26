@@ -3,15 +3,14 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Functional progression walk. Draw ORDER/COUNT are parity: weight lists keep dict insertion order;
-// force_dominant and borrow gate short-circuit draws exactly as Python or/early-return.
+// Functional progression walk. Weight lists keep dict insertion order.
+// force_dominant and borrow gate short-circuit draws (Python or / early-return).
 
 #include "music_theory.h"
 
 AnoHarmonyConfig ano_harmony_config_default(void)
 {
-    // static: an object with static storage has its PADDING zeroed, and this
-    // struct is copied into the engine, whose bytes are its snapshot.
+    // static zero-pads; copy is the engine snapshot.
     static const AnoHarmonyConfig k = {
         .dominantTensionBias  = 1.6,
         .tonicCalmBias        = 1.2,
@@ -23,8 +22,7 @@ AnoHarmonyConfig ano_harmony_config_default(void)
     return k;
 }
 
-// FUNCTION_TRANSITIONS rows in the prototype's dict insertion order 〜 the
-// order feeds choices() cumulative sums, so it is load-bearing.
+// FUNCTION_TRANSITIONS rows: prototype dict insertion order (choices() cumulative).
 typedef struct FnRow { char fn[3]; double w[3]; } FnRow;
 static const FnRow TRANS_T  = { { 'T', 'P', 'D' }, { 0.15, 0.55, 0.30 } };
 static const FnRow TRANS_PD = { { 'P', 'D', 'T' }, { 0.15, 0.60, 0.25 } };

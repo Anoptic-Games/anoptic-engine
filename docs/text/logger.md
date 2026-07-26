@@ -34,15 +34,15 @@ ano_debug_log(ANO_INFO, "loaded %d chunks in %.2f ms", n, ms);   // GONE outside
 ano_debug_rlog(ANO_ERROR, ANO_NOW, "validation: %s", msg);       // DEBUG_BUILD explicit route
 ```
 
-The default is a bare message: `ano_log` / `ano_rlog` record no call site. The `o` variants (`ano_olog`, `ano_rolog`, and their `debug` twins) capture the source file and line via `__FILE_NAME__` / `__LINE__` and prefix the message with `file.c:212:`. Sprinkle origin lines where they earn their bytes -- one `olog` at the top of a subsystem's work, plain `ano_log` for the fifty lines that follow.
+The default is a bare message: `ano_log` / `ano_rlog` record no call site. The `o` variants (`ano_olog`, `ano_rolog`, and their `debug` twins) capture the source file and line via `__FILE_NAME__` / `__LINE__` and prefix the message with `file.c:212:`. Sprinkle origin lines where they earn their bytes: one `olog` at the top of a subsystem's work, plain `ano_log` for the fifty lines that follow.
 
 Two things to remember:
 - The format string must be a compile-time string literal. The macros carry a `printf` format attribute, so the compiler type-checks your arguments against it. `ano_log(ANO_INFO, "%d", x)` is checked. `ano_log(ANO_INFO, some_char_ptr, x)` will not compile.
 - Pass dynamic text as an argument: `"%s", dynamic`.
 - `ano_debug_log` / `ano_debug_rlog` expand to `((void)0)` outside a `DEBUG_BUILD`, arguments included, so debug logging costs zero in a release build.
 
-Buffered records ride the lock-free ring, and the background thread routes each to its sinks.
-The `NOW` route is synchronous, because you want a fatal line on disk before the process possibly dies.
+Buffered records ride the lock-free ring; the background thread routes each to its sinks.
+`NOW` is synchronous: fatal line on disk before the process may die.
 
 ### Lifecycle
 
@@ -51,7 +51,7 @@ int ano_log_init(void);     // start up; 0 on success
 int ano_log_cleanup(void);  // shut down; 0 on success
 ```
 
-Call `ano_log_init()` once at startup. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/logs/<session-stamp>_ano.log` -- one file per session, the stamp from `ano_fs_session_stamp()`, truncated at open so the session owns it from byte zero), and spawns the background drain thread. Until it returns 0, only `NOW`-routed records work, writing to `stderr`. `ano_log_crash_init` (`anoptic_log_crash.h`, the crash superset of this interface) prunes `logs/` at boot: the newest 4 of each of `*_ano.log` and `*_CRASH.log` survive, the live session's files always kept.
+Call `ano_log_init()` once at startup. It allocates the ring, captures a timestamp anchor, opens the default output file (`<game-dir>/logs/<session-stamp>_ano.log`; one file per session, stamp from `ano_fs_session_stamp()`, truncated at open), and spawns the background drain thread. Until it returns 0, only `NOW`-routed records work (to `stderr`). `ano_log_crash_init` (`anoptic_log_crash.h`, crash superset) prunes `logs/` at boot: newest 4 of each of `*_ano.log` and `*_CRASH.log` survive; the live session's files always kept.
 
 Call `ano_log_cleanup()` once at shutdown. It stops and joins the drain thread, runs one final drain so nothing buffered is lost, then syncs and closes the file.
 
@@ -68,7 +68,7 @@ void ano_log_flush(void);                                        // drain synchr
 `ano_log_set_level` is the volume knob, and `NOW` records ignore it. 
 `ano_log_set_route` must name at least one sink. With no output file configured, FILE records still drain to the terminal.
 
-`ano_log_flush` you usually do not need. The background thread drains the ring continuously. Reach for `flush` when you want everything logged so far on disk now: a once-per-tick checkpoint, or just before a risky operation. It runs an extra drain pass synchronously on the calling thread and returns when the buffer is empty.
+`ano_log_flush` you usually do not need; the background thread drains continuously. Use it for durability at a point: once-per-tick checkpoint, or before a risky op. Extra drain on the calling thread; returns when the buffer is empty.
 
 ### Raw entry points
 
@@ -117,7 +117,7 @@ The rules, in full:
 4. You rarely call `flush`. Reach for it only when you need durability at a specific instant.
 5. Use `ANO_FATAL` (or an explicit `ANO_NOW`) for lines that must survive a crash. Let the ring carry everything else.
 
-Output lines look like this: wall-clock time, level, then your message -- with the call site in between when the record came from an `o` macro:
+Output lines look like this: wall-clock time, level, then your message, with the call site in between when the record came from an `o` macro:
 
 ```
 14:01:43 INFO  entity 4 spawned at (10,-3)
@@ -126,19 +126,19 @@ Output lines look like this: wall-clock time, level, then your message -- with t
 
 ---
 
-## What it is, underneath: a lock-free MPSC ring
+## Underneath: lock-free MPSC ring
 
-MPSC stands for multi-producer, single-consumer, and that shape is the whole design.
+MPSC: multi-producer, single-consumer.
 
-The many producers are your threads. When a worker logs, it formats the line on its own stack, touching no shared state, then reserves a small run of slots in the shared ring with one atomic op on the tail cursor, copies the bytes in, and publishes with one release store. No lock, and on the common path no wait. That is what keeps a logging call from holding up a frame: the expensive part (formatting) is thread-local, the shared part is a couple of atomics.
+Producers are your threads. A worker formats on its own stack (no shared state), reserves ring slots with one atomic on the tail, copies bytes in, publishes with one release store. No lock; common path no wait. Formatting is thread-local; shared work is a couple of atomics.
 
-The single consumer is a thread the logger owns. It walks the ring in claim order, gathers a whole pass of lines, and writes them with one `write` call: many lines, one syscall. With nothing to drain it parks briefly, so an idle logger costs nothing. Under load it stays hot and keeps the ring empty.
+The consumer is a logger-owned thread. It walks the ring in claim order, gathers a pass of lines, writes them in one `write` (many lines, one syscall). Idle: parks briefly. Under load: stays hot, keeps the ring empty.
 
-Because there is one ring and one consumer, claim order is a single total order. Lines from different threads interleave but each appears in issue order, and the file is FIFO across the whole program.
+One ring, one consumer: claim order is a single total order. Lines from different threads interleave; each appears in issue order; the file is FIFO across the program.
 
-The ring is bounded, so it can fill. The answer is backpressure: a producer that finds no room waits for the consumer to drain some, self-throttling to disk speed. Nothing is silently dropped. (If the consumer is ever wedged, a stalled producer eventually writes its own line straight through rather than blocking forever, a safety valve.)
+Bounded ring → backpressure. A full ring makes the producer wait for drain (throttle to disk speed). Nothing silently dropped. (Wedged consumer: a stalled producer eventually writes its line straight through.)
 
-Formatting shapes latency. Most records carry finished text into the ring, formatted eagerly by the producer. The fast path can also defer formatting, capturing the arguments and rendering them on the drain thread, which trims the producer's cost further. Either way the result on disk is byte-for-byte what `printf` would produce. The choice is only about where the work happens.
+Most records enter the ring as finished text (eager format on the producer). Fast path can defer: capture args, render on the drain thread. Disk bytes match `printf` either way.
 
 What you can rely on:
 
@@ -151,4 +151,4 @@ What you must hold up your end of:
 - Initialise before logging; stop the producers before cleanup.
 - Keep format strings literal.
 
-That is the entire contract. Everything else (ring sizing, timestamps, batching, draining) the logger handles on its own.
+That is the entire contract. Ring sizing, timestamps, batching, draining: logger-owned.

@@ -1,17 +1,9 @@
 #version 450
 
-// Hi-Z (hierarchical depth) pyramid build (review 4.9 step 3, single-phase occlusion groundwork).
-// One module, two compute pipelines via the isReduce specialization constant (mirrors cull.comp's
-// useMeshShader): reduce builds mip 0 from this view's MSAA camera depth; downsample builds mip
-// The reduce source's MSAA sample count is a second spec constant (msaaSamples), baked at pipeline
-// creation from ctx->msaaSamples: it replaces a runtime textureSamples() query so the per-sample
-// fetch loop unrolls and the fetches issue ahead of the max chain (was the dominant Long-Scoreboard
-// stall 〜 one fetch drained per iteration with no memory-level parallelism).
-// Avenue 1: when the device supports VK_RESOLVE_MODE_MAX_BIT the build first hardware-resolves depth to
-// single-sample (farthest sample = conservative occluder), and this module is compiled a second time
-// with RESOLVED_DEPTH so the reduce reads a sampler2D (one fetch/texel) instead of the per-sample loop.
-// (srcMip+1) from mip srcMip. Per-mip descriptor sets bind the single destination mip as uMip, so
-// no storage-image-array dynamic indexing (an unenabled 1.0 feature) is required. R32F pyramid.
+// Hi-Z pyramid build. Two pipelines via isReduce: reduce (mip 0 from camera depth), downsample (srcMip+1 from srcMip).
+// msaaSamples: reduce source sample count, baked at pipeline creation (unrolls the per-sample fetch loop).
+// RESOLVED_DEPTH: MAX-resolve path reads sampler2D; else MSAA per-sample loop.
+// Per-mip sets bind destination as uMip (no storage-image-array indexing). R32F.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -32,11 +24,8 @@ layout(push_constant) uniform PC {
     ivec2 srcSize;    // source dimensions, px: full depth for reduce, mip srcMip for downsample
 } pc;
 
-// Conservative MAX over the source footprint this destination texel covers. Standard ZO depth
-// (near=0, far=1, no reverse-Z): the pyramid stores the FARTHEST depth in each texel, so the cull
-// rejects an entity only when its nearest point is behind every covered surface. When a source
-// dimension is odd the footprint extends one texel at the boundary so no far sample is dropped 〜
-// dropping one would shrink the stored max and risk culling visible geometry (over-occlusion).
+// Conservative MAX over source footprint. ZO depth (near=0, far=1): pyramid stores farthest depth.
+// Odd source dim: footprint extends one texel at the boundary (no far sample dropped).
 void main() {
     ivec2 d = ivec2(gl_GlobalInvocationID.xy);
     if (d.x >= pc.dstSize.x || d.y >= pc.dstSize.y) return;
@@ -51,8 +40,7 @@ void main() {
     float maxd = 0.0;
     if (isReduce) {
 #ifdef RESOLVED_DEPTH
-        // Depth was MAX-resolved over samples by fixed-function hardware (avenue 1), so read one texel
-        // per source position (lod 0). Interior fast path gives the 2x2 footprint compile-time bounds.
+        // MAX-resolved depth: one fetch/texel (lod 0). Interior: fixed 2x2.
         if (!bx && !by) {
             for (int y = 0; y < 2; ++y)
                 for (int x = 0; x < 2; ++x)
@@ -63,10 +51,7 @@ void main() {
                     maxd = max(maxd, texelFetch(uDepth, ivec2(x, y), 0).r);
         }
 #else
-        // Per-sample MSAA reduce (fallback when depth MAX-resolve is unsupported, avenue 2). Common case
-        // (interior, no odd boundary) covers exactly 2x2 and stays in bounds, so the footprint AND sample
-        // loops all have compile-time bounds -> full unroll -> the 2*2*msaaSamples fetches issue before the
-        // max chain. Bit-identical to the general loop below.
+        // Per-sample MSAA reduce. Interior: fixed 2x2 x msaaSamples (full unroll). Bit-identical to general loop.
         if (!bx && !by) {
             for (int y = 0; y < 2; ++y)
                 for (int x = 0; x < 2; ++x)

@@ -86,8 +86,7 @@ void cascade_detach_lights(RendererState* state, uint32_t parentRid, uint32_t fr
     } while (n == 64u);
 }
 
-// Sole decode of a light type into the static rig: its budget row and that row's ceiling.
-// NULL == outside LightType, so shadowTypeUsed is only ever indexed by a named enumerator.
+// Sole decode: light type -> static budget row + ceiling. NULL == outside LightType.
 static uint32_t* shadow_static_budget(RendererState* st, uint32_t lightType, uint32_t* outBudget) {
     switch (lightType) {
     case LIGHT_TYPE_DIRECTIONAL: *outBudget = ANO_SHADOW_DIR_COUNT;   return &st->shadowTypeUsed[LIGHT_TYPE_DIRECTIONAL];
@@ -97,10 +96,9 @@ static uint32_t* shadow_static_budget(RendererState* st, uint32_t lightType, uin
     }
 }
 
-// Sole ownership decode for the static region: advance *s to the next active config owned by
-// lightIdx, and answer its footprint and type from the block's OWN stored config, never a caller's.
-// in:  s, scan cursor (in/out); outSize/outType, the found block's footprint and light type
-// out: bool, false == no further owned block; the out-params are untouched on that arm
+// Advance *s to next active config owned by lightIdx; footprint + type from stored config.
+// in:  s, scan cursor (in/out); outSize/outType, found block footprint and light type
+// out: bool, false == no further owned block; out-params untouched then
 static bool next_owned_block(const RendererState* st, uint32_t lightIdx, uint32_t* s,
                              uint32_t* outSize, uint32_t* outType) {
     for (; *s < st->shadowFrustumNext; (*s)++) {
@@ -116,9 +114,8 @@ static bool next_owned_block(const RendererState* st, uint32_t lightIdx, uint32_
 /* Static Shadow-Frustum Reclamation */
 
 // Retire a released static block by exact footprint. NONE is a no-op.
-// The static region only ever holds two shapes 〜 the point block and the single 〜 so exact fit is
-// total over them; any other footprint has no list and strands, as everything did before.
-// The push cannot be refused: capacity is the region's own bound (structs.h).
+// Two shapes only: point (6) and single (1). Other footprints have no free-list.
+// Push capacity = region bound (structs.h).
 static void static_frustum_free(RendererState* st, uint32_t base, uint32_t blockSize) {
     if (base == ANO_SHADOW_NONE) return;
     if (blockSize == ANO_SHADOW_CUBE_FACES) {
@@ -127,8 +124,7 @@ static void static_frustum_free(RendererState* st, uint32_t base, uint32_t block
         if (st->stSingleFreeCount < ANO_SHADOW_ST_SINGLE_FREE_CAP) st->stSingleFree[st->stSingleFreeCount++] = base;
     }
 }
-// Base of a retired block of exactly blockSize entries, ANO_SHADOW_NONE when none is held.
-// Never splits or coalesces: a caster's shape recurs, so the shape it released is the shape it wants back.
+// Base of a retired blockSize block, or ANO_SHADOW_NONE. No split/coalesce.
 static uint32_t static_frustum_alloc(RendererState* st, uint32_t blockSize) {
     if (blockSize == ANO_SHADOW_CUBE_FACES)
         return st->stPointFreeCount  ? st->stPointFree[--st->stPointFreeCount]   : ANO_SHADOW_NONE;
@@ -137,15 +133,11 @@ static uint32_t static_frustum_alloc(RendererState* st, uint32_t blockSize) {
     return ANO_SHADOW_NONE;
 }
 
-// Release every static frustum block this palette row owns: blocks go inactive (mirror + stage),
-// volumes clear, budget rows return. Every block but the one held back for an in-place rewrite is
-// retired to the free-lists; the monotonic cursor itself never rewinds. Scans the whole live
-// static region, so a row already holding more than one block heals in one pass.
-// in:  lightIdx, static palette row; wantSize, block footprint the caller means to re-register (0 = none)
-// out: uint32_t, base of the first released block whose footprint == wantSize, else ANO_SHADOW_NONE
-// inv: only register_static_shadow writes active configs below shadowFrustumNext, so every match
-//      owns one shadow_static_budget increment and the decrement cannot underflow; runtime blocks
-//      sit above the region and are never scanned. A row's block is contiguous from its first entry.
+// Release every static frustum this palette row owns: inactive, clear volumes, return budget.
+// Hold one matching wantSize for in-place rewrite; retire the rest. Cursor never rewinds.
+// in:  lightIdx, static palette row; wantSize, re-register footprint (0 = none)
+// out: base of first released block with footprint == wantSize, else ANO_SHADOW_NONE
+// inv: active below shadowFrustumNext are register_static_shadow's; budget dec cannot underflow; runtime sits above; block contiguous from first entry
 static uint32_t static_shadow_release_owned(RendererState* st, uint32_t lightIdx,
                                             uint32_t frameIndex, uint32_t wantSize) {
     uint32_t reuse = ANO_SHADOW_NONE;
@@ -175,17 +167,10 @@ static uint32_t static_shadow_release_owned(RendererState* st, uint32_t lightIdx
     return reuse;
 }
 
-// Register STATIC-region caster for staged light row. Allocates frustum block (point=6 faces, dir/spot=1);
+// Register STATIC-region caster for staged light row. Allocates frustum (point=6, dir/spot=1);
 // stages config (active=1) + light info (castsShadow=1, base, count). Past budget/region -> shadowless.
-// lightType outside LightType has no budget row -> shadowless (the bridge seam gates it first).
-// Re-registration on a live row REPLACES: the row's prior blocks are released first, so the budget
-// row it held funds its own replacement, and a matching footprint is rewritten in place 〜 the
-// sanctioned destroy/recreate rebuild (backend.h) is budget- and region-stable.
-// A footprint CHANGE is region-stable too: the old shape is retired and the new one comes from the
-// free-lists before the cursor bumps. A bump therefore only ever happens with that footprint's list
-// empty, i.e. with every block of that shape live, so the shapes in existence stay bounded by the
-// budgets and shadowFrustumNext can never pass ANO_SHADOW_STATIC_FRUSTUM_COUNT. The region-full arm
-// below is the overflow contract, kept, and unreachable while the budget rows hold.
+// Outside LightType -> shadowless. Re-reg REPLACES: release prior, rewrite matching footprint in place.
+// Footprint change retires old, allocs from free-list before cursor bump. Region-full = overflow contract.
 void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t lightType,
                                    uint32_t frameIndex, uint32_t parentSlot, float range) {
     uint32_t budget;
@@ -226,12 +211,10 @@ void unregister_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t fra
     (void)static_shadow_release_owned(st, lightIdx, frameIndex, 0u); // 0 = nothing to reuse for
 }
 
-// UPDATE half of the static-row contract (backend.h): a whole-row overwrite reaches the caster
-// geometry the row already owns. Re-installs every owned block's influence volume from the restaged
-// range and stales its cached layers. Command path only.
-// in:  lightIdx, static palette row; parentSlot, the row's live transform slot; range, restaged range
-// out: none. Grants stay CREATE-only 〜 this only ever walks blocks the row already holds, so a
-//      block-less row is a no-op by construction and no budget or region state can move.
+// UPDATE half of static-row contract (backend.h): restage owned volumes from new range; stale layers.
+// Command path only. No grants, budget, or region moves. Block-less row = no-op.
+// in:  lightIdx, static palette row; parentSlot, live transform slot; range, restaged range
+// out: none
 void refresh_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t parentSlot, float range) {
     float zeroOff[3] = { 0.0f, 0.0f, 0.0f }; // static rows ride the slot origin, as at registration
     uint32_t blockSize, blockType;
@@ -241,12 +224,10 @@ void refresh_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t parent
     }
 }
 
-// Query half of the static-row contract (backend.h): what the row's caster mirror actually holds,
-// read through the same ownership decode refresh_static_shadow walks 〜 so the seam that reports a
-// divergence and the walk that acts on it can never disagree. Reads no caller-supplied type.
+// Query half of static-row contract (backend.h): does the row own an active static block.
+// Same ownership decode as refresh_static_shadow. No caller-supplied type.
 // in:  lightIdx, static palette row
-// out: bool, true == the row owns at least one active static block (it casts)
-// out: outType, total: the owning block's stored LightType, LIGHT_TYPE_COUNT on a block-less row
+// out: bool, true if row casts; outType = stored LightType, or LIGHT_TYPE_COUNT if block-less
 [[nodiscard]] bool static_shadow_row_casts(const RendererState* st, uint32_t lightIdx, uint32_t* outType) {
     uint32_t s = 0u, blockSize;
     if (next_owned_block(st, lightIdx, &s, &blockSize, outType)) return true;

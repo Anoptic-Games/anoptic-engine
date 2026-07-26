@@ -23,17 +23,14 @@ struct Buffer
 // Shader loading utilities.
 // filename is relative to the executable directory ("resources/shaders/x.spv").
 bool loadFile(const char* filename, struct Buffer* buffer);
-// in:  code = an already-loaded SPIR-V blob, borrowed for the call
-// out: the module, or VK_NULL_HANDLE when vkCreateShaderModule refuses it. That sentinel is the
-//      only failure channel and must reach ano_pipeline_stage, never a stage struct.
+// in:  code = borrowed SPIR-V blob
+// out: module, or VK_NULL_HANDLE on refuse (sole fail path -> ano_pipeline_stage)
 [[nodiscard]] VkShaderModule createShaderModule(VkDevice device, struct Buffer* code);
 
-// The sole route a shader module takes into a pipeline stage: a refused mint stops here instead
-// of reaching vkCreate*Pipelines (VUID-VkPipelineShaderStageCreateInfo-module).
-// in:  stage = one stage bit; module = createShaderModule's return; spec = caller-owned
-//      specialization info that must outlive pipeline creation, NULL for none
-// out: false with *out untouched when module is VK_NULL_HANDLE, else true with *out complete
-// inv: no builder writes VkPipelineShaderStageCreateInfo.module by hand
+// Sole module -> stage path. VK_NULL_HANDLE stops here (VUID-VkPipelineShaderStageCreateInfo-module).
+// in:  stage bit; module from createShaderModule; spec outlives create, NULL for none
+// out: false, *out untouched on VK_NULL_HANDLE; else true, *out complete
+// inv: builders never write .module by hand
 [[nodiscard]] static inline bool ano_pipeline_stage(VkShaderStageFlagBits stage, VkShaderModule module,
                                                     const VkSpecializationInfo* spec,
                                                     VkPipelineShaderStageCreateInfo* out)

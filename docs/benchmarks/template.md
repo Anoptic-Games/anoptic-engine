@@ -51,6 +51,9 @@ For textbuffer viewing convenience:
 └──────────────┴──────────┴──────────┴────────┴──────────┴────────┴────────┴─────────┴──────────┴──────────┴──────────────────────┘
 ```
 
-All rows foreground-verified; drop any BG!! row. res is the harness render column 〜 the realized swapchain extent from the engine's res= profile line (note the target beside it if the two differ). wall fps is the median per-window throughput from the [frame] line (ANO_PERF_WINDOW_FRAMES = 128 presented frames per window). 1% low and 0.1% low are 1000/p99 and 1000/p999 from the [frametime] line, each percentile the median across windows; max ms is the run's worst single frame. At n=128 per window p999 saturates toward the window max, so the 0.1% low reads as the typical worst-frame-per-128; max ms still catches the absolute spike. GPU ms is the median GPU-pass total (upload + compute + shadow + lighting + composite); GPU cap = 1000 / GPU ms; wall/cap at or above 0.9 is GPU-bound, below is CPU/present-bound; swap MiB is the swapchain allocator's resident VRAM.
+All rows foreground-verified; drop BG!! rows.
+res = harness render column: realized swapchain extent from the engine's res= profile line (note target if they differ).
+wall fps = median per-window throughput from [frame] (ANO_PERF_WINDOW_FRAMES = 128). 1% / 0.1% low = 1000/p99 and 1000/p999 from [frametime], median across windows. max ms = worst single frame; at n=128, 0.1% low ≈ typical worst-per-128.
+GPU ms = median GPU-pass total (upload + compute + shadow + lighting + composite). GPU cap = 1000 / GPU ms. wall/cap ≥ 0.9 → GPU-bound, else CPU/present. swap MiB = swapchain resident VRAM.
 
-Resolution check: <swap MiB per megapixel of render pixels across the sweep; the top-row-to-1080p swap ratio against the same rows' pixel ratio>. The render column is the extent the engine actually created; near-linear swap-vs-render-pixels rules out an accounting bug on top of it.
+Resolution check: <swap MiB per megapixel of render pixels across the sweep; the top-row-to-1080p swap ratio against the same rows' pixel ratio>. Render column = engine-created extent.

@@ -3,9 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage for anoptic_threads.h: barrier init domain, exactly-count cohorts, over-subscribed
-// reuse. A watchdog bounds the run because a lost arrival deadlocks rather than failing, and
-// canaries fence the barrier object so a write past it is caught. Exit 0 == pass.
+// anoptic_threads.h: barrier init domain, exactly-count cohorts, over-subscribed reuse.
+// Watchdog bounds the run. Canaries fence the barrier object. Exit 0 == pass.
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -48,8 +47,7 @@ static bool fence_intact(void)
 
 /* Watchdog */
 
-// A barrier that erases an arrival deadlocks the waiters instead of returning a wrong answer,
-// so the run is bounded and the tallies are printed on the way out.
+// Bounds the run. Prints tallies on exit.
 
 static atomic_uint arrivals, releases, serials, early;
 
@@ -67,8 +65,7 @@ static void *watchdog(void *arg)
 
 /* Init domain */
 
-// count 0 is refused, count 1 and count 64 are accepted, and the lone thread of a count-1
-// barrier is the serial thread on every pass. A barrier that refuses everything fails here.
+// count 0 refused; count 1 and 64 accepted. Count-1 wait returns serial every pass.
 static void test_barrier_init_domain(void)
 {
     printf("barrier: init domain\n");
@@ -140,9 +137,7 @@ static void test_barrier_cohorts(void)
 
 /* Over-subscribed reuse */
 
-// More threads than count share one barrier, cohort after cohort. A shared arrival budget (a
-// multiple of count) keeps the tail from stranding: total arrivals are exactly BUDGET, so every
-// cohort fills and a barrier that never erases an arrival always drains.
+// More threads than count share one barrier. Arrival budget is a multiple of count; total == BUDGET.
 
 #define BUDGET 60000
 

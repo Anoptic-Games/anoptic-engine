@@ -15,16 +15,12 @@
 enum { SH_UPDATE, SH_SCATTER, SH_CULL, SH_HIZ, SH_HIZ_RESOLVE, SH_TPSORT, SH_LIGHTCULL,
        SH_LIGHTSETUP, SH_SHADOWSETUP, SH_COUNT };
 
-// Compute-pipeline prototypes + descriptor set layouts.
-// Cache idiom (every site below): a pipeline cache is an optimization and VK_NULL_HANDLE is a legal
-// pipelineCache argument, so a refused mint zeroes the handle and init carries on.
-// Commit-last idiom (every site below): implementationCount is published only once its array exists,
-// so `count > 0` always implies a live array of at least count entries.
+// Compute prototypes + descriptor layouts.
+// Cache idiom: refused mint -> VK_NULL_HANDLE; init continues.
+// Commit-last: publish implementationCount only after array exists.
+// Unwind: hold blobs/modules to out; refused load clears blob (loadFile short-read dangling).
 bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
 {
-    // Unwind idiom: every stage's blob and module is held to function exit, so every refusal past
-    // the first load takes `goto out`, which is also where the success path lands. A refused load
-    // clears its buffer first: loadFile leaves data dangling on a short read.
     bool ok = false;
     struct { struct Buffer blob; VkShaderModule module; } sh[SH_COUNT] = {0};
 
@@ -258,9 +254,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     if (!loadFile("resources/shaders/hiz.comp.spv", &sh[SH_HIZ].blob)) { sh[SH_HIZ].blob.data = NULL; goto out; }
     sh[SH_HIZ].module = createShaderModule(ctx->device, &sh[SH_HIZ].blob);
 
-    // Depth MAX-resolve: both Hi-Z pipelines use the resolved single-sample module, else the base
-    // sampler2DMS. The capability alone picks the lane, so a refused mint stops init instead of
-    // being laundered into the wrong module.
+    // Depth MAX-resolve module if capable, else base. Cap picks lane; refuse stops init.
     if (ctx->deviceCapabilities.depthMaxResolve)
     {
         if (!loadFile("resources/shaders/hiz_resolve.comp.spv", &sh[SH_HIZ_RESOLVE].blob)) { sh[SH_HIZ_RESOLVE].blob.data = NULL; goto out; }
@@ -479,9 +473,7 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
 
     ok = true;
 
-    // Sole discharge site: blobs and modules are held to function exit, so every path past the
-    // first acquisition arrives here exactly once. free(NULL) and destroying VK_NULL_HANDLE are
-    // no-ops, so a slot never acquired discharges harmlessly.
+    // Discharge blobs + modules (NULL / VK_NULL_HANDLE no-ops).
 out:
     for (int s = 0; s < SH_COUNT; s++)
     {

@@ -63,7 +63,7 @@ static _Atomic bool g_stop;
 /* Helpers */
 
 // Slurp whole file into NUL-terminated heap buffer. Caller frees. NULL if unreadable.
-// Grow-until-EOF (not size-then-read): avoids stale short size on attribute-caching FS.
+// Grow-until-EOF, not size-then-read.
 static char *slurp(const char *path, size_t *out_len)
 {
     FILE *f = fopen(path, "rb");
@@ -496,7 +496,7 @@ static void *c1_flusher(void *arg)
     (void)arg;
     while (!atomic_load(&g_stop)) {
         ano_log_flush();
-        ano_sleep(100);   // 0.1 ms: hammer the drain path without a pathological tight spin
+        ano_sleep(100);   // 0.1 ms between flushes
     }
     return NULL;
 }
@@ -656,7 +656,7 @@ static int test_abuse_inputs(void)
         free(c);
     }
 
-    // Embedded NUL last: stored byte-for-byte; only assert file grew.
+    // Embedded NUL last: stored byte-for-byte. Only assert file grew.
     ano_log(ANO_INFO, "a%cb", 0);
     ano_log_flush();
     size_t len2 = 0;
@@ -733,16 +733,12 @@ static int test_lifecycle_guard(const char *when)
 
 /* Source-file capture */
 
-// ano_log_write/ano_log_vwrite take a sourceFile beside a literal-only printFormat. The header
-// puts no lifetime requirement on sourceFile, so a caller may hand it a stack or heap path:
-// the drained record must carry the name as it read at call time, not whatever the caller's
-// buffer holds when the drain thread gets there.
+// sourceFile captured at call time. Drained prefix must match call-time content, not drain-time.
 
 #define SRCFILE_BACKLOG 2000
 #define SRCFILE_TRIGGERS 16
 
-// Control: a string-literal sourceFile round-trips with its file:line prefix, so a fix that
-// drops the prefix machinery cannot pass.
+// Control: literal sourceFile round-trips with file:line prefix.
 static int test_srcfile_literal(void)
 {
     g_fail = 0;
@@ -760,8 +756,7 @@ static int test_srcfile_literal(void)
     return g_fail;
 }
 
-// Control: a mutable buffer left intact round-trips, so a non-literal sourceFile stays
-// in-contract and a reject-non-literal fix is visible.
+// Control: intact mutable sourceFile buffer round-trips.
 static int test_srcfile_mutable_buffer(void)
 {
     g_fail = 0;
@@ -780,10 +775,8 @@ static int test_srcfile_mutable_buffer(void)
     return g_fail;
 }
 
-// sourceFile must be captured by value at call time. A FIFO backlog pins the drainer behind the
-// triggers, then each trigger passes its own live buffer and scribbles it the instruction after
-// the call returns; the drained prefixes must still name the call-time files. Buffers stay live,
-// so the failure signal is drain-time content, not a crash.
+// Backlog pins the drainer. Each trigger passes a live buffer, scribbles after return.
+// Drained prefixes must still name the call-time files.
 static int test_srcfile_calltime_capture(void)
 {
     g_fail = 0;
@@ -844,7 +837,7 @@ static int test_visible_output(void)
         ano_log(ANO_INFO, "counted line %d of 5", i);
     ano_log_flush();
 
-    ano_log_output_dir(LOG_DIR);   // move the output off the showcase file so nothing else touches it
+    ano_log_output_dir(LOG_DIR);   // rebind off showcase file
 
     char *c = slurp(VIS_PATH, NULL);
     CHECK(c != NULL && strstr(c, "showcase"), "visible: showcase file written");
@@ -908,7 +901,7 @@ static int test_edge_ring_seam(void)
     for (int b = 0; b < SEAM_BATCHES; b++) {
         for (int i = 0; i < SEAM_PER; i++)
             ano_log(ANO_INFO, "seam %d", n++);
-        ano_log_flush();   // drain mid-stream so the write cursor laps the buffer across batches
+        ano_log_flush();   // mid-stream drain: write cursor laps the buffer
     }
 
     char *c = slurp(LOG_PATH, NULL);
@@ -1034,7 +1027,7 @@ static void *heavy_flusher(void *arg)
     return NULL;
 }
 
-// 12 producers + 2 flushers. Level DEBUG, no-loss exact total.
+// 12 producers + 2 flushers. Level INFO, no-loss exact total.
 static int test_contention_heavy_mixed(void)
 {
     g_fail = 0;

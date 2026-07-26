@@ -18,8 +18,7 @@
 // Run after ano_vk_init_pipelines.
 // in:  ctx, state (prototypes[PIPELINE_FLAT].layout must exist)
 // out: true on success; populates state->shadow{Pipeline,Cache,Sampler}
-// Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
-// argument, so a refused mint zeroes the handle and init carries on.
+// Cache idiom: refused mint zeroes handle to VK_NULL_HANDLE; init continues.
 bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 {
 	// Linear/clamp sampler for the moment atlas.
@@ -46,10 +45,8 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	VkShaderStageFlagBits geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
 	// Depth-only geometry variant (ANO_DEPTH_ONLY compile of flat.mesh/flat.vert).
-	// Unwind idiom: every buffer and module of the depth phase is inert at declaration, so any arm
-	// past this point leaves via `goto fail`, which discharges whatever is live. The masked
-	// caster's pair is declared here for the same reason. loadFile leaves its buffer indeterminate
-	// when it refuses, so a refused load re-inerts before unwinding.
+	// Unwind idiom: buffers/modules inert at declare; goto fail discharges live. Masked pair too.
+	// loadFile refuse: buffer indeterminate -> re-inert before unwind.
 	struct Buffer geomCode = {0}, fragCode = {0}, mGeomCode = {0}, mFragCode = {0};
 	VkShaderModule geomModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE, taskModule = VK_NULL_HANDLE,
 		mGeomModule = VK_NULL_HANDLE, mFragModule = VK_NULL_HANDLE;
@@ -184,8 +181,8 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	vkDestroyShaderModule(ctx->device, geomModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragModule, NULL);
 	vkDestroyShaderModule(ctx->device, taskModule, NULL);
-	// fail: is deliberately unreachable below here: these nine are discharged and NOT re-inerted,
-	// so a `goto fail` added below is a nine-object double free. Add none — blur_done: or return.
+	// fail: unreachable below: nine discharged and NOT re-inerted.
+	// A goto fail added below is a nine-object double free. Add none. blur_done: or return.
 
 	if (r != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create shadow depth pipeline!"); return false; }
 	if (mr != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create masked shadow depth pipeline!"); return false; }
@@ -211,8 +208,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	if (vkCreatePipelineLayout(ctx->device, &blurLayoutInfo, NULL, &state->shadowBlurLayout) != VK_SUCCESS) {
 		ano_log(ANO_FATAL, "Failed to create shadow blur pipeline layout!"); return false; }
 
-	// Second unwind phase: the depth phase is fully discharged above, so the blur pair carries its
-	// own label.
+	// Blur unwind phase: depth phase discharged; blur pair has its own label.
 	bool blurOk = false;
 	struct Buffer blurVertCode = {0}, blurFragCode = {0};
 	VkShaderModule blurVert = VK_NULL_HANDLE, blurFrag = VK_NULL_HANDLE;

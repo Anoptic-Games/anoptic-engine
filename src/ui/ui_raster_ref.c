@@ -25,8 +25,7 @@ static float clampf(float v, float lo, float hi)
 
 /* Path Fill */
 
-// Path fill: the same monotone-quad sweep the glyph lane uses (mirrors curve_area in
-// textcoverage.glsl / text_raster_ref.c), walked over the scene's shared curve stream.
+// Path fill: monotone-quad sweep over shared curve stream (mirrors textcoverage.glsl curve_area).
 
 // Single monotone-component root hitting target, clamped [0,1], citardauq form.
 static float solve_mono(float c0, float c1, float c2, float target)
@@ -42,8 +41,7 @@ static float solve_mono(float c0, float c1, float c2, float target)
     return clampf(2.0f * c / den, 0.0f, 1.0f);
 }
 
-// Signed area between one monotone quad and the window's right edge, clipped to [0,w]x[0,h];
-// coordinates arrive window-local. Mirrors curve_area().
+// Signed area: monotone quad vs window right edge, clip [0,w]x[0,h], window-local. Mirrors curve_area().
 static float curve_area(float x0, float y0, float x1, float y1, float x2, float y2,
                         float w, float h)
 {
@@ -226,7 +224,7 @@ void ano_ui_ref_paint(const AnoUiScene *s, uint32_t paintRef, float px, float py
         return;
     }
     const AnoUiPaint *pa = &s->paints[paintRef];
-    // Window checked by subtraction: stopFirst + stopCount wraps past this arm otherwise.
+    // Overflow-safe stop window: stopFirst/stopCount vs stopCount.
     if (pa->stopCount == 0 || pa->stopFirst >= s->stopCount
         || pa->stopCount > s->stopCount - pa->stopFirst) {
         out[0] = out[1] = out[2] = out[3] = 0.0f;
@@ -281,7 +279,7 @@ void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, fl
         break;
     }
     case ANO_UI_PATH: {
-        // Window box in prim-local space (v0 paths use identity inv); walk the shared curve stream.
+        // Prim-local window box (v0: identity inv). Walk shared curve stream.
         if (s->curves == NULL || p->aux0 >= s->curveCount)
             return;
         cov = clamp01(ui_path_sum(s, p->aux0, p->aux1, l[0] - 0.5f, l[1] - 0.5f, 1.0f, 1.0f));
@@ -322,24 +320,20 @@ void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4])
 
 /* Tiled Eval */
 
-// Entry word (frozen GPU ABI, uicoverage.glsl decodes the same): solid bit and index mask
-// partition the 32 bits, so the masked index is a plain uint32 that compares against
-// primCount without wrap or sign play.
+// Entry word ABI (matches uicoverage.glsl): solid bit + index mask partition UINT32_MAX.
 static_assert((ANO_UI_ENTRY_INDEX_MASK ^ ANO_UI_ENTRY_SOLID) == UINT32_MAX, // disjoint + total
               "tile entry: solid bit and index mask partition the word");
 
-// One tile entry: normal shade, or (solid bit) coverage forced to 1 with the SDF skipped 〜
-// flat fill through clip and paint. Mirrors the GPU tiled branch. SOLE entry->index decode:
-// out-of-range fails CLOSED (transparent, OVER), so no caller stream indexes past prims.
-// In: scene, entry word, pixel. Out: src contribution. Returns the entry's blend mode
-// (ANO_UI_BLEND_MASK domain).
+// One tile entry: normal shade, or solid (cov=1, skip SDF) through clip+paint.
+// Sole entry->index decode; OOR -> transparent OVER. Mirrors GPU tiled branch.
+// In: scene, entry, pixel. Out: src. Returns blend mode (ANO_UI_BLEND_MASK).
 static uint32_t shade_entry(const AnoUiScene *s, uint32_t entry, int32_t px, int32_t py,
                             float src[4])
 {
     uint32_t idx = entry & ANO_UI_ENTRY_INDEX_MASK;
     if (idx >= s->primCount) {
         src[0] = src[1] = src[2] = src[3] = 0.0f;
-        return ANO_UI_BLEND_OVER; // zero contribution, identity under the OVER arm
+        return ANO_UI_BLEND_OVER; // zero contrib, identity under OVER
     }
     const AnoUiPrim *p = &s->prims[idx];
     if (!(entry & ANO_UI_ENTRY_SOLID)) {
@@ -356,9 +350,7 @@ static uint32_t shade_entry(const AnoUiScene *s, uint32_t entry, int32_t px, int
     return p->flags & ANO_UI_BLEND_MASK;
 }
 
-// Painter's-order blend through the tile grid for pixel (px,py). Same loop as
-// ano_ui_ref_eval over the tile list only; the GPU tiled path mirrors THIS.
-// Glyphs not included.
+// Painter's-order blend over the tile list for (px,py). Same as ano_ui_ref_eval. GPU mirrors this. No glyphs.
 void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY, const uint32_t *offsets,
                            const uint32_t *entries, int32_t px, int32_t py, float out[4])

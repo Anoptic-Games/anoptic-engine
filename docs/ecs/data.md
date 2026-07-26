@@ -4,24 +4,24 @@
 
 > **Thesis.** Systems programming gets told it must pick one safety regime: a tracing GC (safe, ergonomic, non-deterministic) or a borrow checker (safe, deterministic, hostile to mutable aliasing). Anoptic rejects the dichotomy. A million-entity simulation needs *unrestricted* mutation of shared state at speed. It can have that, with correctness, by deriving safety from **architectural geometry**. Three axes: memory bound to scope, concurrency bound to hardware, structure bound to types. This document maps the research behind each onto the engine as it exists today.
 
-This is the manifesto: *all allocations through arenas or thread-local heaps; no mutexes outside the Vulkan backend; C23, no heavyweight deps.* Each is the direct operational consequence of a well-developed line of computer-science research. The hard theory was done decades ago; the C23 toolchain finally makes it ergonomic.
+This is the manifesto: *all allocations through arenas or thread-local heaps; no mutexes outside the Vulkan backend; C23, no heavyweight deps.* Decades of theory; C23 makes it ergonomic.
 
 ---
 
-## Pillar I 〜 Memory: Regions Bound to Scope
+## Pillar I: Memory: Regions Bound to Scope
 
 ### The lineage
 
-**Tofte & Talpin (1994)** formalized *region-based memory management*: group allocations into regions whose lifetimes are inferred statically and reclaimed wholesale in O(1). Their `letregion ρ in e` construct binds a region's lifetime to a lexical scope, allocated on entry, destroyed on exit, and a **type-and-effect system** proves no value outlives its region. The key trick is *effect masking*: an access effect `access(ρ)` that occurs entirely inside `letregion ρ` is erased from the expression's outward effect. If the whole program type-checks to an empty residual effect, every memory access provably happened inside a live region. No GC, no runtime checks.
+**Tofte & Talpin (1994)** formalized *region-based memory management*: group allocations into regions whose lifetimes are inferred statically and reclaimed wholesale in O(1). Their `letregion ρ in e` construct binds a region's lifetime to a lexical scope, allocated on entry, destroyed on exit, and a **type-and-effect system** proves no value outlives its region. *Effect masking*: an access effect `access(ρ)` wholly inside `letregion ρ` is erased from the outward effect. Empty residual effect ⇒ every access was inside a live region. No GC, no runtime checks.
 
-The theory grew two important branches:
+Two branches:
 
-- **Calculus of Capabilities** (Walker, Crary, Morrisett, 1999) decoupled allocation from deallocation via explicit `newrgn`/`freergn`, by threading a static *capability* set through the type system. This is what lets regions serve event loops, state machines, and continuation-passing code where lifetimes aren't tree-shaped.
-- **Cyclone** (Grossman, Morrisett, Jim, Hicks, Cheney, Wang) carried the ideas into a real C dialect. Pointers carry their region (`int *ρ`). The `regions_of(τ)` operator plus region subtyping make dangling-pointer dereference a *compile-time* error. Cyclone is the existence proof that C idioms and region safety can coexist.
+- **Calculus of Capabilities** (Walker, Crary, Morrisett, 1999) decoupled allocation from deallocation via explicit `newrgn`/`freergn`, threading a static *capability* set through the type system. Regions for event loops, state machines, and CPS where lifetimes aren't tree-shaped.
+- **Cyclone** (Grossman, Morrisett, Jim, Hicks, Cheney, Wang) carried the ideas into a C dialect. Pointers carry their region (`int *ρ`). The `regions_of(τ)` operator plus region subtyping make dangling-pointer dereference a *compile-time* error. Existence proof: C idioms and region safety coexist.
 
 ### What Anoptic already does
 
-The engine implements the Tofte–Talpin *frame region* directly. From `include/anoptic_memory.h`:
+The engine implements the Tofte-Talpin *frame region* directly. From `include/anoptic_memory.h`:
 
 ```c
 #define LOCALHEAPATTR  __attribute__((__cleanup__(ano_heap_release)))
@@ -29,7 +29,7 @@ The engine implements the Tofte–Talpin *frame region* directly. From `include/
 mi_heap_t *frameHeap LOCALHEAPATTR = mi_heap_new();
 ```
 
-When `frameHeap` leaves scope the compiler emits an inline call to `ano_heap_release()`, destroying every allocation made against that heap in a single O(1) reclamation. That *is* `letregion`, expressed in C. mimalloc's per-heap arenas give us the contiguous backing store. The `cleanup` attribute gives us the lexical boundary. Effect masking we get socially rather than formally, by convention and review, but the operational shape is identical.
+When `frameHeap` leaves scope the compiler emits an inline call to `ano_heap_release()`, destroying every allocation against that heap in one O(1) reclamation. That *is* `letregion` in C. mimalloc per-heap arenas: contiguous backing. `cleanup` attribute: lexical boundary. Effect masking: by convention and review, not formally. Operational shape identical.
 
 **A precision note worth keeping:** `__attribute__((cleanup))` is a GCC/Clang extension. C23 standardizes the `[[...]]` attribute syntax and `typeof`, but `cleanup` remains a (universally supported) GNU extension. We depend on it deliberately and should say so plainly.
 
@@ -50,17 +50,17 @@ If you wrap a `cleanup` variable inside a GCC statement-expression macro (`({ ..
 
 ---
 
-## Pillar II 〜 Concurrency: Wait-Freedom Bound to Hardware
+## Pillar II: Concurrency: Wait-Freedom Bound to Hardware
 
-This is the pillar behind *"no mutexes outside the Vulkan backend."* A mutex serializes cores and lets one preempted thread stall everyone. Lock-free and wait-free structures guarantee system-wide (or per-thread) progress using atomic hardware primitives, **Compare-And-Swap** and **Fetch-And-Add**, instead of blocking.
+Pillar behind *"no mutexes outside the Vulkan backend."* A mutex serializes cores; one preempted thread stalls everyone. Lock-free / wait-free structures: system-wide (or per-thread) progress via atomic hardware primitives, **Compare-And-Swap** and **Fetch-And-Add**, not blocking.
 
 ### The reclamation problem
 
-**Michael & Scott** showed (the canonical MS-queue) that rich data structures can be made non-blocking with CAS/FAA. But removing locks creates a second problem: if thread A unlinks and frees a node while thread B holds a stale pointer into it, B faults. GC languages dodge this implicitly (and pay non-deterministic latency). Lock-free C must solve it explicitly with **Safe Memory Reclamation (SMR)**: *a node is reclaimed only once no thread can still reach it.*
+**Michael & Scott** (canonical MS-queue): rich non-blocking structures with CAS/FAA. Second problem: thread A unlinks and frees a node while thread B holds a stale pointer → B faults. GC languages dodge this (non-deterministic latency). Lock-free C needs **Safe Memory Reclamation (SMR)**: *reclaim a node only once no thread can still reach it.*
 
-**Interval-Based Reclamation** (Wen, Izraelevitz, Cai, Beadle & Scott, PPoPP 2018) is the modern answer. Each operation runs inside an interval (`start_op` / `end_op`). Retired nodes are stamped with the current epoch and parked on a thread-local list. A node is freed only once its stamp precedes the oldest interval any thread could still be inside. IBR keeps the bounded overhead of hazard pointers.
+**Interval-Based Reclamation** (Wen, Izraelevitz, Cai, Beadle & Scott, PPoPP 2018): each op runs in an interval (`start_op` / `end_op`). Retired nodes stamped with current epoch, parked on a thread-local list. Free only when stamp precedes the oldest live interval. IBR keeps hazard-pointer-bounded overhead.
 
-A worthwhile optimization is to source the interval clock from a **hardware timestamp counter**, removing the cache-line contention of a global counter. The research calls this "TSC-IBR". Treat that as *a technique* (hardware-clock interval source). **The counter is platform-specific, so it goes through `anoptic_time`:** x86-64 has `rdtsc` (wrapped by `clock_gettime` on Linux, `QueryPerformanceCounter` on Windows). arm64/Apple Silicon has `CNTVCT_EL0`, most portably reached via `mach_absolute_time()`. One `ano_*` interface, three lowerings.
+Optimization: source the interval clock from a **hardware timestamp counter** (no global-counter cache-line contention). Research name: "TSC-IBR". Treat as *a technique* (hardware-clock interval source). **The counter is platform-specific, so it goes through `anoptic_time`:** x86-64 has `rdtsc` (wrapped by `clock_gettime` on Linux, `QueryPerformanceCounter` on Windows). arm64/Apple Silicon has `CNTVCT_EL0`, most portably via `mach_absolute_time()`. One `ano_*` interface, three lowerings.
 
 | SMR scheme        | Mechanism                              | Strength                          | Cost |
 |-------------------|----------------------------------------|-----------------------------------|------|
@@ -71,43 +71,43 @@ A worthwhile optimization is to source the interval clock from a **hardware time
 
 ### False sharing, and turning MESI into a feature
 
-Cores keep caches coherent with the **MESI** protocol at **cache-line granularity**. Two threads writing *different* variables that happen to share one line force the line to ping-pong between cores. This *false sharing* silently erases the benefit of going lock-free. The fix is to pad hot, independently-written fields to their own line with `alignas`, so ownership transfers cleanly at line boundaries via release/acquire stores. Done right, MESI becomes the synchronization mechanism: a single release-store publishes a fully-written, cache-aligned slot.
+Cores keep caches coherent with the **MESI** protocol at **cache-line granularity**. Two threads writing *different* variables that share one line force ping-pong. *False sharing* erases the lock-free benefit. Fix: pad hot, independently-written fields to their own line with `alignas`, so ownership transfers at line boundaries via release/acquire stores. Done right, MESI is the sync: one release-store publishes a fully-written, cache-aligned slot.
 
 > **A constant the platform layer must own.** The research assumes 64-byte cache lines throughout. That holds on x86-64 (Linux and Windows), but **Apple Silicon uses 128-byte lines** (`sysctl hw.cachelinesize` → `128` on this M1). A hardcoded `alignas(64)` would pad to *half* a line on macOS and still false-share. So define one engine-wide `ANO_CACHELINE` (64 on x86-64, 128 on `__aarch64__`/Apple), resolve it in the abstraction layer, and align every hot lock-free slot to it. C has no standard `hardware_destructive_interference_size`, so this abstraction is on us.
 
 ### What Anoptic already does
 
-The logger is the first lock-free citizen. `src/log/log_core.c` already keeps an `_Atomic int tail_index` over a shared buffer with an `enqueue_log_string` producer path, the seed of a many-producer / single-consumer log bus. The maturation path is textbook: reserve a slot with one atomic `fetch_add`, write into an `ANO_CACHELINE`-aligned slot, then publish with an `atomic_store(…, memory_order_release)` on a commit header so the consumer (`memory_order_acquire`) flushes only fully-written, contiguous runs. No syscall, no lock, no gap-problem ambiguity.
+The logger is the first lock-free citizen. `src/log/log_core.c` keeps an `_Atomic int tail_index` over a shared buffer with an `enqueue_log_string` producer path: seed of a many-producer / single-consumer log bus. Maturation: reserve a slot with atomic `fetch_add`, write into an `ANO_CACHELINE`-aligned slot, publish with `atomic_store(…, memory_order_release)` on a commit header; consumer (`memory_order_acquire`) flushes only fully-written contiguous runs. No syscall, no lock, no gap-problem ambiguity.
 
-And the hardware cooperates on every target, because the atomics *interface* hides the lowering: on Apple Silicon the M1 reports `FEAT_LSE`, so `_Atomic` CAS and add become **single instructions** (`CAS`, `LDADD`, `SWP`). On x86-64 they lower to `lock`-prefixed ops. We write C11 `<stdatomic.h>` once and each platform's compiler emits the right thing. Lock-free is cheap on all three.
-
----
-
-## Pillar III 〜 Structure: Types as Zero-Cost Layout
-
-To orchestrate raw memory and atomics without a C++ type lattice or a borrow checker, we borrow ideas from type theory (Pierce, *TaPL*), but as *design inspiration realized in layout*.
-
-- **Intersection / union types & the Forsythe merge.** An intersection type `A ∩ B` describes a value usable as both `A` and `B`. The *merge operator* that builds such values traces to Reynolds' **Forsythe** (1988). The engine's data-oriented analogue: an entity is just an index into several contiguous Struct-of-Arrays. A system that processes everything with both `Physics` and `Render` components operates on what *resembles* an intersection, the entity effectively "has both types", but does so with sequential SIMD scans and zero vtable indirection. This is an **evocative analogy**: ECS composition is closer to a product over component arrays than to Pierce's intersection types. The payoff is real regardless: SoA maximizes L1 locality and kills vtable pointer-chasing for million-entity loops.
-
-- **Union type-punning is legal C.** Reading a different union member than was written is well-defined in C since C99 (§6.5.2.3, footnote) and remains so in C23. That lets us build honest tagged-variant and view types at the bare metal without ceremony.
-
-- **`_Generic` dispatch.** C23's `_Generic` gives compile-time, type-directed selection 〜 polymorphic interface macros that route to the right specialized routine. The right tool for typed, zero-overhead front-ends over our atomic/queue primitives.
+Atomics *interface* hides the lowering: Apple Silicon M1 reports `FEAT_LSE`, so `_Atomic` CAS and add are **single instructions** (`CAS`, `LDADD`, `SWP`). x86-64: `lock`-prefixed ops. One C11 `<stdatomic.h>` write; each compiler lowers correctly. Lock-free is cheap on all three.
 
 ---
 
-## Pillar IV 〜 C23 as the Ergonomic Substrate
+## Pillar III: Structure: Types as Zero-Cost Layout
 
-The toolchain finally meets the theory on every target: gcc or clang on Linux, clang on macOS (Homebrew LLVM clang 22, since Apple clang 15 is too old for C23) and on Windows, all speaking the same C23.
+To orchestrate raw memory and atomics without a C++ type lattice or a borrow checker, we borrow type-theory ideas (Pierce, *TaPL*) as *design inspiration realized in layout*.
 
-- **`[[unsequenced]]` and `[[reproducible]]`** (genuinely new in C23). The former marks effectless, stateless, idempotent functions (≈ GNU `const`). The latter effectless-but-may-read functions (≈ GNU `pure`). On our math core (transforms, orbital integration, hashing) they license the compiler to hoist, CSE, and reorder with confidence. Standardized purity annotations.
+- **Intersection / union types & the Forsythe merge.** An intersection type `A ∩ B`: value usable as both `A` and `B`. Merge operator: Reynolds' **Forsythe** (1988). Engine analogue: an entity is an index into contiguous Struct-of-Arrays. A system over both `Physics` and `Render` resembles an intersection ("has both types") via sequential SIMD scans, zero vtable indirection. **Evocative analogy**: ECS composition is closer to a product over component arrays than to Pierce intersection types. Payoff holds either way: SoA maximizes L1 locality and kills vtable chasing for million-entity loops.
 
-- **`typeof` and `auto`** (C23). These give *local* type deduction at the point of declaration, handy for keeping `size_t` discipline across queue and arena boundaries so a 32-bit `int` index can't silently truncate past `INT_MAX` (~2.1 billion) in a billion-entity world. It's fair to call this *inspired by* Pierce & Turner's "Local Type Inference" (1998). C23 `auto` simply copies the initializer's type, with none of the bidirectional propagation that paper describes. Useful framing.
+- **Union type-punning is legal C.** Reading a different union member than was written is well-defined in C since C99 (§6.5.2.3, footnote) and remains so in C23. Honest tagged-variant and view types at the bare metal.
+
+- **`_Generic` dispatch.** C23 `_Generic`: compile-time, type-directed selection. Polymorphic interface macros route to the specialized routine. Typed, zero-overhead front-ends over atomic/queue primitives.
 
 ---
 
-## The Hardware Is Not Abstract 〜 So the Platform Layer Is
+## Pillar IV: C23 as the Ergonomic Substrate
 
-The research's performance section is implicitly x86-64/Linux: `rdtsc`, `PDPE1GB` 1 GiB hugepages, 64-byte lines, 4 KiB pages. But Anoptic ships on **three platforms at once**, Linux/x86-64 (SSA's box), Windows/x86-64, and macOS/arm64 (Apple Silicon), so those numbers are *one column of a matrix*. This is exactly why the engine splits `include/` (the platform-agnostic interface, every `ano_*` call) from `src/*_linux.c` / `*_win64.c` / `*_macos.c` (the per-platform implementation). The *principles* below transfer to all three. The *constants and instructions* differ, so every one of them is a value the platform layer resolves.
+Toolchain meets theory on every target: gcc or clang on Linux, clang on macOS (Homebrew LLVM clang 22; Apple clang 15 is too old for C23) and on Windows, all speaking the same C23.
+
+- **`[[unsequenced]]` and `[[reproducible]]`** (new in C23). Former: effectless, stateless, idempotent (≈ GNU `const`). Latter: effectless-but-may-read (≈ GNU `pure`). Math core (transforms, orbital integration, hashing): hoist, CSE, reorder. Standardized purity annotations.
+
+- **`typeof` and `auto`** (C23). *Local* type deduction at declaration. Keeps `size_t` discipline across void and arena boundaries so a 32-bit `int` index can't silently truncate past `INT_MAX` (~2.1 billion) in a billion-entity world. Fair to call *inspired by* Pierce & Turner's "Local Type Inference" (1998). C23 `auto` copies the initializer's type; no bidirectional propagation. Useful framing.
+
+---
+
+## The Hardware Is Not Abstract: So the Platform Layer Is
+
+Research performance section is implicitly x86-64/Linux: `rdtsc`, `PDPE1GB` 1 GiB hugepages, 64-byte lines, 4 KiB pages. Anoptic ships **three platforms**: Linux/x86-64 (SSA's box), Windows/x86-64, macOS/arm64 (Apple Silicon). Those numbers are *one column of a matrix*. Split: `include/` (platform-agnostic `ano_*` interface) vs `src/*_linux.c` / `*_win64.c` / `*_macos.c` (per-platform impl). *Principles* transfer. *Constants and instructions* differ; platform layer resolves each.
 
 | Concern           | x86-64 (Linux / Windows)                              | arm64 (macOS, Apple Silicon)                    | Abstracted through |
 |-------------------|------------------------------------------------------|-------------------------------------------------|--------------------|
@@ -118,19 +118,19 @@ The research's performance section is implicitly x86-64/Linux: `rdtsc`, `PDPE1GB
 | Atomic lowering   | `lock`-prefixed ops, `cmpxchg`                       | **LSE** (`CAS` / `LDADD` / `SWP`, single-instr) | `<stdatomic.h>` `_Atomic` |
 | Thread primitives | full POSIX (Linux) / Win32 (Windows)                 | POSIX **minus** spinlock & barrier              | `anoptic_threads` (+ Darwin compat shim) |
 
-The platform layer turns this fragmentation into leverage. The same lock-free, arena-based core compiles optimally on all three, and each target brings a gift. Apple Silicon's 16 KiB pages quadruple TLB reach for free and its LSE atomics make CAS/FAA single instructions. x86-64's 64-byte line means tighter padding. Linux gives SSA the richest hugepage and NUMA control. Keep every constant flowing through the `anoptic_*` headers so no platform is a second-class citizen. That last table row is the concrete work this branch is doing right now: macOS libpthread ships no `pthread_spinlock_t` or `pthread_barrier_t`, so the Darwin implementation supplies them in a compat shim while `include/anoptic_threads.h` stays byte-identical across all three. Get the non-GPU core green on macOS without touching the Linux or Windows paths. That is the headless port.
+Platform layer turns fragmentation into leverage. Same lock-free, arena-based core on all three; each target brings a gift. Apple Silicon: 16 KiB pages quadruple TLB reach; LSE makes CAS/FAA single instructions. x86-64: tighter 64-byte padding. Linux: richest hugepage and NUMA control for SSA. Every constant through `anoptic_*` headers. Last table row is active work: macOS libpthread has no `pthread_spinlock_t` or `pthread_barrier_t`; Darwin compat shim supplies them while `include/anoptic_threads.h` stays byte-identical. Non-GPU core green on macOS without touching Linux or Windows paths. That is the headless port.
 
 ---
 
 ## Synthesis: One Architecture, Three Axes
 
-Three orthogonal axes of one discipline, and Anoptic already sits at their intersection:
+Three orthogonal axes; Anoptic sits at their intersection:
 
-1. **Memory is bound to scope.** Arenas + `cleanup` give Tofte–Talpin region safety in plain C. Allocation is O(1), reclamation is O(1), and lifetime is a property of the source's shape. No GC, no tracing, no per-object `free`.
-2. **Concurrency is bound to hardware.** CAS/FAA + interval-based reclamation + cache-line-aligned ownership give wait-free progress. The MESI protocol, respected at the cache line (`ANO_CACHELINE`, 64 B on x86-64, 128 B on Apple Silicon), becomes the publish/subscribe mechanism. No mutexes outside Vulkan, by construction.
-3. **Structure is bound to types.** SoA layout, legal C union punning, `_Generic` dispatch, and C23 purity attributes give polymorphism and safety as *layout and compile-time* facts.
+1. **Memory is bound to scope.** Arenas + `cleanup` = Tofte-Talpin region safety in plain C. Alloc O(1), reclaim O(1), lifetime from source shape. No GC, no tracing, no per-object `free`.
+2. **Concurrency is bound to hardware.** CAS/FAA + interval-based reclamation + cache-line-aligned ownership = wait-free progress. MESI at the cache line (`ANO_CACHELINE`, 64 B on x86-64, 128 B on Apple Silicon) is the publish/subscribe mechanism. No mutexes outside Vulkan, by construction.
+3. **Structure is bound to types.** SoA layout, legal C union punning, `_Generic` dispatch, C23 purity attributes: polymorphism and safety as *layout and compile-time* facts.
 
-You need memory whose lifetime is visible in the code's geometry, concurrency whose ordering is visible in the hardware's geometry, and structure whose meaning is visible in the type's geometry. Decades of theory (Tofte & Talpin, Walker–Crary–Morrisett, Cyclone, Michael & Scott, the IBR line, Reynolds, Pierce) converge on it, and C23 plus modern clang/gcc 〜 across Linux, Windows, and macOS 〜 finally make it both legal and fast on every machine the team runs. Anoptic takes that convergence literally.
+Memory lifetime visible in code geometry; concurrency ordering visible in hardware geometry; structure meaning visible in type geometry. Decades of theory (Tofte & Talpin, Walker-Crary-Morrisett, Cyclone, Michael & Scott, IBR, Reynolds, Pierce) converge; C23 plus modern clang/gcc across Linux, Windows, and macOS make it legal and fast on every machine the team runs. Anoptic takes that convergence literally.
 
 ---
 
@@ -142,7 +142,7 @@ So this document can be trusted in-tree, here is exactly where it tightens or he
 - **Cache lines and page sizes are platform constants**: 64-byte lines / 4 KiB pages on x86-64 (Linux, Windows); 128-byte lines / 16 KiB pages on Apple Silicon (both measured on this M1).
 - **`rdtsc` and `PDPE1GB` 1 GiB hugepages are x86-64-specific.** arm64 uses `CNTVCT_EL0` / `mach_absolute_time()`. Large-page reservation differs per OS (Linux THP/`MAP_HUGETLB`, Windows `MEM_LARGE_PAGES`, macOS kernel-managed), all reached through the platform layer.
 - **"TSC-IBR"** is described here as a technique (hardware-clock interval source).
-- **ECS-as-intersection-types** and **C23 `auto` as Pierce–Turner local type inference** are framed as *analogies/inspiration*. The engineering payoff (SoA locality, `size_t` discipline) holds either way.
-- `[[unsequenced]]`/`[[reproducible]]`, `typeof`, `_Generic`, and C99/C23 union type-punning are reported as stated 〜 those are accurate.
+- **ECS-as-intersection-types** and **C23 `auto` as Pierce-Turner local type inference** are framed as *analogies/inspiration*. The engineering payoff (SoA locality, `size_t` discipline) holds either way.
+- `[[unsequenced]]`/`[[reproducible]]`, `typeof`, `_Generic`, and C99/C23 union type-punning are reported as stated. Those are accurate.
 
 macOS/arm64 figures: `sysctl` on this Apple M1, macOS 14.5 (23F79). The x86-64 figures (64-byte line, 4 KiB page) are the standard platform values for Linux and Windows.
