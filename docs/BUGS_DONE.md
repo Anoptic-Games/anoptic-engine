@@ -1,6 +1,6 @@
 # Bugs, retired
 
-The completed ledger. Every entry the census closed 〜 resolved with a fix, refuted, or dispositioned wontfix 〜 lives here instead of in the active board. Sources: `[X] Fixed` / `wontfix` retirements from `docs/BUGS.md`; the removed-guard sweep, remediation determinations, settled open decisions, and 2026-07-25 campaign fix records below. Active defects stay in `docs/BUGS.md`. Census tables and the three open product decisions live in `docs/BUG-HUNT.md`.
+The completed ledger. Every entry the census closed 〜 resolved with a fix, refuted, or dispositioned wontfix 〜 lives here instead of in the active board. Sources: `[X] Fixed` / `wontfix` retirements from `docs/BUGS.md`; the removed-guard sweep, remediation determinations, settled open decisions, and 2026-07-25 campaign fix records below. Active defects stay in `docs/BUGS.md`. Census tables and the 2026-07-26 settled product decisions live in `docs/BUG-HUNT.md`.
 
 Entry text for the 2026-07-24 retirements is verbatim as closed. The 19 campaign census retirements are condensed (what was wrong, tier, behaviour delta, guard). No file:line entry appears in both `docs/BUGS.md` and this file.
 
@@ -507,7 +507,7 @@ Verification was per-fix negative control against the pre-fix tree, not suite-le
 
 ## Settled open decisions (from docs/BUG-HUNT.md)
 
-Moved out of "Open decisions" in `docs/BUG-HUNT.md` on 2026-07-25. The five verified entries that outlived the one-off pass because each was blocked on a contract fork. Implementations landed the same day. Three *new* product decisions for the 2026-07-26 residue live in `docs/BUG-HUNT.md`, "Open decisions"; they are not these five.
+Moved out of "Open decisions" in `docs/BUG-HUNT.md` on 2026-07-25. The five verified entries that outlived the one-off pass because each was blocked on a contract fork. Implementations landed the same day. The three 2026-07-26 product decisions (colour/data textures, GPU-arena reclaim, submission result API) are settled separately under `docs/BUG-HUNT.md`, "Settled decisions (2026-07-26)".
 
 ### log_core.c:817 〜 size-mismatch (bucket 2, anotest_logflood)
 
