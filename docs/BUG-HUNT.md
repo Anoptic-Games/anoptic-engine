@@ -5,6 +5,40 @@ Remediation map for the 2026-07-21 census of `docs/BUGS.md`, plus the product de
 As of 2026-07-26 the board is **129 fixed of 147 tallied**, with **17 open** and **1 wontfix**. The systemic swoops named below are largely spent. The three product forks that blocked autonomous residue work are settled below; implementation may proceed from those rulings.
 
 
+## New feature to use
+
+Introduce typed results for render submissions.
+
+Include `anoptic_results.h` from `anoptic_render.h`, then define:
+
+```c
+ANO_RESULT_TYPE(AnoRenderSubmitResult,
+    ANO_RENDER_SUBMIT_ACCEPTED = 0,
+    ANO_RENDER_SUBMIT_BACKPRESSURE,
+    ANO_RENDER_SUBMIT_OOM,
+    ANO_RENDER_SUBMIT_INVALID
+);
+```
+
+Change these functions to return `AnoRenderSubmitResult`:
+
+1. `ano_render_submit_bulk_update`
+2. `ano_render_submit_bulk_destroy`
+3. `ano_render_text_set`
+4. `ano_render_text_clear`
+5. `ano_render_ui_set`
+6. `ano_render_ui_clear`
+
+Return:
+
+- `ACCEPTED` when the command is successfully enqueued.
+- `BACKPRESSURE` when the command ring is full.
+- `OOM` when copying or packing the submission cannot allocate memory.
+- `INVALID` when the supplied payload or required pointers are invalid.
+
+Update every caller to inspect `result.code` explicitly. Do not treat the result as a Boolean, add a Boolean compatibility wrapper, or change any other render API.
+
+
 ## Accounting
 
 Census read of `docs/BUGS.md` on `fix-bughunt`, 2026-07-21. Four leads duplicated verified findings (`text_bake.c ano_text_window_sum`, `render_slots.c:84`, `ano_render_ui_set` validation, `time_linux.c:132`), so the distinct total is 107. Two findings carry two tags (`music_perc.c:121`, `texture.c:437`) → 72 tag assignments across 70 verified findings. The bucket table assigns one primary bucket each and does not double-count.
