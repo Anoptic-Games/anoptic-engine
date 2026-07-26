@@ -399,8 +399,8 @@ int ano_sleep(uint64_t us) {
     uint64_t start = ano_timestamp_raw();
 
     // Coarse stage: yield the CPU for everything but the spin tail.
-    if (target_ns > ANO_SLEEP_SPIN_TAIL_NS) {
-        uint64_t coarse_ns = target_ns - ANO_SLEEP_SPIN_TAIL_NS;
+    {
+        uint64_t coarse_ns = target_ns > ANO_SLEEP_SPIN_TAIL_NS ? target_ns - ANO_SLEEP_SPIN_TAIL_NS : target_ns;
         HANDLE timer = ano_sleep_timer();
         bool yielded = false;
         if (timer != NULL) {
@@ -422,11 +422,11 @@ int ano_sleep(uint64_t us) {
         // Chunked: a >=49.7-day stage truncates in a DWORD, and 0xFFFFFFFF ms is INFINITE.
         if (!yielded) {
             uint64_t coarse_ms = coarse_ns / 1000000ULL;
-            while (coarse_ms > 0ULL) {
+            do {
                 DWORD chunk = coarse_ms > 0x7FFFFFFFULL ? 0x7FFFFFFFUL : (DWORD)coarse_ms;
                 Sleep(chunk);
                 coarse_ms -= chunk;
-            }
+            } while (coarse_ms > 0ULL);
         }
     }
 

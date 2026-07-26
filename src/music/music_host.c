@@ -42,7 +42,7 @@ static bool mode_ok(double v)
 
 static bool cadence_ok(double v)
 {
-    return v >= ANO_CADENCE_NONE && v <= ANO_CADENCE_DECEPTIVE;
+    return v >= ANO_CADENCE_AUTHENTIC && v <= ANO_CADENCE_DECEPTIVE;
 }
 
 AnoMusicConfig ano_music_config_default(void)
@@ -100,7 +100,7 @@ static void expand(const AnoMusicConfig *c, AnoEngineConfig *e)
     for (uint32_t i = 0; i < CADENCE_CYCLE_MAX; ++i)
         e->cadencePolicies[i] = cadence_ok(c->cadencePolicies[i])
                                     ? c->cadencePolicies[i]
-                                    : (int8_t)ANO_CADENCE_NONE;
+                                    : (int8_t)ANO_CADENCE_AUTHENTIC;
     e->cadencePolicyCount = c->cadencePolicyCount < CADENCE_CYCLE_MAX ? c->cadencePolicyCount
                                                                      : CADENCE_CYCLE_MAX;
     e->hasMapper = c->hasMapper;
@@ -223,13 +223,19 @@ static int override_id(const char *param)
 static void override_apply(AnoOverrides *o, int id, bool set, double v)
 {
     switch (id) {
-    case OV_TEMPO:        o->hasTempoBpm = set;       o->tempoBpm = v; break;
+    case OV_TEMPO:
+        o->hasTempoBpm = set && isfinite(v) && v > 0.0;
+        o->tempoBpm = o->hasTempoBpm ? v : 0.0;
+        break;
     case OV_VELOCITY:     o->hasVelocityCenter = set; o->velocityCenter = v; break;
     case OV_ARTICULATION: o->hasArticulation = set;   o->articulation = v; break;
     case OV_DENSITY:      o->hasNoteDensity = set;    o->noteDensity = v; break;
     case OV_ROUGHNESS:    o->hasRoughness = set;      o->roughness = v; break;
     case OV_ACCENT:       o->hasAccentDepth = set;    o->accentDepth = (int)v; break;
-    case OV_REGISTER:     o->hasRegisterCenter = set; o->registerCenter = (int)v; break;
+    case OV_REGISTER:
+        o->hasRegisterCenter = set && v >= 0.0 && v <= 127.0;
+        o->registerCenter = o->hasRegisterCenter ? (int)v : 0;
+        break;
     case OV_HARMONIC_RHYTHM:
         o->hasHarmonicRhythm = set;
         o->harmonicRhythm = v;

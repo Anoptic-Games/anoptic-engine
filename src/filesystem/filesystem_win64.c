@@ -30,7 +30,7 @@ ano_fspath ano_fs_gamepath(void) {
 
     char pathBuffer[MAX_PATH];
     DWORD len = GetModuleFileNameA(NULL, pathBuffer, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH || len >= MAXPATH)
+    if (len == 0 || len >= MAX_PATH)
         return result; // failed or truncated
 
     // Trim file name, leave containing directory.
@@ -40,6 +40,8 @@ ano_fspath ano_fs_gamepath(void) {
     if (len > 3)
         len--;
 
+    if (len >= MAXPATH)
+        return result; // exceeds value type
     memcpy(result.str, pathBuffer, len);
     result.str[len] = '\0';
     result.length = (uint16_t)len;

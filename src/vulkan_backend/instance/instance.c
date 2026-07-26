@@ -189,15 +189,15 @@ const char** getRequiredExtensions(uint32_t* extensionsCount) // Returns extensi
 	uint32_t idx = 0;
 	for (uint32_t i = 0; i < glfwExtensionCount; i++)
 	{
-		extensions[idx++] = strdup(glfwExtensions[i]);
+		extensions[idx++] = glfwExtensions[i];
 	}
 
 	#ifdef DEBUG_BUILD
-	extensions[idx++] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	extensions[idx++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 	#endif
 
 	#ifdef __APPLE__
-	extensions[idx++] = strdup(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+	extensions[idx++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
 	#endif
 
 	*extensionsCount = totalExtensionCount;

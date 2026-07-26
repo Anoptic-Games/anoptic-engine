@@ -9,6 +9,7 @@
 #include "anoptic_text.h"
 #include "text/text_internal.h"
 
+#include <anoptic_memory.h>
 #include <errno.h>
 
 typedef struct GposCtx {
@@ -245,9 +246,6 @@ static uint32_t find_langsys(const GposCtx *g, uint32_t slOff, bool *ok)
     return best;
 }
 
-#define GPOS_MAX_LOOKUPS 16u
-#define GPOS_MAX_SUBS    32u
-
 int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *slotGids,
                            uint32_t slotCount, int32_t *dense)
 {
@@ -268,8 +266,19 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
     if (lsOff == 0)
         return 0; // no latn/DFLT default LangSys
 
+    uint32_t lookupListCount = g16(&g, llOff, &ok);
+    if (!ok)
+        return EIO;
+    mi_heap_t *scratch LOCALHEAPATTR = mi_heap_new();
+    if (scratch == NULL)
+        return ENOMEM;
+
     // LangSys feature indices -> 'kern' lookups, deduped, sorted ascending.
-    uint32_t kernLookups[GPOS_MAX_LOOKUPS];
+    uint32_t *kernLookups = lookupListCount
+                          ? mi_heap_malloc(scratch, (size_t)lookupListCount * sizeof *kernLookups)
+                          : NULL;
+    if (lookupListCount && kernLookups == NULL)
+        return ENOMEM;
     uint32_t kernLookupCount = 0;
     uint32_t featCount = g16(&g, lsOff + 4u, &ok);
     for (uint32_t f = 0; ok && f < featCount; f++)
@@ -287,11 +296,13 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
         for (uint32_t l = 0; ok && l < lookupCount; l++)
         {
             uint32_t li = g16(&g, fo + 4u + 2u * l, &ok);
+            if (!ok || li >= lookupListCount)
+                return EIO;
             bool seen = false;
             for (uint32_t k = 0; k < kernLookupCount; k++)
                 if (kernLookups[k] == li)
                     seen = true;
-            if (!seen && kernLookupCount < GPOS_MAX_LOOKUPS)
+            if (!seen)
                 kernLookups[kernLookupCount++] = li;
         }
     }
@@ -305,6 +316,8 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
             kernLookups[b - 1u] = t;
         }
 
+    uint32_t *subs = NULL;
+    uint32_t subCap = 0;
     for (uint32_t k = 0; k < kernLookupCount; k++)
     {
         uint32_t lo = gadd(&g, llOff, g16(&g, llOff + 2u + 2u * kernLookups[k], &ok), &ok);
@@ -314,11 +327,16 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
             return EIO;
         if (type != 2u && type != 9u)
             continue; // not PairPos
-        if (subCount > GPOS_MAX_SUBS)
-            subCount = GPOS_MAX_SUBS;
+        if (subCount > subCap)
+        {
+            uint32_t *grown = mi_heap_realloc(scratch, subs, (size_t)subCount * sizeof *subs);
+            if (grown == NULL)
+                return ENOMEM;
+            subs = grown;
+            subCap = subCount;
+        }
 
         // Resolve subtable offsets (unwrap type 9 Extension).
-        uint32_t subs[GPOS_MAX_SUBS];
         uint32_t nsubs = 0;
         for (uint32_t s = 0; ok && s < subCount; s++)
         {

@@ -6,5 +6,6 @@
 #include <anoptic_memory.h>
 
 void ano_heap_release(mi_heap_t **in) {
-    mi_heap_destroy(*in);
+    if (*in != NULL)
+        mi_heap_destroy(*in);
 }
