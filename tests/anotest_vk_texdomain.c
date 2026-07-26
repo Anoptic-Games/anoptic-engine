@@ -10,17 +10,14 @@ extern struct VulkanGarbage vulkanGarbage;
 extern bool g_AnoVkNoSuitableGpu;
 extern uint32_t g_ValidationErrors;
 
-// One stored byte of 128 through the two interpretations of the same texel. UNORM is 128/255;
-// SRGB is that value through the sRGB EOTF, and only the RGB channels take it 〜 alpha is linear
-// in both formats, which is the second half of the proof that a transfer function ran at all.
-// (127 would read 0.49804 / 0.21223, so the bands below cannot confuse the two source bytes.)
+// Probe byte 128: UNORM = 128/255, SRGB = EOTF(128/255). Alpha linear both formats.
 #define PROBE_BYTE   128
 #define WANT_UNORM   0.50196f
 #define WANT_SRGB    0.21586f
 #define TOL_UNORM    0.004f
 #define TOL_SRGB     0.005f
 
-// in: a measured channel, its expectation, a tolerance. out: true iff inside the band.
+// in: got, want, tol. out: true iff |got - want| <= tol.
 static bool within(float got, float want, float tol)
 {
     float d = got - want;
@@ -42,8 +39,7 @@ int main(void)
     }
     VulkanContext* ctx = vulkanGarbage.ctx;
 
-    // Every arm below is a refusal until the tail; the discharge at `done` is a no-op on each
-    // inert value, so it is unconditional and nothing is discharged twice.
+    // Probe resources; unconditional teardown at done.
     int status = 1;
     TexturePackage pkg = {0};
     VkBuffer ssbo = VK_NULL_HANDLE;
@@ -61,9 +57,7 @@ int main(void)
         goto done;
     }
 
-    // 1. One solid image, every RGBA byte PROBE_BYTE, asked for in both roles at once.
-    // VK_NULL_HANDLE cmd: each helper mints, submits and fence-waits its own transient CB, so the
-    // image is idle on return. keepStaging false: the callee discharges the staging buffer.
+    // 4x4 solid RGBA=PROBE_BYTE, COLOR|DATA roles. Transient CB. No staging kept.
     unsigned char pixels[4 * 4 * 4];
     memset(pixels, PROBE_BYTE, sizeof pixels);
 
@@ -74,10 +68,7 @@ int main(void)
         goto done;
     }
 
-    // 2. The structural half, asserted before any sampling: one image, one allocation, two distinct
-    // views. Reaching here at all is this driver accepting VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT with an
-    // attached VkImageFormatListCreateInfo, and accepting a UNORM view aliased over an SRGB image 〜
-    // unlisted, that view is a VU violation the layers would have counted below.
+    // One image, one alloc, two distinct views (srgb + unorm).
     if (pkg.image == VK_NULL_HANDLE || pkg.alloc.memory == VK_NULL_HANDLE) {
         printf("Error: BUILT package carries no image or no allocation!\n");
         goto done;
@@ -100,7 +91,7 @@ int main(void)
     }
     printf("One image, one allocation, two distinct views; MUTABLE_FORMAT + format list accepted.\n");
 
-    // 3. Both views into the real bindless array initVulkan already built.
+    // Both views into the engine bindless array.
     uint32_t srgbSlot = bindless_register_texture(ctx, &rendererState.bindlessTextures, pkg.srgbView, rendererState.textureSampler);
     uint32_t unormSlot = bindless_register_texture(ctx, &rendererState.bindlessTextures, pkg.unormView, rendererState.textureSampler);
     if (srgbSlot == ANO_BINDLESS_NONE || unormSlot == ANO_BINDLESS_NONE) {
@@ -113,7 +104,7 @@ int main(void)
     }
     printf("Bindless slots: srgb %u, unorm %u.\n", srgbSlot, unormSlot);
 
-    // 4. Readback SSBO, host-visible and coherent, zeroed so a shader that never wrote cannot pass.
+    // Host-visible coherent SSBO, zeroed. Eight floats: srgb RGBA then unorm RGBA.
     const VkDeviceSize probeBytes = sizeof(float) * 8;
     if (!createDataBuffer(ctx, &stagingAllocator, probeBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -123,7 +114,7 @@ int main(void)
     }
     memset(ssboAlloc.mapped, 0, (size_t)probeBytes);
 
-    // 5. Set 0 is the probe's own SSBO; set 1 is the engine's bindless array, bound as it stands.
+    // Set 0 = probe SSBO. Set 1 = engine bindless array.
     VkDescriptorSetLayoutBinding ssboBinding = {};
     ssboBinding.binding = 0;
     ssboBinding.descriptorCount = 1;
@@ -170,7 +161,7 @@ int main(void)
     ssboWrite.pBufferInfo = &ssboInfo;
     vkUpdateDescriptorSets(ctx->device, 1, &ssboWrite, 0, NULL);
 
-    // 6. The probe pipeline. Two set layouts and one 2-uint push range, nothing else.
+    // Compute pipeline: two set layouts, two-uint push constants.
     VkPushConstantRange push = { .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(uint32_t) * 2 };
     VkDescriptorSetLayout setLayouts[2] = { probeLayout, rendererState.bindlessTextures.layout };
     VkPipelineLayoutCreateInfo pipeLayoutInfo = {};
@@ -202,7 +193,7 @@ int main(void)
         goto done;
     }
 
-    // 7. One dispatch, two lanes, one fence.
+    // One dispatch, fence-synced.
     VkCommandBuffer cmd = beginSingleTimeCommands(ctx);
     if (cmd == VK_NULL_HANDLE) {
         printf("Error: failed to mint the probe command buffer!\n");
@@ -215,10 +206,12 @@ int main(void)
     vkCmdPushConstants(cmd, pipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof indices, indices);
     vkCmdDispatch(cmd, 1, 1, 1);
 
-    // The host reads the SSBO the moment the fence signals.
-    VkMemoryBarrier toHost = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                               .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                               .dstAccessMask = VK_ACCESS_HOST_READ_BIT };
+    // Host-read barrier before fence.
+    VkMemoryBarrier toHost = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+    };
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
                          1, &toHost, 0, NULL, 0, NULL);
 
@@ -227,7 +220,7 @@ int main(void)
         goto done;
     }
 
-    // 8. The measurement. probe[0..3] is the colour role, probe[4..7] the data role.
+    // probe[0..3] = srgb view, probe[4..7] = unorm view.
     const float* probe = (const float*)ssboAlloc.mapped;
     printf("SRGB  view RGBA: %.5f %.5f %.5f %.5f\n", probe[0], probe[1], probe[2], probe[3]);
     printf("UNORM view RGBA: %.5f %.5f %.5f %.5f\n", probe[4], probe[5], probe[6], probe[7]);
@@ -242,7 +235,7 @@ int main(void)
         printf("Error: the SRGB view read %.5f, not %.5f +/- %.3f!\n", probe[0], WANT_SRGB, TOL_SRGB);
         goto done;
     }
-    // Alpha is linear in both formats: an EOTF that touched it would be a scale, not a transfer function.
+    // Alpha linear in both formats.
     if (!within(probe[3], WANT_UNORM, TOL_UNORM) || !within(probe[7], WANT_UNORM, TOL_UNORM)) {
         printf("Error: alpha decoded (srgb %.5f, unorm %.5f), it must stay linear!\n", probe[3], probe[7]);
         goto done;
@@ -256,13 +249,12 @@ int main(void)
     status = 0;
 
 done:
-    // The bindless array is bump-only, so both slots stay consumed, and gpu_alloc is monotonic, so
-    // both arena spans stay consumed 〜 the allocators are torn down by unInitVulkan.
+    // Destroy probe objects. Bindless slots and arena spans stay until unInitVulkan.
     vkDestroyPipeline(ctx->device, pipe, NULL);
     vkDestroyShaderModule(ctx->device, module, NULL);
     ano_aligned_free(code.data);
     vkDestroyPipelineLayout(ctx->device, pipeLayout, NULL);
-    vkDestroyDescriptorPool(ctx->device, probePool, NULL);   // retires probeSet with it
+    vkDestroyDescriptorPool(ctx->device, probePool, NULL); // + probeSet
     vkDestroyDescriptorSetLayout(ctx->device, probeLayout, NULL);
     vkDestroyBuffer(ctx->device, ssbo, NULL);
     vkDestroyImageView(ctx->device, pkg.unormView, NULL);

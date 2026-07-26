@@ -3,24 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: the ownership transfer at the texture registration seam. ano_vk_register_texture is the
-// ONLY route a loaded texture's VkImage, GpuAllocation and two VkImageViews take into the teardown
-// registry 〜 cleanupVulkan walks primitives.textureBuffers and nothing else destroys them 〜 so the
-// growth realloc inside it is a custody boundary: granted, the registry owns the record; refused,
-// the caller still owns every handle in it and must discharge them itself. The refusal is observable
-// (the seam answers bool), so this guard pins both halves: that false really means "the registry is
-// unchanged", down to textureCount, textureCapacity and the readability of the already-resident
-// prefix, and that a caller which honours false leaves nothing orphaned at shutdown.
-// Harness: compiles the REAL components.c TU with its allocator tokens interposed onto libc
-// (anoptic_memory.h maps the TU's realloc/free to mi_realloc/mi_free; the build renames those to the
-// anotest_seam_* countdown shims), so the Nth registry growth fails exactly like a real out-of-memory
-// realloc 〜 NULL return, old block untouched. No GPU device, no loader. The caller model is
-// contract-faithful to the glTF loader: mint image plus both views, offer the record, publish
-// bindless only on a grant, discharge on a refusal. The teardown model is cleanup.c verbatim:
-// destroy what the registry holds, then ano_vk_cleanup_primitives. Controls prove a healthy batch
-// lands every record in order and whole 〜 byte-for-byte what went in, except the usageCount the
-// registry zeroes 〜 so a reject-everything implementation cannot pass. Whole-run invariants: no
-// handle destroyed twice, no unminted handle destroyed, the registry heap balanced. Exit 0 == pass.
+// Coverage: ano_vk_register_texture ownership seam.
+// Harness: real components.c with realloc/free mapped to countdown shims. No GPU.
+// Cases: healthy batch, refused 0->8 mint, refused 8->16 growth. Exit 0 == pass.
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -43,7 +28,7 @@ static int      g_failReallocAt;  // Nth seam realloc fails; 0 = healthy
 static uint32_t g_liveBlocks;     // registry heap blocks outstanding
 
 // in: p, n as realloc
-// out: libc realloc result, or NULL when the armed countdown hits zero (old block untouched)
+// out: libc realloc, or NULL when countdown hits zero
 void* anotest_seam_realloc(void* p, size_t n)
 {
 	if (g_failReallocAt > 0 && --g_failReallocAt == 0) return NULL;
@@ -75,7 +60,7 @@ static uint32_t    g_texCount;
 static uint32_t    g_doubleDestroys;     // whole-run invariant
 static uint32_t    g_unknownDestroys;    // whole-run invariant
 
-// Clears the mint ledger between scenarios; the heap balance and destroy counters run whole-run.
+// Clears the mint ledger between scenarios.
 static void ledger_reset(void)
 {
 	memset(g_imgLive, 0, sizeof g_imgLive);
@@ -85,7 +70,7 @@ static void ledger_reset(void)
 	g_texCount = 0;
 }
 
-// out: how many minted handles are still live.
+// out: minted handles still live
 static uint32_t live_handles(void)
 {
 	uint32_t n = 0;
@@ -97,8 +82,7 @@ static uint32_t live_handles(void)
 	return n;
 }
 
-// in: v 〜 a view handle somebody destroys; discharges its ledger entry. Both interpretations of one
-// texture are distinct handles, so the scan cannot confuse them.
+// in: v as view handle. Discharges its ledger entry.
 static void destroy_view(VkImageView v)
 {
 	if (v == VK_NULL_HANDLE) return;
@@ -109,7 +93,7 @@ static void destroy_view(VkImageView v)
 	g_unknownDestroys++;
 }
 
-// in: m 〜 an image handle somebody destroys; discharges its ledger entry.
+// in: m as image handle. Discharges its ledger entry.
 static void destroy_image(VkImage m)
 {
 	if (m == VK_NULL_HANDLE) return;
@@ -119,7 +103,7 @@ static void destroy_image(VkImage m)
 	g_unknownDestroys++;
 }
 
-// in: i 〜 a texture whose record the registry refused. The caller's whole obligation on false.
+// in: i as refused texture index. Caller discharge on false.
 static void model_discharge(uint32_t i)
 {
 	destroy_view(g_unorm[i]);
@@ -127,10 +111,8 @@ static void model_discharge(uint32_t i)
 	destroy_image(g_img[i]);
 }
 
-// in: prims 〜 the registry under test. out: whether the record entered it.
-// Contract-faithful to the glTF loader: mint image plus both views, offer the ownership record, and
-// publish bindless only once the registry has taken it. A refusal leaves the caller holding
-// everything, which is what the discharge below settles.
+// in: prims as registry. out: true if record entered.
+// Mint image + both views, offer record, publish bindless only on grant.
 static bool model_load_texture(RenderPrimitives* prims)
 {
 	uint32_t i = g_texCount++;
@@ -140,7 +122,7 @@ static bool model_load_texture(RenderPrimitives* prims)
 	g_imgLive[i] = g_srgbLive[i] = g_unormLive[i] = true;
 
 	TextureData td = {
-		.usageCount = 77u,                     // adopted record 〜 the registry must zero it
+		.usageCount = 77u,  // registry must zero
 		.textureImage = g_img[i],
 		.textureImageAlloc = { .memory = (VkDeviceMemory)(uintptr_t)(0xD000u + i),
 		                       .offset = 256u * i, .size = 4096u + i, .mapped = NULL },
@@ -155,8 +137,8 @@ static bool model_load_texture(RenderPrimitives* prims)
 	return true;
 }
 
-// in: got 〜 a resident record; want 〜 the record that was offered.
-// out: true iff every field survived the transfer and only usageCount was rewritten.
+// in: got as resident record, want as offered record.
+// out: true iff fields match and usageCount is zero.
 static bool record_matches(const TextureData* got, const TextureData* want)
 {
 	return got->usageCount == 0u &&
@@ -169,8 +151,7 @@ static bool record_matches(const TextureData* got, const TextureData* want)
 	       got->textureImageAlloc.mapped == want->textureImageAlloc.mapped;
 }
 
-// in: prims 〜 cleanup.c verbatim: destroy both views and the image of every resident record, then
-// release the registry arrays.
+// in: prims. Destroy resident views+images, then ano_vk_cleanup_primitives.
 static void model_cleanup(RenderPrimitives* prims)
 {
 	for (uint32_t i = 0; i < prims->textureCount; i++) {
@@ -181,7 +162,7 @@ static void model_cleanup(RenderPrimitives* prims)
 	ano_vk_cleanup_primitives(prims);
 }
 
-// in: prims, where. Reports any handle no walk could reach.
+// in: where as label. Report live minted handles.
 static void report_orphans(const char* where)
 {
 	for (uint32_t t = 0; t < g_texCount; t++) {
@@ -196,7 +177,7 @@ int main(void)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
 
-	// control: nine healthy registrations 〜 growth 0->8->16 is granted, every record lands whole
+	// control: nine healthy registrations
 	static RenderPrimitives good;
 	bool allTook = true;
 	for (int i = 0; i < 9; i++) if (!model_load_texture(&good)) allTook = false;
@@ -213,7 +194,7 @@ int main(void)
 	CHECK(good.textureBuffers == NULL && good.textureCount == 0u && good.textureCapacity == 0u, "control: cleanup frees the array and zeroes the counts");
 	CHECK(g_liveBlocks == 0u, "control: registry heap balanced");
 
-	// trigger: the very first mint refuses 〜 the registry must stay empty and unallocated
+	// trigger: first mint refuses
 	printf("trigger: the 0->8 registry mint refuses\n");
 	ledger_reset();
 	static RenderPrimitives barren;
@@ -228,12 +209,11 @@ int main(void)
 	CHECK(live_handles() == 0, "refused mint: the caller's discharge covers the whole record");
 	CHECK(g_liveBlocks == 0u, "refused mint: no registry block leaked");
 
-	// trigger: the 8->16 growth refuses on the ninth registration 〜 the resident prefix must survive
-	// intact and readable, which is the realloc contract the seam relies on
+	// trigger: 8->16 growth refuses on ninth registration
 	printf("trigger: the 8->16 registry growth refuses on the ninth registration\n");
 	ledger_reset();
 	static RenderPrimitives world;
-	g_failReallocAt = 2; // realloc #1: the 0->8 mint; realloc #2: the 8->16 growth
+	g_failReallocAt = 2; // realloc #1: 0->8 mint; #2: 8->16 growth
 	uint32_t refused = 0;
 	for (int i = 0; i < 9; i++) if (!model_load_texture(&world)) refused++;
 	CHECK(g_failReallocAt == 0, "refused growth: the injection was consumed");
@@ -251,7 +231,7 @@ int main(void)
 	CHECK(world.textureBuffers == NULL && world.textureCount == 0u && world.textureCapacity == 0u, "refused growth: cleanup frees the array and zeroes the counts");
 	CHECK(g_liveBlocks == 0u, "refused growth: registry heap balanced");
 
-	// whole-run ledger invariants 〜 honouring a refusal must not double-discharge either
+	// whole-run ledger invariants
 	CHECK(g_doubleDestroys == 0, "no handle destroyed twice");
 	CHECK(g_unknownDestroys == 0, "no unminted handle destroyed");
 

@@ -1,11 +1,9 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-// Texture-domain probe. A sampler is the only thing that reads through a VkImageView, so it is the
-// only thing that can tell one image's two interpretations apart: vkCmdCopyImageToBuffer applies no
-// transfer function and vkCmdBlitImage takes a VkImage, not a view. One lane per slot.
-// in: two bindless indices over the same mutable-format image, via push constants.
-// out: probe[0] = slot srgbIndex sampled RGBA, probe[1] = slot unormIndex sampled RGBA.
+// Texture-domain probe. Two lanes sample one mutable-format image through two bindless views.
+// in:  srgbIndex, unormIndex (push constants)
+// out: probe[0] = srgb sample RGBA, probe[1] = unorm sample RGBA
 
 layout(local_size_x = 2) in;
 
@@ -17,12 +15,9 @@ layout(push_constant) uniform ProbePush {
     uint unormIndex;
 } pc;
 
-void main()
-{
+void main() {
     uint lane = gl_LocalInvocationID.x;
-    if (lane > 1u)
-        return;
+    if (lane > 1u) return;
     uint slot = lane == 0u ? pc.srgbIndex : pc.unormIndex;
-    // Explicit LOD: compute has no implicit derivatives.
     probe[lane] = textureLod(textures[nonuniformEXT(slot)], vec2(0.5), 0.0);
 }

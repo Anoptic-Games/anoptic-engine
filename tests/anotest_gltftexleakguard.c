@@ -3,20 +3,10 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: parseGltf's texture custody chain (ano_GltfParser.c:365-:450). Compiles the REAL parser
-// TU against link-seam stubs 〜 no device, no loader 〜 and drives a hand-written two-texture scene
-// through a stubbed createTextureImage that keeps a mint/adopt/destroy ledger over every handle it
-// hands out. Four questions. Which AnoTextureResult codes the parser discharges for: none, because
-// BUILT transfers the package and every other code already unwound inside the callee
-// (texture.c:497), so a parser-side destroy there would be a double free. Which code latches
-// haltLoad: DEVICE alone, since gpu_alloc is monotonic and every later attempt burns another span.
-// What a refused registry adoption costs: the image and BOTH views, no bindless call, both index
-// cells left at ANO_BINDLESS_NONE. And WHEN those destroys land 〜 the point of the whole deferred
-// epilogue. The refused image is one the unsubmitted batch has already copied and blitted into, so
-// destroying it before endSingleTimeCommands submits is the use-after-free
-// VUID-vkDestroyImage-image-01000 fires on; every seam here stamps a monotonic call clock and the
-// first parser-side discharge must outrank the batch submit. The index cells are read back through
-// the baked material rows, the only surface parseGltf publishes them on. Exit 0 == pass.
+// Coverage: parseGltf texture custody (ano_GltfParser.c:365-:450).
+// Real parser TU vs link-seam stubs. Mint/adopt/destroy ledger over every handle.
+// Cases: result-code discharge, DEVICE haltLoad, refused adoption, destroy-after-submit.
+// Index cells read via baked material rows. Exit 0 == pass.
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -39,19 +29,18 @@ static int failures = 0;
 } while (0)
 
 
-/* Ledgers 〜 every handle the loader seam mints, and where its ownership went */
+/* Ledgers 〜 mint and ownership disposition per handle */
 
 #define MAX_IMGS  8
 #define MAX_VIEWS 16
 
-// One monotonic clock over every seam. Ordering, not just counting: the epilogue's discharges have
-// to outrank the batch submit, and only a sequence number can say so.
+// Monotonic seam call clock.
 static uint32_t g_seq;
 static uint32_t g_seqBatchEnd;      // endSingleTimeCommands
-static uint32_t g_seqFirstKill;     // first destroy issued above the constructor seam
+static uint32_t g_seqFirstKill;     // first parser-side destroy
 
 static VkImage  g_imgMinted[MAX_IMGS];
-static bool     g_imgAdopted[MAX_IMGS];   // handed to the teardown registry (register_texture)
+static bool     g_imgAdopted[MAX_IMGS];   // register_texture grant
 static bool     g_imgDestroyed[MAX_IMGS];
 static uint32_t g_imgMintCount;
 
@@ -63,23 +52,23 @@ static VkBuffer g_stgMinted[MAX_IMGS];
 static bool     g_stgLive[MAX_IMGS];
 static uint32_t g_stgMintCount;
 
-// Destroys issued under the constructor stub are the callee's own unwind, not the parser's.
+// true while inside the constructor stub's own unwind.
 static bool     g_inCallee;
-static uint32_t g_killImg, g_killView, g_killBuf;   // parser-side discharges, per kind
+static uint32_t g_killImg, g_killView, g_killBuf;   // parser-side, per kind
 
-static uint32_t g_texCalls;         // createTextureImage ordinal, 1-based
-static uint32_t g_regCalls;         // ano_vk_register_texture ordinal, 1-based
+static uint32_t g_texCalls;         // createTextureImage, 1-based
+static uint32_t g_regCalls;         // ano_vk_register_texture, 1-based
 static uint32_t g_bindlessCalls;
 
-static uint32_t             g_failCall;       // constructor ordinal that refuses; 0 = never
+static uint32_t             g_failCall;       // refuse constructor ordinal; 0 = never
 static AnoTextureResultCode g_failCode;
-static uint32_t             g_refuseAdopt;    // register ordinal answering false; 0 = never
-static uint32_t             g_refuseBind;     // bindless ordinal answering NONE; 0 = never
+static uint32_t             g_refuseAdopt;    // refuse register ordinal; 0 = never
+static uint32_t             g_refuseBind;     // refuse bindless ordinal; 0 = never
 
-static uint32_t g_doubleKills;   // never reset 〜 whole-run invariant
-static uint32_t g_unknownKills;  // never reset 〜 whole-run invariant
+static uint32_t g_doubleKills;   // whole-run
+static uint32_t g_unknownKills;  // whole-run
 
-// Counts minted images whose ownership was discharged nowhere.
+// Minted images neither adopted nor destroyed.
 static uint32_t orphaned_images(void)
 {
     uint32_t n = 0;
@@ -88,7 +77,7 @@ static uint32_t orphaned_images(void)
     return n;
 }
 
-// Counts staging buffers still live.
+// Live staging buffers.
 static uint32_t live_staging(void)
 {
     uint32_t n = 0;
@@ -96,7 +85,7 @@ static uint32_t live_staging(void)
     return n;
 }
 
-// Clears the per-run ledgers and the clock; whole-run invariants persist.
+// Clears per-run ledgers and clock. Whole-run counters stay.
 static void reset_ledger(void)
 {
     memset(g_imgMinted, 0, sizeof g_imgMinted);
@@ -112,7 +101,7 @@ static void reset_ledger(void)
     g_texCalls = g_regCalls = g_bindlessCalls = 0;
 }
 
-// out: a fresh ledgered handle, VK_NULL_HANDLE once the ledger is full (which fails the run).
+// out: ledgered handle, or VK_NULL_HANDLE on overflow.
 static VkImage mint_image(void)
 {
     if (g_imgMintCount >= MAX_IMGS) { printf("FAIL: image ledger overflow\n"); failures++; return VK_NULL_HANDLE; }
@@ -140,16 +129,13 @@ static VkBuffer mint_staging(void)
 }
 
 
-/* Link seams 〜 ano_GltfParser.c's externs (the real definitions live in vulkanMaster.c /
-   texture.c / geometry.c, which this executable deliberately does not link) */
+/* Link seams 〜 ano_GltfParser.c externs (not linking vulkanMaster/texture/geometry) */
 
 GpuAllocator  stagingAllocator;
 RendererState rendererState;
 
-// in: usage picks the views, keepStaging asks for the staging buffer, g_failCall/g_failCode inject
-// one refusal by call ordinal. out: BUILT publishes a whole package; every other code discharges
-// what it acquired ITSELF and leaves *pkg inert, exactly as texture.c:497's fail label does 〜 so a
-// parser-side destroy on a refusal shows up here as a double destroy.
+// in: usage, keepStaging; g_failCall/g_failCode refuse by ordinal.
+// out: BUILT package, or callee-unwound refusal with *pkg inert.
 AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, TexturePackage* pkg,
                                     const char* fileName, bool flag16,
                                     TextureUsageFlags usage, bool keepStaging)
@@ -191,7 +177,7 @@ AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, Tex
     return ANO_RESULT(AnoTextureResult, ANO_TEXTURE_BUILT);
 }
 
-// Adoption into the teardown registry 〜 the one ownership discharge cleanupVulkan walks.
+// Teardown-registry adoption.
 // out: false leaves every handle in data with the caller.
 bool ano_vk_register_texture(RenderPrimitives* primitives, TextureData data)
 {
@@ -205,8 +191,7 @@ bool ano_vk_register_texture(RenderPrimitives* primitives, TextureData data)
     return true;
 }
 
-// Grants start at 1: slot 0 is the fallback texture, so an index that aliased onto it would be
-// distinguishable here from a real grant.
+// Grants from 1. Slot 0 is the fallback.
 uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta, VkImageView view, VkSampler sampler)
 {
     (void)ctx; (void)bta; (void)view; (void)sampler;
@@ -215,12 +200,11 @@ uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta
     return g_bindlessCalls;
 }
 
-// This guard is about custody, not sampling: one handle for every request keeps the descriptor
-// pair constant so the bindless call count reflects views alone.
+// Constant descriptor pair. Bindless call count tracks views alone.
 PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct RendererState* state)
 { (void)state; return (PbrFeatureFlags)0xFFFFFFFFu; }
 
-// The real default writes the no-texture sentinel into every texture field (components.c:139).
+// Writes ANO_BINDLESS_NONE into every texture field.
 void ano_vk_init_default_material_data(struct MaterialData* mat)
 {
     memset(mat, 0, sizeof *mat);
@@ -251,7 +235,7 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
 VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx)
 { (void)ctx; g_seq++; return (VkCommandBuffer)(uintptr_t)0x54; }
 
-// The batch submit and its fence wait. Nothing the batch referenced may be destroyed before this.
+// Batch submit and fence wait.
 void endSingleTimeCommands(VulkanContext* ctx, VkCommandBuffer commandBuffer)
 { (void)ctx; (void)commandBuffer; g_seqBatchEnd = ++g_seq; }
 
@@ -259,9 +243,9 @@ void gpu_alloc_reset(GpuAllocator* alloc) { (void)alloc; }
 void multiplyMat4(mat4 result, const mat4 a, const mat4 b) { (void)result; (void)a; (void)b; }
 
 
-/* Link seams 〜 the vk* entry points the parser TU calls (the loader is not linked) */
+/* Link seams 〜 vk* entry points the parser TU calls */
 
-// Records one discharge on the clock, attributed to whoever issued it.
+// Parser-side discharge stamp on the clock.
 static void note_kill(void)
 {
     uint32_t now = ++g_seq;
@@ -272,7 +256,7 @@ static void note_kill(void)
 VKAPI_ATTR void VKAPI_CALL vkDestroyBuffer(VkDevice device, VkBuffer buffer, const VkAllocationCallbacks* pAllocator)
 {
     (void)device; (void)pAllocator;
-    if (buffer == VK_NULL_HANDLE) return; // spec no-op, the calloc'd-hole case
+    if (buffer == VK_NULL_HANDLE) return; // spec no-op
     note_kill();
     if (!g_inCallee) g_killBuf++;
     for (uint32_t i = 0; i < g_stgMintCount; i++) {
@@ -318,9 +302,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice device, VkImageView image
 }
 
 
-/* Fixture 〜 texture 0 sampled in BOTH domains (so a refusal must leave two cells NONE), texture 1
-   in colour only (so "was texture 1 attempted at all" is readable off its own material row). One
-   18-byte buffer feeds one vertex and three zero indices, twice, so both material rows bake. */
+/* Fixture 〜 tex0 both domains, tex1 colour-only; one vertex + three indices, two materials */
 
 #define SCENE "anotest_gltftexleakguard_scene.gltf"
 
@@ -342,7 +324,7 @@ static const char* JSON_SCENE =
     "\"nodes\":[{\"mesh\":0}],"
     "\"scenes\":[{\"nodes\":[0]}],\"scene\":0}";
 
-// Inputs: path, contents. Output: true if fully written.
+// in: path, contents. out: true if fully written.
 static bool write_fixture(const char* path, const char* json)
 {
     FILE* f = fopen(path, "wb");
@@ -354,13 +336,12 @@ static bool write_fixture(const char* path, const char* json)
 }
 
 
-/* Material rows 〜 the parser's colorIndex/dataIndex cells are private scratch, freed with the
-   scope; the baked SSBO row is the only place they surface. */
+/* Material rows 〜 baked SSBO surface for colorIndex/dataIndex */
 
 #define MAT_ROWS 8
 static MaterialData g_rows[MAX_FRAMES_IN_FLIGHT][MAT_ROWS];
 
-// Points the material buffer at real host storage and clears the run's injections.
+// Host material storage + cleared injections.
 static void arm_run(void)
 {
     memset(g_rows, 0, sizeof g_rows);
@@ -385,11 +366,9 @@ int main(void)
         return 1;
     }
 
-    static VulkanContext ctx; // zeroed; every seam stub ignores its handles
+    static VulkanContext ctx; // zeroed; stubs ignore handles
 
-    // control: the all-success parse adopts every minted image, bindless-binds all three views
-    // (texture 0 in both domains, texture 1 in colour), destroys each handed-out staging buffer
-    // exactly once and destroys NOTHING the registry now owns
+    // control: all-success adopt, bindless, staging-only kills
     {
         arm_run();
         ModelAsset* asset = parseGltf(&ctx, SCENE);
@@ -408,8 +387,7 @@ int main(void)
         free(asset);
     }
 
-    // ANO_TEXTURE_SOURCE: an unusable source file is this asset's problem alone. The callee already
-    // unwound, so the parser discharges nothing, and texture 1 is still attempted.
+    // ANO_TEXTURE_SOURCE: callee unwound; parser discharges nothing; load continues
     {
         arm_run();
         g_failCall = 1; g_failCode = ANO_TEXTURE_SOURCE;
@@ -427,7 +405,7 @@ int main(void)
         free(asset);
     }
 
-    // ANO_TEXTURE_INVALID: a contract violation is likewise local 〜 same discharge, load continues.
+    // ANO_TEXTURE_INVALID: same discharge; load continues
     {
         arm_run();
         g_failCall = 1; g_failCode = ANO_TEXTURE_INVALID;
@@ -440,8 +418,7 @@ int main(void)
         free(asset);
     }
 
-    // ANO_TEXTURE_DEVICE: the arena is monotonic, so the first refusal proves every later one.
-    // haltLoad latches and texture 1 is never even attempted.
+    // ANO_TEXTURE_DEVICE: haltLoad; texture 1 never attempted
     {
         arm_run();
         g_failCall = 1; g_failCode = ANO_TEXTURE_DEVICE;
@@ -458,10 +435,7 @@ int main(void)
         free(asset);
     }
 
-    // Refused registry adoption on the mixed texture. The parser still holds an image the
-    // unsubmitted batch has copied and blitted into, so it discharges image AND both views 〜 in
-    // the epilogue, after endSingleTimeCommands. Destroying them inside the loop is
-    // VUID-vkDestroyImage-image-01000.
+    // Refused adoption: epilogue destroys image + both views after batch submit
     {
         arm_run();
         g_refuseAdopt = 1;
@@ -486,9 +460,7 @@ int main(void)
         free(asset);
     }
 
-    // Refused bindless slot on the first image. The array is bump-only and never un-refuses, so no
-    // second interpretation or image is offered. The image was already adopted, so it stays
-    // registry-owned and is NOT discharged here.
+    // Refused bindless: image stays registry-owned; no parser discharge
     {
         arm_run();
         g_refuseBind = 1;
@@ -504,7 +476,7 @@ int main(void)
         free(asset);
     }
 
-    // whole-run ledger invariants 〜 no handle destroyed twice, none invented
+    // whole-run: no double destroy, no invented handle
     CHECK(g_doubleKills == 0, "no handle destroyed twice");
     CHECK(g_unknownKills == 0, "no unknown handle destroyed");
 

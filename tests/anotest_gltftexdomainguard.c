@@ -3,20 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: the colour/data split across parseGltf's usage mark (ano_GltfParser.c:296-:344), its
-// texture loop (:365-:434) and its material bake (:466-:730). One image sampled as baseColorTexture
-// by one material and as metallicRoughnessTexture by another is the defect: uploaded sRGB and read
-// through one slot, every data fetch comes back sampler-decoded and a stored 0.5 arrives as 0.214.
-// The fix makes imageUsage a union, asks the constructor for BOTH interpretations over one
-// allocation, registers each view in its own bindless slot, and bakes colorIndex into colour slots
-// and dataIndex into data slots 〜 so the whole contract is: those two indices DIFFER. This compiles
-// the REAL parser TU against link-seam stubs (no device, no loader), drives a hand-written
-// five-texture scene covering colour-only, data-only, mixed-across-two-materials, mixed-within-one-
-// material and never-constructed, and reads the baked rows back through a real materialBuffer.
-// The refusal matrix runs both directions: whichever interpretation loses its bindless slot must
-// hold ANO_BINDLESS_NONE, never the other's index and never slot 0 〜 slot 0 is the fallback
-// texture, which is exactly what the 0xFF seeding at :219-:220 exists to keep it from becoming.
-// Exit 0 == pass.
+// Coverage: colour/data split across parseGltf usage mark, texture loop, and material bake
+// (ano_GltfParser.c:296-:730). Real parser TU vs link-seam stubs. Five-texture fixture covers
+// colour-only, data-only, mixed-across, mixed-within, never-constructed. Baked rows via
+// materialBuffer. Refusal matrix both ways: loser holds ANO_BINDLESS_NONE, never the other's
+// index, never slot 0. Exit 0 == pass.
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -39,22 +30,22 @@ static int failures = 0;
 } while (0)
 
 
-/* What the seams observed 〜 one row per fixture texture, keyed by the ordinal in its image URI */
+/* What the seams observed 〜 one row per fixture texture, keyed by URI ordinal */
 
 #define TEX_COUNT     5
 #define MAX_BINDLESS 16
 
-static TextureUsageFlags g_usage[TEX_COUNT];   // the usage mask the constructor was asked for
+static TextureUsageFlags g_usage[TEX_COUNT];   // constructor usage mask
 static bool              g_built[TEX_COUNT];
 static VkImageView       g_srgb[TEX_COUNT], g_unorm[TEX_COUNT];
 static uint32_t          g_texCalls;
 
-static VkImageView g_bindView[MAX_BINDLESS];   // the view each bindless registration named
-static VkSampler   g_bindSampler[MAX_BINDLESS]; // and the sampler, since the descriptor is the pair
+static VkImageView g_bindView[MAX_BINDLESS];   // view at each bindless registration
+static VkSampler   g_bindSampler[MAX_BINDLESS]; // sampler paired with that view
 static uint32_t    g_bindCalls;
-static uint32_t    g_refuseBind;               // registration ordinal answering NONE; 0 = never
+static uint32_t    g_refuseBind;               // registration ordinal -> NONE; 0 = never
 
-// out: how many bindless registrations named this view. VK_NULL_HANDLE is never registered.
+// out: bindless registration count for view. VK_NULL_HANDLE never registered.
 static uint32_t binds_of(VkImageView view)
 {
     uint32_t n = 0;
@@ -64,8 +55,7 @@ static uint32_t binds_of(VkImageView view)
     return n;
 }
 
-// in: a resolved texture path ending in "_t<digit>.png". out: the fixture ordinal, TEX_COUNT if the
-// tail does not parse 〜 which fails the run rather than silently mis-attributing a call.
+// in: path ending "_t<digit>.png". out: fixture ordinal, or TEX_COUNT if unparseable.
 static uint32_t path_ordinal(const char* path)
 {
     const char* tail = strrchr(path, '_');
@@ -74,15 +64,13 @@ static uint32_t path_ordinal(const char* path)
 }
 
 
-/* Link seams 〜 ano_GltfParser.c's externs (the real definitions live in vulkanMaster.c /
-   texture.c / geometry.c, which this executable deliberately does not link) */
+/* Link seams 〜 ano_GltfParser.c externs (real defs in vulkanMaster.c / texture.c / geometry.c) */
 
 GpuAllocator  stagingAllocator;
 RendererState rendererState;
 
-// in: usage picks the views. out: BUILT, with srgbView non-null iff COLOR was asked for and
-// unormView non-null iff DATA was 〜 one mutable-format image carrying both, never two uploads.
-// Handles are ordinal-encoded so the bindless log can be read back per texture per domain.
+// in: usage selects views. out: BUILT; srgbView iff COLOR, unormView iff DATA.
+// Handles are ordinal-encoded for bindless log readback.
 AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, TexturePackage* pkg,
                                     const char* fileName, bool flag16,
                                     TextureUsageFlags usage, bool keepStaging)
@@ -117,9 +105,8 @@ AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, Tex
 bool ano_vk_register_texture(RenderPrimitives* primitives, TextureData data)
 { (void)primitives; (void)data; return true; }
 
-// out: the slot the view now occupies, or ANO_BINDLESS_NONE on the injected refusal. Grants are the
-// 1-based call ordinal, so slot 0 〜 the fallback texture 〜 is never handed out and an index that
-// aliased onto it is distinguishable from every real grant.
+// out: granted slot, or ANO_BINDLESS_NONE on injected refusal.
+// Grants are 1-based call ordinals (slot 0 never handed out).
 uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta, VkImageView view, VkSampler sampler)
 {
     (void)ctx; (void)bta;
@@ -135,8 +122,7 @@ uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta
 PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct RendererState* state)
 { (void)state; return (PbrFeatureFlags)0xFFFFFFFFu; }
 
-// The real default writes the no-texture sentinel into every texture field (components.c:139), so
-// a slot the bake never touches reads as absent rather than as bindless slot 0.
+// Default: ANO_BINDLESS_NONE in every texture field (components.c:139).
 void ano_vk_init_default_material_data(struct MaterialData* mat)
 {
     memset(mat, 0, sizeof *mat);
@@ -148,7 +134,7 @@ void ano_vk_init_default_material_data(struct MaterialData* mat)
 }
 
 AnoLodConfig ano_lod_config_default(uint32_t lodCount)
-{ AnoLodConfig cfg = {0}; cfg.lodCount = lodCount ? lodCount : 1u; cfg.ratios[0] = 1.0f; return cfg; }
+{ AnoLodConfig cfg = {0}; cfg.lodCount = lodCount ? lodCount : 1u; cfg.targets[0] = 1.0f; return cfg; }
 
 uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
                                     uint32_t transferFamily, VkQueue transferQueue,
@@ -177,14 +163,13 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice device, VkImageView image
 { (void)device; (void)imageView; (void)pAllocator; }
 
 
-/* Fixture 〜 five textures over four materials, one primitive each so every material bakes a row:
-     t0  colour-only        (baseColorTexture of material B)
-     t1  data-only          (metallicRoughnessTexture of material A)
-     t2  mixed ACROSS two   (baseColorTexture of A, metallicRoughnessTexture of B)
-     t3  mixed WITHIN one   (both slots of material C)
-     t4  never constructed  (its image carries no uri) 〜 both slots of material D
-   Material A is row 0 and material B is row 1: A's colour index and B's data index name the same
-   image through different interpretations, and the whole bug is whether they differ. */
+/* Fixture 〜 five textures, four materials, one primitive each:
+     t0  colour-only        (baseColorTexture of B)
+     t1  data-only          (metallicRoughnessTexture of A)
+     t2  mixed ACROSS two   (baseColor of A, metallicRoughness of B)
+     t3  mixed WITHIN one   (both slots of C)
+     t4  never constructed  (no uri) 〜 both slots of D
+   Material A = row 0, B = row 1. A's colour and B's data name one image via two interpretations. */
 
 #define SCENE "anotest_gltftexdomainguard_scene.gltf"
 #define SHARED "anotest_gltftexdomainguard_shared.gltf"
@@ -221,9 +206,7 @@ static const char* JSON_SCENE =
     "\"nodes\":[{\"mesh\":0}],"
     "\"scenes\":[{\"nodes\":[0]}],\"scene\":0}";
 
-// FOUR textures over ONE image: tex 0 colour and tex 1 data (so the image's mask unions to both),
-// tex 3 colour again, and tex 2 colour under a texture-level CLAMP sampler declaration 〜 differing
-// sampler declarations must not split one image's slots, because the image is what carries them.
+// Four textures, one image: tex 0 colour, tex 1 data, tex 3 colour, tex 2 colour+CLAMP sampler.
 static const char* JSON_SHARED =
     "{\"asset\":{\"version\":\"2.0\"},"
     "\"buffers\":[{\"byteLength\":18,\"uri\":\"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAA\"}],"
@@ -258,13 +241,12 @@ static bool write_fixture(const char* path, const char* json)
 }
 
 
-/* Material rows 〜 colorIndex/dataIndex are private scratch freed with the parser's scope; the
-   baked SSBO row is the only surface they reach. */
+/* Material rows 〜 colorIndex/dataIndex are private scratch; baked SSBO row is the published surface. */
 
 #define MAT_ROWS 8
 static MaterialData g_rows[MAX_FRAMES_IN_FLIGHT][MAT_ROWS];
 
-// Points the material buffer at real host storage and clears every per-run observation.
+// Points material buffer at host storage; clears per-run observations.
 static void arm_run(void)
 {
     memset(g_rows, 0, sizeof g_rows);
@@ -279,7 +261,7 @@ static void arm_run(void)
     memset(g_unorm, 0, sizeof g_unorm);
     memset(g_bindView, 0, sizeof g_bindView);
     memset(g_bindSampler, 0, sizeof g_bindSampler);
-    rendererState.textureSampler = (VkSampler)(uintptr_t)0x900u; // the engine's one sampler
+    rendererState.textureSampler = (VkSampler)(uintptr_t)0x900u; // engine's one sampler
     g_texCalls = g_bindCalls = 0;
     g_refuseBind = 0;
 }
@@ -294,9 +276,9 @@ int main(void)
         return 1;
     }
 
-    static VulkanContext ctx; // zeroed; every seam stub ignores its handles
+    static VulkanContext ctx; // zeroed; seam stubs ignore handles
 
-    // the split itself: usage masks, per-domain view registration, and the baked indices
+    // usage masks, per-domain registration, baked indices
     {
         arm_run();
         ModelAsset* asset = parseGltf(&ctx, SCENE);
@@ -321,7 +303,7 @@ int main(void)
         CHECK(g_srgb[3] != g_unorm[3] && binds_of(g_srgb[3]) == 1 && binds_of(g_unorm[3]) == 1,
               "mixed within one material likewise registers both views");
 
-        // the inequality that IS the bug: one image, two interpretations, two indices
+        // colour vs data indices of one image must differ
         uint32_t colourOfMixed = g_rows[0][ROW_A].baseColorTexture;
         uint32_t dataOfMixed   = g_rows[0][ROW_B].metallicRoughnessTexture;
         CHECK(colourOfMixed != ANO_BINDLESS_NONE, "material A's baseColorTexture carries a real colour index");
@@ -344,7 +326,7 @@ int main(void)
         free(asset);
     }
 
-    // refusal matrix, data side: the mixed texture's SECOND registration is refused
+    // refusal matrix, data side: mixed texture's second registration refused
     {
         arm_run();
         g_refuseBind = 4; // t0 colour, t1 data, t2 colour, [t2 data]
@@ -362,7 +344,7 @@ int main(void)
         free(asset);
     }
 
-    // refusal matrix, colour side: the mirror case, the mixed texture's FIRST registration refused
+    // refusal matrix, colour side: mixed texture's first registration refused
     {
         arm_run();
         g_refuseBind = 3; // t0 colour, t1 data, [t2 colour], t2 data
@@ -380,9 +362,7 @@ int main(void)
         free(asset);
     }
 
-    // Consolidation: FOUR textures over ONE image. Keying construction by texture built one VkImage,
-    // one arena span and one mip chain per texture, and split an image reached through two textures
-    // into two of everything 〜 which is the very case the mutable-format work exists to merge.
+    // Consolidation: four textures over one image
     {
         arm_run();
         if (!write_fixture(SHARED, JSON_SHARED)) {

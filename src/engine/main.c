@@ -44,10 +44,9 @@ static atomic_bool g_logicShouldStop = false;
 
 // Logic composes scene + emits creates. Render world owns GPU assets.
 
-// Retry until the command ring accepts, or until shutdown is asked for.
-// out: true once enqueued; false means the logic thread is stopping and the command was dropped.
-// inv: the wait observes g_logicShouldStop, so a window close during scene composition ends this
-//      thread instead of stranding main's join behind a ring nobody is draining any more.
+// in:  bridge, c
+// out: true once enqueued; false on shutdown (command dropped)
+// inv: wait observes g_logicShouldStop
 [[nodiscard]] static bool submit_blocking(AnoRenderBridge* bridge, const RenderCommand* c) {
 	while (!ano_render_submit(bridge, c)) {
 		if (atomic_load(&g_logicShouldStop)) return false;
@@ -166,7 +165,7 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 		RenderLightParams p = { .color={cl[i].col[0],cl[i].col[1],cl[i].col[2]}, .intensity=cl[i].in,
 			.range=cl[i].rng, .innerConeCos=cl[i].inner, .outerConeCos=cl[i].outer, .type=cl[i].type,
 			.localDir={cl[i].dir[0],cl[i].dir[1],cl[i].dir[2]} };
-		uint32_t id = lid++; // hoisted: a retry must re-offer the same light_id, not the next one
+		uint32_t id = lid++; // light_id stable across retries
 		while (!ano_render_light_attach(bridge, id, candleSlot, &p, cl[i].ox, cl[i].oy, cl[i].oz)) {
 			if (atomic_load(&g_logicShouldStop)) return; // shutdown: drop the rest
 			ano_sleep(1000); // ring full: retry
@@ -248,8 +247,7 @@ static void ui_label(AnoUiBuilder* b, const AnoFontBake* bake, anostr_t text, fl
 	ano_ui_glyphs(b, lo, hi, first, n, white, ANO_UI_REF_NONE, 0);
 }
 
-// Builds + submits the menu block (or clears it). Invisible tail-forwards to the clear, so the
-// answer is always the endpoint's own 〜 submit_policy owns what each code means.
+// Builds + submits the menu block (or clears it). Returns endpoint result.
 static AnoRenderSubmitResult submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const MenuLayout* m,
                                          bool visible, int hovered, uint32_t optionsCount)
 {
@@ -396,9 +394,7 @@ static bool music_world_start(void)
 	AnoAudioBridge *ab = anoAudioBridge();
 	AnoAudioOfflineEvent setup[64];
 	uint32_t n = ano_synth_console_setup(setup, 64);
-	// Bounded like the telemetry wait below: 1000 tries at 1 ms. This runs on the main thread during
-	// init, and an audio command ring that has not drained in a second is not going to 〜 exhaustion
-	// takes the unwind rather than spinning the process before the window ever opens.
+	// Console setup: 1000 tries at 1 ms. Ring stuck -> fail.
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t spin = 0;
 		while (!ano_audio_submit(ab, &setup[i].cmd)) {
@@ -532,7 +528,7 @@ static void music_drag_apply(const MusicLayout* m, int drag, float x, float y,
 	}
 }
 
-// Builds + submits the music panel (or clears it). Forwards its endpoint's answer unchanged.
+// Builds + submits the music panel (or clears it). Returns endpoint result.
 static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFontBake* bake,
                                           const MusicLayout* m, bool visible, const MusicState* st,
                                           int hovered, uint64_t now)
@@ -680,7 +676,7 @@ static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFont
 	return ano_render_ui_set(bridge, HUD_UI_MUSIC, 96, &b, glyphs, gcount);
 }
 
-// Status bar, bottom-left. Resubmit on logical viewport change; forwards its endpoint's answer.
+// Status bar, bottom-left. Resubmit on logical viewport change.
 static AnoRenderSubmitResult submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float vpH)
 {
 	AnoUiPrim prims[8];
@@ -706,32 +702,29 @@ static AnoRenderSubmitResult submit_bar(AnoRenderBridge* bridge, const AnoFontBa
 
 /* Submit Policy */
 
-// OOM cooldown for an optional HUD block. The tick is ~2 ms, so retrying a refused allocation every
-// tick would hammer an allocator that just said no; 500 ms is 250 ticks.
+// OOM cooldown for an optional HUD block (500 ms).
 #define HUD_OOM_RETRY_US 500000ull
 
-// in:  r (an endpoint's answer), now, dirty (the block's resubmit latch, or NULL), retryAt (its
-//      cooldown stamp, or NULL), what (diagnostic name)
-// out: nothing; *dirty and *retryAt carry this block's policy into the next tick
-// inv: the switch is total over AnoRenderSubmitResultCode with no default, so a fifth code is a
-//      compile-time diagnostic at every policy site instead of a silently wrong retry.
-static void submit_policy(AnoRenderSubmitResult r, uint64_t now, bool *dirty, uint64_t *retryAt,
-                          const char *what)
+// in:  r, now, dirty (nullable), retryAt (nullable), what
+// out: updates *dirty / *retryAt per r.code
+// inv: switch total over AnoRenderSubmitResultCode (no default)
+static void submit_policy(AnoRenderSubmitResult r, uint64_t now, bool* dirty, uint64_t* retryAt,
+                          const char* what)
 {
 	switch (r.code) {
 	case ANO_RENDER_SUBMIT_ACCEPTED:     if (dirty) *dirty = false; if (retryAt) *retryAt = 0; break;
-	case ANO_RENDER_SUBMIT_BACKPRESSURE: if (retryAt) *retryAt = 0; break;              // next tick
+	case ANO_RENDER_SUBMIT_BACKPRESSURE: if (retryAt) *retryAt = 0; break; // next tick
 	case ANO_RENDER_SUBMIT_OOM:          if (retryAt) *retryAt = now + HUD_OOM_RETRY_US; break;
-	case ANO_RENDER_SUBMIT_INVALID:      if (dirty) *dirty = false; if (retryAt) *retryAt = 0;
-		ano_log(ANO_WARN, "HUD: %s block refused as invalid; retired.", what); break;
+	case ANO_RENDER_SUBMIT_INVALID:
+		if (dirty) *dirty = false; if (retryAt) *retryAt = 0;
+		ano_log(ANO_WARN, "HUD: %s block refused as invalid; retired.", what);
+		break;
 	}
 }
 
-// in:  bridge, text_id, inst/shaped (a shaped block), what (diagnostic name)
-// out: the code the wait stopped on 〜 ACCEPTED once enqueued, OOM or INVALID when the block can
-//      never land (logged here, once), BACKPRESSURE only when shutdown was asked for mid-wait
-// inv: the sole unbounded wait left in startup, and it observes g_logicShouldStop, so a window
-//      close during it ends the logic thread instead of making main's join permanent.
+// in:  bridge, text_id, inst, shaped, what
+// out: ACCEPTED | OOM | INVALID | BACKPRESSURE (shutdown mid-wait only)
+// inv: wait observes g_logicShouldStop
 static AnoRenderSubmitResult hud_text_spin(AnoRenderBridge* bridge, uint32_t text_id,
                                            AnoGlyphInstance* inst, uint32_t shaped,
                                            const char* what)
@@ -749,7 +742,7 @@ static AnoRenderSubmitResult hud_text_spin(AnoRenderBridge* bridge, uint32_t tex
 			return r;
 		case ANO_RENDER_SUBMIT_BACKPRESSURE:
 			if (atomic_load(&g_logicShouldStop))
-				return r; // shutdown: the caller abandons the rest of the HUD
+				return r; // shutdown
 			ano_sleep(1000);
 			break;
 		}
@@ -810,8 +803,7 @@ void* anoLogicThreadMain(void* arg)
 		if (hud_text_spin(bridge, HUD_TEXT_HOMER, hud, n, "homer").code == ANO_RENDER_SUBMIT_BACKPRESSURE)
 			goto hudDone;
 	}
-// Only a shutdown during a startup wait reaches here early; the tick loop below sees the same flag
-// and returns at once, so the thread ends and main's join completes.
+// Startup HUD done (or abandoned on shutdown).
 hudDone:
 	uint64_t noticeDeadline = 0; // armed 15s after first frame
 	bool     noticeCleared = false;
@@ -829,7 +821,7 @@ hudDone:
 	// UI demo: resubmit on change. ANO_MENU opens menu at boot.
 	bool     menuVisible = getenv("ANO_MENU") != NULL;
 	bool     menuDirty = menuVisible, barSubmitted = false;
-	uint64_t menuRetryAt = 0, barRetryAt = 0; // OOM cooldown stamps (submit_policy)
+	uint64_t menuRetryAt = 0, barRetryAt = 0; // OOM cooldown stamps
 	int      menuHovered = -1;
 	uint32_t optionsCount = 0;
 	float    vpW = 0.0f, vpH = 0.0f; // last-known logical viewport (RenderSnapshot)
@@ -839,7 +831,7 @@ hudDone:
 	AnoAudioBridge* ab = anoAudioBridge(); // NULL if music_world_start failed
 	MusicState mus = { .valence = 0.30f, .energy = 0.35f, .tension = 0.20f, .bar = -1 };
 	bool musicVisible = false, musicDirty = false, affectDirty = false, flashOn = false;
-	uint64_t musicRetryAt = 0; // OOM cooldown stamp (submit_policy)
+	uint64_t musicRetryAt = 0; // OOM cooldown stamp
 	int  musicDrag = MUS_DRAG_NONE, musicHovered = MUS_DRAG_NONE;
 	uint64_t lastTelem = 0;
 
@@ -970,8 +962,7 @@ hudDone:
 			ano_render_publish_view(bridge, &view);
 		}
 
-		// Clear transient notice once. Only an ACCEPTED clear retires it; backpressure refires
-		// next tick. This clear allocates nothing, so OOM and INVALID are unreachable for it.
+		// Clear transient notice once. ACCEPTED retires it; else retry next tick.
 		if (bake != NULL && !noticeCleared && noticeDeadline != 0 && now > noticeDeadline)
 			noticeCleared = ano_render_text_clear(bridge, HUD_TEXT_NOTICE).code == ANO_RENDER_SUBMIT_ACCEPTED;
 
@@ -985,8 +976,7 @@ hudDone:
 				menuDirty = true;
 			}
 		}
-		// The OOM cooldown gates the BUILD, not just the submit: under memory pressure the panel is
-		// not laid out again either, which is the point of shedding it.
+		// OOM cooldown gates layout + submit.
 		if (menuDirty && vpW > 0.0f && now >= menuRetryAt) {
 			MenuLayout ml;
 			menu_layout(vpW, vpH, &ml);
@@ -1044,7 +1034,7 @@ hudDone:
 				musicDirty = true;
 			}
 		}
-		// Same cooldown discipline as the menu: an OOM sheds the rebuild along with the submit.
+		// OOM cooldown gates layout + submit.
 		if (musicDirty && vpW > 0.0f && now >= musicRetryAt) {
 			MusicLayout ml;
 			music_layout(vpW, vpH, &ml);
@@ -1066,9 +1056,7 @@ hudDone:
 				vpW = snap.uiWidth;
 				vpH = snap.uiHeight;
 			}
-			// Status bar: resubmit on vpH change. barSubmitted/barVpH stand in for a dirty flag, so
-			// the local latch below keeps the one policy switch driving this site too. On INVALID it
-			// latches for the current vpH: the rejected block is not rebuilt until the viewport moves.
+			// Status bar: resubmit on vpH change.
 			if ((!barSubmitted || barVpH != vpH) && vpH > 0.0f && now >= barRetryAt) {
 				bool barDirty = true;
 				submit_policy(submit_bar(bridge, bake, vpH), now, &barDirty, &barRetryAt, "status bar");
@@ -1089,8 +1077,7 @@ hudDone:
 						const float mint[4] = { 0.45f, 0.95f, 0.6f, 1.0f };
 						uint32_t n = ano_text_shape(bake, anostr_view(cam, (size_t)len),
 						                            20.0f, camOrg, mint, hud, HUD_TEXT_CAP, NULL);
-						// Replaceable state inside a 1 s refresh gate: the next scheduled refresh IS
-						// the retry, so this site carries no dirty flag and no cooldown of its own.
+						// 1 s refresh is the retry; no dirty/cooldown.
 						submit_policy(hud_text_submit(bridge, HUD_TEXT_CAM, hud, n), now, NULL, NULL,
 						              "camera readout");
 					}

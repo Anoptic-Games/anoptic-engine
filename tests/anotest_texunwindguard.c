@@ -3,29 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: the unwind contract of createTextureImage and createTextureImageFromPixels. A package
-// constructor acquires up to four objects 〜 staging buffer, image, sRGB view, UNORM view 〜 and
-// every refusal below the first of them must leave *pkg inert, discharge exactly what that call
-// acquired, and answer the AnoTextureResult code the loader classifies on: SOURCE is this asset's
-// problem and the next texture may still load, DEVICE is the whole load's problem because gpu_alloc
-// is monotonic, INVALID is the call itself. A miscoded arm is therefore a real defect, not a label.
-// The arm this guard exists for did not exist before the two-view package: mixed usage with the
-// SECOND createImageView refusing, where an already-live sRGB view must be discharged by an unwind
-// no caller can see. keepStaging is true on every refusal arm, so a hand-out that fires on failure
-// shows up as a live buffer with an inert package.
-// Harness: compiles the REAL texture.c TU and satisfies its link seams with stubs that ledger every
-// buffer, image and view handle they issue 〜 no GPU device, no loader. Real stbi_load decodes a
-// real TGA this test writes beside its CWD. Every injection is contract-faithful: vkCreateImage and
-// vkBindImageMemory refuse with OOM, gpu_alloc answers the empty allocation, createImageView answers
-// VK_NULL_HANDLE, and beginSingleTimeCommands answers VK_NULL_HANDLE on its Nth call, which is
-// transient-pool exhaustion and reaches the transition, copy and mip-chain arms when cmd is
-// VK_NULL_HANDLE. Controls prove both clean shapes 〜 keepStaging false retires the buffer
-// callee-side, keepStaging true hands it out live for the caller to retire 〜 so a reject-everything
-// or destroy-everything implementation cannot pass. The create-time mutable-format plan is asserted
-// off the same stubs: a mixed mask sets MUTABLE_FORMAT and attaches the two-entry format list, a
-// single-role mask sets neither, and the view count matches the mask. Whole-run invariants: nothing
-// destroyed twice, nothing destroyed that was never minted, nothing live when a scenario ends.
-// Exit 0 == pass.
+// Coverage: createTextureImage / createTextureImageFromPixels unwind contract.
+// Refusal: *pkg inert, acquired objects discharged, SOURCE / DEVICE / INVALID code.
+// Harness: real texture.c TU, stubbed seams, real TGA via stbi_load. Exit 0 == pass.
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -42,8 +22,7 @@ static int failures = 0;
 } while (0)
 
 
-/* Ledgers 〜 one per handle family the constructors acquire. Vulkan handles are a pointer or a
-   uint64_t depending on the target; both fit uint64_t, which is what a ledger stores. */
+/* Ledgers: buffer, image, view handles as uint64_t */
 
 #define MAX_OBJ 32
 
@@ -60,13 +39,12 @@ static Ledger g_bufs   = { .what = "staging buffer" };
 static Ledger g_images = { .what = "image" };
 static Ledger g_views  = { .what = "image view" };
 
-static void*    g_shadow[MAX_OBJ];   // host mapping behind each staging buffer, by mint slot
+static void*    g_shadow[MAX_OBJ];   // host mapping per staging mint slot
 static uint32_t g_doubleDestroys;    // whole-run invariant
 static uint32_t g_unknownDestroys;   // whole-run invariant
-static uint32_t g_leaked;            // whole-run invariant: handles alive when a scenario ended
+static uint32_t g_leaked;            // whole-run invariant: live at scenario end
 
-// in: led, base 〜 the first handle value this family issues.
-// out: a fresh live handle, or 0 when the ledger is full.
+// in: led, base. out: fresh live handle, or 0 if full.
 static uint64_t ledger_mint(Ledger* led, uint64_t base)
 {
 	if (led->count >= MAX_OBJ) { printf("FAIL: %s ledger overflow\n", led->what); failures++; return 0; }
@@ -77,10 +55,10 @@ static uint64_t ledger_mint(Ledger* led, uint64_t base)
 	return h;
 }
 
-// in: led, h. Discharges h; a second discharge or an unminted handle trips a whole-run invariant.
+// in: led, h. Marks h dead. Double-kill / unknown trip run invariants.
 static void ledger_kill(Ledger* led, uint64_t h)
 {
-	if (h == 0) return; // every vkDestroy* is a spec no-op on VK_NULL_HANDLE
+	if (h == 0) return; // vkDestroy* is a no-op on VK_NULL_HANDLE
 	for (uint32_t i = 0; i < led->count; i++) {
 		if (led->handle[i] == h) {
 			if (!led->live[i]) g_doubleDestroys++;
@@ -91,7 +69,7 @@ static void ledger_kill(Ledger* led, uint64_t h)
 	g_unknownDestroys++;
 }
 
-// out: how many of led's handles are still live.
+// out: live handle count in led.
 static uint32_t ledger_live(const Ledger* led)
 {
 	uint32_t n = 0;
@@ -99,9 +77,7 @@ static uint32_t ledger_live(const Ledger* led)
 	return n;
 }
 
-// in: where 〜 the scenario just finished.
-// out: how many handles it left live. Reports each family, releases the staging shadows and clears
-// the mint ledgers; the run invariants above persist.
+// in: where. out: live count left. Clears mint ledgers. Run invariants persist.
 static uint32_t ledgers_settle(const char* where)
 {
 	Ledger* all[3] = { &g_bufs, &g_images, &g_views };
@@ -120,25 +96,24 @@ static uint32_t ledgers_settle(const char* where)
 }
 
 
-/* Failure injection 〜 each switch spells one refusal a driver or the arena really produces */
+/* Failure injection */
 
-static bool     g_failCreateImage;     // vkCreateImage answers OUT_OF_DEVICE_MEMORY
-static bool     g_failGpuAlloc;        // the texture arena answers the empty allocation
-static bool     g_failBindImageMemory; // vkBindImageMemory answers OUT_OF_DEVICE_MEMORY
-static uint32_t g_viewRefuseAt;        // Nth createImageView answers VK_NULL_HANDLE; 0 = healthy
+static bool     g_failCreateImage;     // vkCreateImage -> OUT_OF_DEVICE_MEMORY
+static bool     g_failGpuAlloc;        // arena -> empty allocation
+static bool     g_failBindImageMemory; // vkBindImageMemory -> OUT_OF_DEVICE_MEMORY
+static uint32_t g_viewRefuseAt;        // Nth createImageView -> VK_NULL_HANDLE; 0 = healthy
 static uint32_t g_viewCalls;
-static uint32_t g_beginRefuseAt;       // Nth beginSingleTimeCommands answers VK_NULL_HANDLE; 0 = healthy
+static uint32_t g_beginRefuseAt;       // Nth beginSingleTimeCommands -> VK_NULL_HANDLE; 0 = healthy
 static uint32_t g_beginCalls;
 
-// Disarms every switch and rewinds the call counters.
+// Clears injection switches and call counters.
 static void injection_reset(void)
 {
 	g_failCreateImage = g_failGpuAlloc = g_failBindImageMemory = false;
 	g_viewRefuseAt = g_viewCalls = g_beginRefuseAt = g_beginCalls = 0;
 }
 
-/* What the last vkCreateImage was asked for. The mutable-format plan is create-time only, so this
-   is its whole observable surface without a device. */
+/* Last vkCreateImage create-info snapshot */
 
 static VkImageCreateFlags g_lastFlags;
 static bool               g_lastHadFormatList;
@@ -146,13 +121,12 @@ static uint32_t           g_lastFormatCount;
 static VkFormat           g_lastFormats[8];
 
 
-/* Link seams 〜 texture.c externs (the real definitions live in vulkanMaster.c / instance/, which
-   this executable deliberately does not link) */
+/* Link seams: texture.c externs */
 
 GpuAllocator textureAllocator;
 GpuAllocator stagingAllocator;
 
-// in: size. out: a ledgered buffer handle over a host-backed shadow mapping.
+// in: size. out: ledgered buffer over host shadow mapping.
 bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer* buffer, GpuAllocation* allocation)
 {
 	(void)ctx; (void)allocator; (void)usage; (void)properties;
@@ -166,7 +140,7 @@ bool createDataBuffer(VulkanContext* ctx, GpuAllocator* allocator, VkDeviceSize 
 	return shadow != NULL;
 }
 
-// Satisfies the request unless the arena-exhaustion arm is injected.
+// Returns empty alloc when g_failGpuAlloc is set.
 GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs, VkMemoryPropertyFlags props)
 {
 	(void)alloc; (void)props;
@@ -174,7 +148,7 @@ GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs, VkMemory
 	return (GpuAllocation){ .memory = (VkDeviceMemory)(uintptr_t)0x53, .offset = 0, .size = reqs.size, .mapped = NULL };
 }
 
-// out: a transient CB, or VK_NULL_HANDLE on the armed call 〜 a transient pool running dry.
+// out: transient CB, or VK_NULL_HANDLE on armed call.
 VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx)
 {
 	(void)ctx;
@@ -185,8 +159,7 @@ VkCommandBuffer beginSingleTimeCommands(VulkanContext* ctx)
 void endSingleTimeCommands(VulkanContext* ctx, VkCommandBuffer commandBuffer) { (void)ctx; (void)commandBuffer; }
 bool hasStencilComponent(VkFormat format) { return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT; }
 
-// out: a ledgered view handle, or VK_NULL_HANDLE on the armed call. Every grant is distinct, so the
-// two interpretations of one image can never alias each other.
+// out: ledgered view, or VK_NULL_HANDLE on armed call.
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels)
 {
 	(void)device; (void)image; (void)format; (void)aspectFlags; (void)mipLevels;
@@ -195,10 +168,9 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 }
 
 
-/* Link seams 〜 the vk* entry points texture.c calls (loader not linked) */
+/* Link seams: vk* entry points */
 
-// Records the create-time format plan before honouring any injection, so a refused create is still
-// observable. Out-param stays undefined on error, per spec.
+// Records create-time format plan, then honours injection.
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const VkImageCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImage* pImage)
 {
 	(void)device; (void)pAllocator;
@@ -242,8 +214,6 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyBuffer(VkDevice device, VkBuffer buffer, con
 VKAPI_ATTR void VKAPI_CALL vkDestroyImage(VkDevice device, VkImage image, const VkAllocationCallbacks* pAllocator)
 { (void)device; (void)pAllocator; ledger_kill(&g_images, HBITS(image)); }
 
-// Ledger-backed on purpose: a view the unwind forgets is invisible against a no-op stub, and the
-// two-view package is exactly where that forgetting became possible.
 VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice device, VkImageView imageView, const VkAllocationCallbacks* pAllocator)
 { (void)device; (void)pAllocator; ledger_kill(&g_views, HBITS(imageView)); }
 
@@ -262,7 +232,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDevice physic
 
 /* Fixtures and package helpers */
 
-// Writes a w x h uncompressed 32-bit true-color TGA (top-left origin) for the real stbi_load.
+// Writes w x h uncompressed 32-bit TGA (top-left origin).
 static bool write_tga(const char* path, int w, int h)
 {
 	unsigned char hdr[18] = {0};
@@ -282,7 +252,7 @@ static bool write_tga(const char* path, int w, int h)
 	return true;
 }
 
-// Writes a blob no stbi decoder claims, so the decode seam refuses on content rather than on access.
+// Writes undecodable blob for stbi refuse-on-content.
 static bool write_junk(const char* path)
 {
 	FILE* f = fopen(path, "wb");
@@ -292,11 +262,10 @@ static bool write_junk(const char* path)
 	return true;
 }
 
-// Fills pkg with a non-zero pattern, so "inert" proves the callee wrote its own total zero rather
-// than the caller's zeroing showing through.
+// Fills pkg with 0xA5 so inert proves callee zeroing.
 static void poison(TexturePackage* pkg) { memset(pkg, 0xA5, sizeof *pkg); }
 
-// out: true iff nothing was published into pkg.
+// out: true iff pkg published nothing.
 static bool pkg_inert(const TexturePackage* p)
 {
 	return p->image == VK_NULL_HANDLE && p->srgbView == VK_NULL_HANDLE && p->unormView == VK_NULL_HANDLE &&
@@ -305,8 +274,7 @@ static bool pkg_inert(const TexturePackage* p)
 	       p->mipLevels == 0 && p->width == 0 && p->height == 0;
 }
 
-// in: ctx, pkg 〜 the caller's obligation over a BUILT package: discharge every handle it owns.
-// Each deallocator is a spec no-op on VK_NULL_HANDLE, so an absent view costs nothing.
+// in: ctx, pkg. Destroys every handle pkg owns.
 static void discharge(VulkanContext* ctx, TexturePackage* pkg)
 {
 	vkDestroyBuffer(ctx->device, pkg->staging, NULL);
@@ -316,8 +284,7 @@ static void discharge(VulkanContext* ctx, TexturePackage* pkg)
 	*pkg = (TexturePackage){0};
 }
 
-// in: r, pkg from a refused construction; want 〜 the code the arm owes; name 〜 the arm.
-// The whole refusal contract in one place: right code, inert package, empty ledgers.
+// in: r, pkg, want, name. Asserts code, inert pkg, empty ledgers.
 static void expect_refusal(AnoTextureResult r, const TexturePackage* pkg, AnoTextureResultCode want, const char* name)
 {
 	char msg[192];
@@ -335,7 +302,7 @@ int main(void)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
 
-	static VulkanContext ctx; // zeroed; every seam stub ignores its handles
+	static VulkanContext ctx; // zeroed; stubs ignore handles
 	VkCommandBuffer borrowed = (VkCommandBuffer)(uintptr_t)0x70;
 	TexturePackage pkg;
 	AnoTextureResult r;
@@ -348,9 +315,9 @@ int main(void)
 	static unsigned char px[4 * 4 * 4];
 	for (uint32_t i = 0; i < sizeof px; i++) px[i] = (unsigned char)(0xA0 ^ i);
 
-	/* Controls 〜 both clean shapes, so neither rejecting everything nor destroying everything passes */
+	/* Controls: clean keepStaging shapes */
 
-	// keepStaging false with no borrow: the buffer is retired callee-side, one image behind one view
+	// keepStaging false: callee retires staging, one image, one view
 	injection_reset(); poison(&pkg);
 	r = createTextureImage(&ctx, VK_NULL_HANDLE, &pkg, sq, false, TEXTURE_USE_COLOR, false);
 	CHECK(r.code == ANO_TEXTURE_BUILT, "control: colour-only file load is BUILT");
@@ -363,8 +330,7 @@ int main(void)
 	discharge(&ctx, &pkg);
 	CHECK(ledgers_settle("colour-only control") == 0, "control: the caller's discharge balances every ledger");
 
-	// keepStaging true with a borrow: the copy that CB carries reads the buffer until the caller
-	// submits, so the buffer comes out live and only the caller may retire it
+	// keepStaging true + borrow: staging handed out live
 	injection_reset(); poison(&pkg);
 	r = createTextureImage(&ctx, borrowed, &pkg, sq, false, TEXTURE_USE_COLOR, true);
 	CHECK(r.code == ANO_TEXTURE_BUILT, "control: borrowed-CB load is BUILT");
@@ -373,7 +339,7 @@ int main(void)
 	discharge(&ctx, &pkg);
 	CHECK(ledgers_settle("keepStaging control") == 0, "control: the caller retires the handed-out staging buffer");
 
-	/* Structural 〜 the create-time format plan and the view count follow the usage mask */
+	/* Structural: format plan and view count vs usage mask */
 
 	injection_reset(); poison(&pkg);
 	r = createTextureImage(&ctx, borrowed, &pkg, sq, false, TEXTURE_USE_DATA, true);
@@ -384,8 +350,7 @@ int main(void)
 	discharge(&ctx, &pkg);
 	CHECK(ledgers_settle("data-only") == 0, "data-only balances every ledger");
 
-	// One mutable-format image over one allocation, carrying two distinct views and the explicit
-	// two-entry alias list the driver plans against instead of the whole compatibility class
+	// Mixed usage: MUTABLE_FORMAT, two views, two-entry format list
 	injection_reset(); poison(&pkg);
 	r = createTextureImage(&ctx, borrowed, &pkg, sq, false, TEXTURE_USE_COLOR | TEXTURE_USE_DATA, true);
 	CHECK(r.code == ANO_TEXTURE_BUILT, "mixed-usage file load is BUILT");
@@ -393,7 +358,6 @@ int main(void)
 	CHECK(pkg.srgbView != pkg.unormView, "mixed usage's two views are distinct handles");
 	CHECK(g_images.count == 1 && g_bufs.count == 1, "mixed usage uploads one image once, not one per view");
 	CHECK((g_lastFlags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) != 0, "mixed usage sets MUTABLE_FORMAT");
-	// The colour-only control above takes three levels off this same 4x4 source; a blit chain filters in one format's space, so any level below the top would be wrong through one of the two views.
 	CHECK(pkg.mipLevels == 1, "mixed usage publishes a single mip level, so both views read exact samples");
 	CHECK(g_lastHadFormatList && g_lastFormatCount == 2, "mixed usage attaches a two-entry format list");
 	bool listOk = g_lastHadFormatList && g_lastFormatCount == 2 &&
@@ -403,7 +367,7 @@ int main(void)
 	discharge(&ctx, &pkg);
 	CHECK(ledgers_settle("mixed usage") == 0, "mixed usage balances every ledger");
 
-	// The sibling pixel face carries the same shapes over a caller-supplied buffer
+	// Pixel-face sibling of the mixed control
 	injection_reset(); poison(&pkg);
 	r = createTextureImageFromPixels(&ctx, VK_NULL_HANDLE, &pkg, px, 4, 4, TEXTURE_USE_COLOR | TEXTURE_USE_DATA, false);
 	CHECK(r.code == ANO_TEXTURE_BUILT, "control: pixel upload is BUILT");
@@ -414,11 +378,11 @@ int main(void)
 	discharge(&ctx, &pkg);
 	CHECK(ledgers_settle("pixel control") == 0, "control: the pixel face balances every ledger");
 
-	/* Refusal arms 〜 every one owes its code, an inert package, and a total discharge */
+	/* Refusal arms */
 
 	printf("arms: keepStaging is true throughout, so a hand-out that fires on failure shows as a live buffer\n");
 
-	// Inside createImageShared: the image never exists, exists unbacked, or is refused its binding
+	// createImageShared: create / alloc / bind refusals
 	injection_reset(); poison(&pkg); g_failCreateImage = true;
 	r = createTextureImage(&ctx, borrowed, &pkg, sq, false, TEXTURE_USE_COLOR, true);
 	expect_refusal(r, &pkg, ANO_TEXTURE_DEVICE, "vkCreateImage refusal");
@@ -435,7 +399,7 @@ int main(void)
 	r = createTextureImageFromPixels(&ctx, borrowed, &pkg, px, 4, 4, TEXTURE_USE_DATA, true);
 	expect_refusal(r, &pkg, ANO_TEXTURE_DEVICE, "pixel face, texture arena refusal");
 
-	// The colour view refuses first, with the image and the staging buffer already live
+	// First view refuses with image + staging already live
 	injection_reset(); poison(&pkg); g_viewRefuseAt = 1;
 	r = createTextureImage(&ctx, borrowed, &pkg, sq, false, TEXTURE_USE_COLOR, true);
 	CHECK(g_views.count == 0 && ledger_live(&g_images) == 0 && ledger_live(&g_bufs) == 0, "colour-view refusal mints no view and keeps nothing else");
@@ -445,8 +409,7 @@ int main(void)
 	r = createTextureImage(&ctx, borrowed, &pkg, sq, false, TEXTURE_USE_DATA, true);
 	expect_refusal(r, &pkg, ANO_TEXTURE_DEVICE, "data view refusal");
 
-	// The arm this guard exists for: mixed usage, second view refused. The sRGB view is already
-	// live and belongs to nobody 〜 no caller ever sees it 〜 so only the unwind can discharge it.
+	// Mixed usage, second view refused: unwind kills the live sRGB view
 	printf("arm: mixed usage with the second view refused 〜 the already-live sRGB view must not survive\n");
 	injection_reset(); poison(&pkg); g_viewRefuseAt = 2;
 	r = createTextureImage(&ctx, borrowed, &pkg, sq, false, TEXTURE_USE_COLOR | TEXTURE_USE_DATA, true);
@@ -460,9 +423,7 @@ int main(void)
 	CHECK(g_views.count == 1 && ledger_live(&g_views) == 0, "pixel face: its already-live sRGB view is discharged too");
 	expect_refusal(r, &pkg, ANO_TEXTURE_DEVICE, "pixel face, second view refused");
 
-	// Transient-pool exhaustion. No borrow, so each helper mints its own CB and the Nth refusal picks
-	// the arm: 1 the pre-copy transition, 2 the copy, 3 the mip chain (the pixel face's third is its
-	// post-copy transition instead).
+	// Transient pool dry: Nth beginSingleTimeCommands refuses (1 transition, 2 copy, 3 mip/post)
 	for (uint32_t n = 1; n <= 3; n++) {
 		char name[64];
 		snprintf(name, sizeof name, "transient CB refusal #%" PRIu32 " (file)", n);
@@ -480,7 +441,7 @@ int main(void)
 		expect_refusal(r, &pkg, ANO_TEXTURE_DEVICE, name);
 	}
 
-	// Source refusals 〜 this asset's problem, so the loader may keep going
+	// Source refusals
 	injection_reset(); poison(&pkg);
 	r = createTextureImage(&ctx, borrowed, &pkg, "anotest_texunwind_absent.tga", false, TEXTURE_USE_COLOR, true);
 	expect_refusal(r, &pkg, ANO_TEXTURE_SOURCE, "missing source file");
@@ -497,7 +458,7 @@ int main(void)
 	r = createTextureImageFromPixels(&ctx, borrowed, &pkg, px, 0, 4, TEXTURE_USE_COLOR, true);
 	expect_refusal(r, &pkg, ANO_TEXTURE_SOURCE, "zero-extent pixel source");
 
-	// Contract refusals 〜 the call itself is malformed, so nothing is attempted at all
+	// Contract refusals
 	injection_reset(); poison(&pkg);
 	r = createTextureImage(&ctx, borrowed, &pkg, sq, false, TEXTURE_USE_NONE, true);
 	CHECK(g_bufs.count == 0 && g_images.count == 0 && g_views.count == 0, "no-usage refusal acquires nothing");
@@ -508,7 +469,7 @@ int main(void)
 	CHECK(g_bufs.count == 0 && g_images.count == 0 && g_views.count == 0, "no-usage refusal acquires nothing");
 	expect_refusal(r, &pkg, ANO_TEXTURE_INVALID, "no usage bits (pixels)");
 
-	// Accept-form: a bit outside the two the constructor knows must refuse, not slip past on the strength of the COLOR bit beside it.
+	// Unknown usage bit refuses
 	injection_reset(); poison(&pkg);
 	r = createTextureImage(&ctx, borrowed, &pkg, sq, false, TEXTURE_USE_COLOR | 0x4u, true);
 	CHECK(g_bufs.count == 0 && g_images.count == 0 && g_views.count == 0, "unknown-bit refusal acquires nothing");
@@ -526,7 +487,7 @@ int main(void)
 	CHECK(r.code == ANO_TEXTURE_INVALID, "null destination (pixels) answers INVALID");
 	CHECK(ledgers_settle("null destination") == 0, "a null destination acquires nothing");
 
-	/* Whole-run invariants 〜 an unwind must not overshoot the way a missed view undershoots */
+	/* Whole-run invariants */
 
 	CHECK(g_doubleDestroys == 0, "no handle destroyed twice");
 	CHECK(g_unknownDestroys == 0, "no handle destroyed that was never minted");

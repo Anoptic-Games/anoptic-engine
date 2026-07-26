@@ -139,22 +139,17 @@ typedef struct RenderLightParams
     float           range;        // attenuation cutoff; <= 0 == unbounded (ignored for directional)
     float           innerConeCos; // spot inner cone half-angle cosine
     float           outerConeCos; // spot outer cone half-angle cosine
-    RenderLightType type;         // outside {0,1,2} the render seam refuses the light: RCMD_CREATE/
-                                  // RCMD_UPDATE drop the payload (the entity still lands, light_index
-                                  // becomes ANO_RENDER_NO_LIGHT), RCMD_LIGHT_ATTACH is dropped whole,
-                                  // RCMD_LIGHT_UPDATE only when its mask names ANO_LIGHT_FIELD_TYPE.
-    float           localDir[3];  // spot/dir aim in the parent's MODEL space; world forward =
-                                  // rotate(parent, localDir). (0,0,0) -> parent -Z (the default).
-                                  // Lets spots on a shared parent slot fan independently. Point: ignored.
-    uint32_t        castsShadow;  // RCMD_LIGHT_ATTACH: 1 = allocate a runtime shadow frustum so this
-                                  // light casts (within the runtime budget; silently shadowless if full).
-                                  // dir/spot = 1 frustum, point = 6 (a cube). Set at attach; togglable
-                                  // afterward via ano_render_light_update_fields + ANO_LIGHT_FIELD_CAST.
-                                  // On a STATIC row (light_index < anoRenderStaticLightBase()) grants are
-                                  // CREATE-only: 1 on RCMD_CREATE grants the block and installs the caster
-                                  // volumes; 1 on RCMD_UPDATE refreshes the volumes the row already owns
-                                  // and grants nothing (a raise on a row holding no block is reported and
-                                  // dropped 〜 re-create the row to grant); 0 on RCMD_UPDATE revokes.
+    // Outside {0,1,2}: CREATE/UPDATE drop the light payload (entity still lands, light_index =
+    // ANO_RENDER_NO_LIGHT); LIGHT_ATTACH dropped whole; LIGHT_UPDATE only when the mask names TYPE.
+    RenderLightType type;
+    // Spot/dir aim in parent MODEL space; world forward = rotate(parent, localDir).
+    // (0,0,0) -> parent -Z. Point: ignored.
+    float           localDir[3];
+    // Attach: 1 allocates a shadow frustum (budget; silent if full). dir/spot = 1, point = 6.
+    // Toggle later via ano_render_light_update_fields + ANO_LIGHT_FIELD_CAST.
+    // STATIC row (light_index < anoRenderStaticLightBase()): CREATE-only grants; UPDATE 1 refreshes
+    // owned volumes only (raise with no block is dropped 〜 re-create to grant); UPDATE 0 revokes.
+    uint32_t        castsShadow;
 } RenderLightParams;
 
 // Field mask for ano_render_light_update_fields: which RenderLightParams fields (+ the model-space
@@ -170,11 +165,9 @@ enum {
     ANO_LIGHT_FIELD_OFFSET    = 1 << 5, // light_offset[3]
     ANO_LIGHT_FIELD_DIRECTION = 1 << 6, // localDir[3] (spot/dir aim)
     ANO_LIGHT_FIELD_ALL       = (1 << 7) - 1, // the full-overwrite set (bits 0..6); preserves cast state
-    ANO_LIGHT_FIELD_CAST      = 1 << 7, // toggle shadow casting via castsShadow. Deliberately OUTSIDE
-                                        // ALL: casting allocates/frees a whole shadow-frustum block, so
-                                        // it flips only on an explicit request, never as a side effect
-                                        // of a full update. On->off frees the block (shadowless within a
-                                        // frame); off->on re-allocates if the runtime budget allows.
+    // OUTSIDE ALL: casting allocates/frees a frustum block, so it flips only on explicit request.
+    // On->off frees (shadowless within a frame); off->on re-allocates if the budget allows.
+    ANO_LIGHT_FIELD_CAST      = 1 << 7, // toggle shadow casting via castsShadow
 };
 
 // Occlusion model selector, profiled head-to-head against radiance cascades.
@@ -441,23 +434,12 @@ typedef struct RenderCommand
 // single tick is O(1) ring messages and never approaches the ceiling in the first place.
 bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd);
 
-// Outcome of the six owned-payload producer endpoints below. Four codes because the caller's
-// correct reaction differs at each: retry, shed, retire, or proceed 〜 a bool collapses "the ring
-// is momentarily full" and "the allocator refused" into one answer a retry loop cannot tell apart,
-// which is how a retry becomes an unbounded spin. Inspect result.code only; `if (result)` and
-// `while (!result)` are wrong by construction, because ACCEPTED is 0. Switch without a `default`
-// so a fifth code is a compile-time diagnostic at every policy site instead of a silent fallthrough.
-//   ACCEPTED     the payload was allocated, packed and enqueued, or the documented no-op applied
-//                (a zero-count bulk; a count-0 text or empty UI delegated to its CLEAR). Ownership
-//                has crossed into the bridge; the caller relinquishes a packed block on this code
-//                only, and commands still enqueued at teardown are discharged by the bridge.
-//   BACKPRESSURE the command ring refused the push. Any block already packed was released, nothing
-//                is enqueued, the caller's source arrays are untouched, and retrying is safe.
-//                Ordinary backpressure carries no warning.
-//   OOM          the render-owned block could not be allocated. Nothing enqueued, no ownership
-//                transfer, caller arrays untouched. Never spelled as backpressure.
-//   INVALID      the call violates the endpoint's contract. Deterministic: the same call cannot
-//                succeed later, so a retry loop must retire the block rather than spin on it.
+// Outcome of the six owned-payload producer endpoints below.
+// Inspect result.code only; ACCEPTED is 0 (do not truth-test the result).
+// ACCEPTED: payload allocated, packed, and enqueued, or a documented no-op (zero-count bulk; count-0 text / empty UI via CLEAR). Ownership crosses into the bridge on this code only; teardown discharges any still-enqueued commands.
+// BACKPRESSURE: ring refused the push. Packed block released if any; nothing enqueued; caller arrays untouched; retry is safe. No warning.
+// OOM: render-owned block alloc failed. Nothing enqueued; no ownership transfer; caller arrays untouched. Not backpressure.
+// INVALID: contract violation. Deterministic; retire rather than retry.
 ANO_RESULT_TYPE(AnoRenderSubmitResult,
     ANO_RENDER_SUBMIT_ACCEPTED = 0,
     ANO_RENDER_SUBMIT_BACKPRESSURE,
@@ -466,10 +448,10 @@ ANO_RESULT_TYPE(AnoRenderSubmitResult,
 );
 
 // Bulk producer endpoints. Each copies the batch into one render-owned block (released
-// render-side after the change has reached every frame in flight), so the caller's arrays
-// need only live until the call returns. A zero count is an ACCEPTED no-op with nothing
-// enqueued. INVALID covers a NULL batch, a NULL render_ids with a nonzero count, a NULL array
-// for a field the mask names, and a packed size that would not fit size_t.
+// render-side after the change has reached every frame in flight); caller arrays need
+// only live until the call returns.
+// zero count 〜 ACCEPTED no-op, nothing enqueued
+// INVALID 〜 NULL batch; NULL render_ids with nonzero count; NULL array for a field the mask names; packed size that would not fit size_t
 AnoRenderSubmitResult ano_render_submit_bulk_update(AnoRenderBridge *bridge, const RenderUpdateBatch *batch);
 AnoRenderSubmitResult ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, const uint32_t *render_ids, uint32_t count);
 
@@ -495,46 +477,45 @@ bool ano_render_stream_commit(const AnoStreamRegion *region, uint32_t count);
 //   update: carries the full params + offset (the light payload is tiny; there is no partial mask).
 //   detach: idempotent (an unknown/already-detached light_id is a no-op).
 bool ano_render_light_attach(AnoRenderBridge *bridge, uint32_t light_id, uint32_t parent_render_id,
-                             const RenderLightParams *params, float ox, float oy, float oz);
+        const RenderLightParams *params, float ox, float oy, float oz);
+
 bool ano_render_light_update(AnoRenderBridge *bridge, uint32_t light_id,
-                             const RenderLightParams *params, float ox, float oy, float oz);
+        const RenderLightParams *params, float ox, float oy, float oz);
+        
 // Partial update: only the RenderLightParams fields (+ offset) named in `fields` (ANO_LIGHT_FIELD_*)
 // are written; the rest of the light's state is preserved render-side. ano_render_light_update is
 // this with ANO_LIGHT_FIELD_ALL. Same backpressure contract (false == ring full: retry).
 bool ano_render_light_update_fields(AnoRenderBridge *bridge, uint32_t light_id,
-                                    const RenderLightParams *params, float ox, float oy, float oz,
-                                    uint32_t fields);
+        const RenderLightParams *params, float ox, float oy, float oz, uint32_t fields);
+
 bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
 
-// Screen-text blocks (the v0 logic->render text path). `set` copies the
-// shaped instances into one render-owned block (count truncated to ANO_RENDER_TEXT_MAX, which
-// still ACCEPTS) and REPLACES block text_id's contents 〜 the caller's array need only live
-// until the call returns. `clear` removes the block (idempotent; unknown text_id is a no-op).
-// A set with count 0 tail-forwards to clear and answers whatever that clear answered.
-// INVALID means count > 0 with a NULL instances pointer. `clear` allocates nothing and
-// validates nothing, so it answers only ACCEPTED or BACKPRESSURE: an exhaustive switch over a
-// clear may treat OOM and INVALID as unreachable. Unlike CREATE/DESTROY, a dropped SET is
-// harmless to skip 〜 it is a full replace, so the block is merely stale until the producer's
-// next set 〜 but a producer that must not miss a one-shot set (or a clear) retries on
-// BACKPRESSURE. All blocks die with the renderer at shutdown.
+// Screen-text blocks (the v0 logic->render text path). `set` copies the shaped instances into one
+// render-owned block (count truncated to ANO_RENDER_TEXT_MAX, still ACCEPTED) and REPLACES block
+// text_id's contents; caller array lives until return. `clear` is idempotent (unknown text_id is a no-op).
+// count 0 set 〜 forwards to clear (same result)
+// INVALID 〜 count > 0 with NULL instances
+// clear 〜 ACCEPTED or BACKPRESSURE only (no alloc, no validate)
+// Dropped SET is merely stale until the next set; retry BACKPRESSURE if a one-shot must not be missed.
+// All blocks die with the renderer at shutdown.
 AnoRenderSubmitResult ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
-                                          const AnoGlyphInstance *instances, uint32_t count);
+        const AnoGlyphInstance *instances, uint32_t count);
+
 AnoRenderSubmitResult ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id);
 
-// UI blocks (the v0 logic->render UI path; docs/ui/ui-render.md §3.9). `set` packs the
-// builder's tables plus the shaped glyph labels into one render-owned block and REPLACES
-// block ui_id's contents; caller arrays need only live until the call returns. Text semantics
-// carry over: `clear` is idempotent and, like text's, answers only ACCEPTED or BACKPRESSURE;
-// a non-NULL builder holding no prims tail-forwards to clear; a dropped SET is merely stale.
-// A NULL builder is INVALID, not a silent clear 〜 an absent block is spelled by calling clear.
-// INVALID also covers the per-block caps being exceeded, a glyphCount > 0 with NULL glyphs,
-// out-of-range clip/paint/glyph references, and a UI_PATH whose curve walk
-// (ANO_UI_CURVE_SENTINEL grammar) would read past the stream; the bridge warns once per drop.
-// A backpressure retry loop still never spins on bad input, because INVALID is a distinct code
-// the loop retires the block on. UI_GLYPHS prims index glyphs[] block-locally.
+// UI blocks (the v0 logic->render UI path; docs/ui/ui-render.md §3.9). `set` packs the builder's
+// tables plus shaped glyph labels into one render-owned block and REPLACES block ui_id's contents;
+// caller arrays live until return.
+// clear 〜 idempotent; ACCEPTED or BACKPRESSURE only
+// empty non-NULL builder 〜 forwards to clear; dropped SET is merely stale
+// NULL builder 〜 INVALID (absent block 〜 call clear)
+// INVALID also 〜 per-block caps exceeded; glyphCount > 0 with NULL glyphs; out-of-range
+// clip/paint/glyph refs; UI_PATH curve walk (ANO_UI_CURVE_SENTINEL) would read past the stream
+// Bridge warns once per INVALID drop. UI_GLYPHS prims index glyphs[] block-locally.
 AnoRenderSubmitResult ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
-                                        const AnoUiBuilder *ui,
-                                        const AnoGlyphInstance *glyphs, uint32_t glyphCount);
+        const AnoUiBuilder *ui,
+        const AnoGlyphInstance *glyphs, uint32_t glyphCount);
+
 AnoRenderSubmitResult ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_id);
 
 // ---------------------------------------------------------------------------

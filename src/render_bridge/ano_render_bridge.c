@@ -174,11 +174,7 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
 
 /* Bulk */
 
-// A packed bulk block carries sub-arrays of over-aligned types 〜 mat4 is aligned(16) and both
-// payload structs embed an alignas(16) Vector4 〜 behind a 4-aligned id array, so the offsets must
-// be rounded or the pointer formed from them is undefined and a consumer reading through the
-// 16-aligned type may issue aligned loads against it. One pad after the ids carries all three
-// while each remains a whole number of these units, which is what the first assert pins.
+// Pack: ids, pad to ANO_BULK_OVERALIGN, then over-aligned sub-arrays (mat4 / motion / userdata).
 #define ANO_BULK_OVERALIGN 16u
 _Static_assert(sizeof(mat4) % ANO_BULK_OVERALIGN == 0u
                    && sizeof(AnoMotionDescriptor) % ANO_BULK_OVERALIGN == 0u
@@ -189,10 +185,9 @@ _Static_assert(alignof(mat4) <= ANO_BULK_OVERALIGN
                    && alignof(AnoInstanceData) <= ANO_BULK_OVERALIGN,
                "a bulk sub-array wants stricter alignment than the pack provides");
 
-// in:  bridge, batch (caller-owned; only the arrays the mask names are read)
-// out: ACCEPTED with one render-owned block enqueued, or the refusal that stopped it
-// inv: arm order is load-bearing 〜 a NULL batch cannot be probed for a count, so it is refused
-//      before anything reads through it, and a zero count is answered before any array is touched.
+// in:  bridge, batch (caller-owned; only mask-named arrays are read)
+// out: ACCEPTED with one render-owned block enqueued, or a refusal
+// inv: NULL batch before count; zero count before any array touch
 AnoRenderSubmitResult ano_render_submit_bulk_update(AnoRenderBridge *bridge, const RenderUpdateBatch *batch)
 {
     if (batch == NULL)
@@ -200,19 +195,17 @@ AnoRenderSubmitResult ano_render_submit_bulk_update(AnoRenderBridge *bridge, con
     if (batch->count == 0u)
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_ACCEPTED); // documented no-op
     uint32_t count = batch->count, fields = batch->fields;
-    // One arm per named field whose array is absent: each is an unchecked dereference in the pack
-    // below. RFIELD_LIGHT is not a bulk field and names no array here.
+    // Absent array for a named field -> INVALID. RFIELD_LIGHT is not bulk.
     if (batch->render_ids == NULL
         || ((fields & RFIELD_TRANSFORM) && batch->transforms == NULL)
         || ((fields & RFIELD_ANIM)      && batch->motion == NULL)
         || ((fields & RFIELD_MESH_MAT)  && (batch->mesh == NULL || batch->material == NULL))
         || ((fields & RFIELD_USERDATA)  && batch->instance_data == NULL))
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_INVALID);
-    // Checked accumulation: ano_size_add_array divides before multiplying, so no product and no
-    // running sum is ever formed out of range.
+    // Checked size: add_array / align_up refuse overflow.
     size_t bytes = sizeof(RenderUpdateBatch);
-    if (!ano_size_add_array(&bytes, count, sizeof(uint32_t))                                            // ids
-        || !ano_size_align_up(&bytes, ANO_BULK_OVERALIGN)                                               // pad
+    if (!ano_size_add_array(&bytes, count, sizeof(uint32_t)) // ids
+        || !ano_size_align_up(&bytes, ANO_BULK_OVERALIGN)    // pad
         || ((fields & RFIELD_TRANSFORM) && !ano_size_add_array(&bytes, count, sizeof(mat4)))
         || ((fields & RFIELD_ANIM)      && !ano_size_add_array(&bytes, count, sizeof(AnoMotionDescriptor)))
         || ((fields & RFIELD_USERDATA)  && !ano_size_add_array(&bytes, count, sizeof(AnoInstanceData)))
@@ -227,9 +220,7 @@ AnoRenderSubmitResult ano_render_submit_bulk_update(AnoRenderBridge *bridge, con
     char *cur = blk + sizeof(RenderUpdateBatch);
     b->render_ids = (uint32_t *)cur;
     memcpy(cur, batch->render_ids, (size_t)count * sizeof(uint32_t)); cur += (size_t)count * sizeof(uint32_t);
-    // Same round-up the size took, in the same order: the ids array is the only 4-aligned run ahead
-    // of the over-aligned ones, so one pad here carries all three (each is a whole number of
-    // ANO_BULK_OVERALIGN units by the assert above) and mesh/material trail behind them.
+    // Pad to ANO_BULK_OVERALIGN (same order as the size pass).
     cur = blk + (((size_t)(cur - blk) + (ANO_BULK_OVERALIGN - 1u)) & ~(size_t)(ANO_BULK_OVERALIGN - 1u));
     if (fields & RFIELD_TRANSFORM) {
         b->transforms = (mat4 *)cur;
@@ -251,14 +242,13 @@ AnoRenderSubmitResult ano_render_submit_bulk_update(AnoRenderBridge *bridge, con
     }
     RenderCommand cmd = { .kind = RCMD_BULK_UPDATE, .update = b, .bulk_owned = true };
     if (!ano_render_submit(bridge, &cmd)) {
-        ano_render_command_release(&cmd); // nothing enqueued: the block is ours to retire
+        ano_render_command_release(&cmd); // failed push: retire block
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_BACKPRESSURE);
     }
     return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_ACCEPTED);
 }
 
-// Mass despawn into one render-owned block. Same arm mapping as bulk_update; the id array is the
-// only one, so a zero count answers before it is ever read.
+// Mass despawn into one render-owned block. Zero count before id read.
 AnoRenderSubmitResult ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, const uint32_t *render_ids, uint32_t count)
 {
     if (count == 0u)
@@ -287,13 +277,11 @@ AnoRenderSubmitResult ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, co
 
 /* Screen Text */
 
-// The clamp to ANO_RENDER_TEXT_MAX is the packer's only inlet, so the packed size is bounded at
-// compile time and a runtime overflow arm below would be dead code.
+// Clamp caps packed size at compile time.
 _Static_assert(ANO_RENDER_TEXT_MAX <= (SIZE_MAX - sizeof(RenderTextBlock)) / sizeof(AnoGlyphInstance),
                "a full screen-text block must fit size_t");
 
-// `set` packs header + instances into one render-owned block. count 0 tail-forwards to clear and
-// answers whatever that clear answered 〜 the delegated push can meet the same full ring.
+// Packs header + instances into one render-owned block. count 0 -> clear.
 AnoRenderSubmitResult ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
                                           const AnoGlyphInstance *instances, uint32_t count)
 {
@@ -302,7 +290,7 @@ AnoRenderSubmitResult ano_render_text_set(AnoRenderBridge *bridge, uint32_t text
     if (instances == NULL)
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_INVALID); // count without data
     if (count > ANO_RENDER_TEXT_MAX)
-        count = ANO_RENDER_TEXT_MAX; // clamp to the region; a clamped block still ACCEPTS
+        count = ANO_RENDER_TEXT_MAX; // clamp to the region
     size_t bytes = sizeof(RenderTextBlock) + (size_t)count * sizeof(AnoGlyphInstance);
     char *blk = mi_malloc(bytes);
     if (blk == NULL)
@@ -314,13 +302,13 @@ AnoRenderSubmitResult ano_render_text_set(AnoRenderBridge *bridge, uint32_t text
     b->instances = inst;
     RenderCommand c = { .kind = RCMD_TEXT_SET, .text_id = text_id, .text = b, .bulk_owned = true };
     if (!ano_spsc_push(&bridge->commands, &c)) {
-        ano_render_command_release(&c); // nothing enqueued: the block is ours to retire
+        ano_render_command_release(&c); // failed push: retire block
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_BACKPRESSURE);
     }
     return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_ACCEPTED);
 }
 
-// Allocates nothing and validates nothing, so its domain is ACCEPTED or BACKPRESSURE only.
+// Push TEXT_CLEAR. ACCEPTED or BACKPRESSURE.
 AnoRenderSubmitResult ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id)
 {
     RenderCommand c = { .kind = RCMD_TEXT_CLEAR, .text_id = text_id };
@@ -358,8 +346,7 @@ static bool ui_path_walk_valid(const uint32_t *curves, uint32_t curveCount,
 }
 
 // Block-local ref check for one UI prim, including the referenced paint's stop window.
-// A failure is the caller's INVALID: deterministic, so a backpressure retry loop retires the block
-// rather than spinning on input that cannot become valid.
+// Failure -> INVALID (deterministic).
 static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, uint32_t glyphs,
                           const uint32_t *curves, uint32_t curveCount,
                           const AnoUiPaint *paintTab, uint32_t stops)
@@ -381,8 +368,7 @@ static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, u
     return true;
 }
 
-// Every table is refused above its per-block cap before the packer multiplies, so the largest block
-// this packer can ever size is bounded at compile time and a runtime overflow arm would be dead code.
+// Cap refusals bound packed size at compile time.
 _Static_assert((size_t)ANO_RENDER_UI_MAX_PRIMS  * sizeof(AnoUiPrim)
              + (size_t)ANO_RENDER_UI_MAX_CLIPS  * sizeof(AnoUiClip)
              + (size_t)ANO_RENDER_UI_MAX_PAINTS * sizeof(AnoUiPaint)
@@ -392,9 +378,8 @@ _Static_assert((size_t)ANO_RENDER_UI_MAX_PRIMS  * sizeof(AnoUiPrim)
                <= SIZE_MAX - sizeof(RenderUiBlock),
                "a maximal UI block must fit size_t");
 
-// `set` packs tables + glyphs into one render-owned block. A non-NULL builder holding no prims
-// tail-forwards to clear; a NULL builder is INVALID, never a silent clear 〜 an absent block is
-// spelled by calling clear, so a caller that lost its builder learns about it here.
+// Packs tables + glyphs into one render-owned block.
+// Zero prims -> clear. NULL builder -> INVALID.
 AnoRenderSubmitResult ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
                                         const AnoUiBuilder *ui,
                                         const AnoGlyphInstance *glyphs, uint32_t glyphCount)
@@ -403,13 +388,11 @@ AnoRenderSubmitResult ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id,
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_INVALID);
     if (ui->primCount == 0u)
         return ano_render_ui_clear(bridge, ui_id);
+    // Caps, glyph pair, or nonzero count over a NULL table -> INVALID.
     if (ui->primCount > ANO_RENDER_UI_MAX_PRIMS || ui->clipCount > ANO_RENDER_UI_MAX_CLIPS
         || ui->paintCount > ANO_RENDER_UI_MAX_PAINTS || ui->stopCount > ANO_RENDER_UI_MAX_STOPS
         || ui->curveCount > ANO_RENDER_UI_MAX_CURVES
         || glyphCount > ANO_RENDER_UI_MAX_GLYPHS || (glyphCount > 0u && glyphs == NULL)
-        // Every count/array pair, not just the glyph one: this endpoint is the validator for
-        // hand-built blocks, and a nonzero count over a NULL table is a dereference in the walk
-        // below or in the pack. The builder API cannot produce that shape; a hand-built block can.
         || ui->prims == NULL
         || (ui->clipCount  > 0u && ui->clips  == NULL)
         || (ui->paintCount > 0u && ui->paints == NULL)
@@ -465,13 +448,13 @@ AnoRenderSubmitResult ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id,
     if (glyphB) memcpy(at, glyphs, glyphB);
     RenderCommand c = { .kind = RCMD_UI_SET, .ui_id = ui_id, .ui = b, .bulk_owned = true };
     if (!ano_spsc_push(&bridge->commands, &c)) {
-        ano_render_command_release(&c); // nothing enqueued: the block is ours to retire
+        ano_render_command_release(&c); // failed push: retire block
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_BACKPRESSURE);
     }
     return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_ACCEPTED);
 }
 
-// Allocates nothing and validates nothing, so its domain is ACCEPTED or BACKPRESSURE only.
+// Push UI_CLEAR. ACCEPTED or BACKPRESSURE.
 AnoRenderSubmitResult ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_id)
 {
     RenderCommand c = { .kind = RCMD_UI_CLEAR, .ui_id = ui_id };

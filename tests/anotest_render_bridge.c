@@ -6,9 +6,8 @@
 /* render_bridge transport (private render_bridge.h; public protocol in anoptic_render.h):
  *  - single-threaded SPSC: FIFO, full/empty edges, index wrap;
  *  - bidirectional stress (TSan): one producer, one consumer, main drains events;
- *  - submission results: the four AnoRenderSubmitResult codes across the six owned-payload
- *    endpoints, the packed block's self-containment, the two CLEAR delegations, and a producer
- *    parked on a full ring observing a shutdown flag.
+ *  - submission results: four AnoRenderSubmitResult codes on six owned-payload endpoints,
+ *    packed-block self-containment, CLEAR delegation, shutdown under backpressure.
  * Each ring has exactly one producer and one consumer. Exit 0 == pass. */
 
 #include <stdio.h>
@@ -19,7 +18,7 @@
 #include "anoptic_memory.h" // ANO_CACHE_LINE / ANO_THREAD_LINE
 #include "anoptic_threads.h"
 #include "anoptic_time.h" // ano_sleep
-#include "anoptic_log.h"  // route the bridge's drop warnings; this suite runs no logger
+#include "anoptic_log.h"  // ano_log_set_route
 
 _Static_assert(offsetof(AnoSpscRing, head) - offsetof(AnoSpscRing, tail) >= ANO_CACHE_LINE,
                "SPSC head/tail must live on separate cache lines");
@@ -110,10 +109,7 @@ static void test_single_threaded(mi_heap_t *heap)
 
 /* Submission Results */
 
-// The six owned-payload endpoints answer AnoRenderSubmitResult, so every case here reads .code
-// (ACCEPTED is 0 〜 a truth test on the result would be backwards) AND the ring: an ACCEPTED lands
-// exactly one command whose block is self-contained, a BACKPRESSURE or an INVALID leaves the ring
-// exactly as it found it. Single-threaded, so this suite is both producer and consumer.
+// Six owned-payload endpoints: read .code (ACCEPTED is 0). ACCEPTED enqueues one self-contained block; BACKPRESSURE/INVALID leave the ring untouched.
 
 // in:  b (bridge)
 // out: commands currently enqueued
@@ -122,9 +118,9 @@ static uint32_t cmd_depth(AnoRenderBridge *b)
     return atomic_load(&b->commands.tail) - atomic_load(&b->commands.head);
 }
 
-// in:  p (an interior pointer of a packed block), blk (block base), hdr (header bytes), bytes (packed size)
-// out: true when p addresses that block's own payload region rather than a caller array
-// inv: an empty table sits at the block's end, so the upper bound is inclusive.
+// in:  p (interior pointer), blk (block base), hdr (header bytes), bytes (packed size)
+// out: true when p addresses the block's payload region
+// inv: empty table may sit at block end (upper bound inclusive)
 static bool packed_at(const void *p, const void *blk, size_t hdr, size_t bytes)
 {
     uintptr_t a = (uintptr_t)p, base = (uintptr_t)blk;
@@ -132,7 +128,7 @@ static bool packed_at(const void *p, const void *blk, size_t hdr, size_t bytes)
 }
 
 // in:  out (>= n instances), n
-// out: n instances stamped with distinguishable glyphIDs, so a lost or aliased copy shows
+// out: n instances with distinguishable glyphIDs
 static void fill_glyphs(AnoGlyphInstance *out, uint32_t n)
 {
     memset(out, 0, (size_t)n * sizeof *out);
@@ -141,8 +137,7 @@ static void fill_glyphs(AnoGlyphInstance *out, uint32_t n)
 
 #define UI_GLYPHS_N 2u
 
-// Caller-owned backing for a hand-filled builder. AnoUiBuilder is POD, so ui_prim_valid is
-// reachable without the builder API.
+// Caller-owned arrays behind a hand-filled AnoUiBuilder.
 typedef struct
 {
     AnoUiPrim    prims[3];
@@ -154,33 +149,39 @@ typedef struct
 } UiFixture;
 
 // in:  f (uninitialized)
-// out: f->b bound to f's own arrays: an RRECT naming clip 0 + paint 0, a PATH walking one monotone
-//      quad of the three-word curve stream, and a GLYPHS prim naming the whole [0, UI_GLYPHS_N) window
-// inv: every reference is in range, so all three prims pass ui_prim_valid. The refusal cases below
-//      invalidate exactly one field of a freshly initialized fixture.
+// out: f->b over f's arrays: RRECT (clip 0 + paint 0), PATH (one monotone quad), GLYPHS ([0, UI_GLYPHS_N))
+// inv: all refs in range (ui_prim_valid); INVALID cases mutate one field of a fresh fixture
 static void ui_fixture_init(UiFixture *f)
 {
     memset(f, 0, sizeof *f);
     f->prims[0].kind = ANO_UI_RRECT;
-    f->prims[0].paintRef = 0u;               f->prims[0].clipRef = 0u;
+    f->prims[0].paintRef = 0u;
+    f->prims[0].clipRef = 0u;
     f->prims[1].kind = ANO_UI_PATH;
-    f->prims[1].paintRef = ANO_UI_REF_NONE;  f->prims[1].clipRef = ANO_UI_REF_NONE;
-    f->prims[1].aux0 = 0u;                   f->prims[1].aux1 = 1u;
+    f->prims[1].paintRef = ANO_UI_REF_NONE;
+    f->prims[1].clipRef = ANO_UI_REF_NONE;
+    f->prims[1].aux0 = 0u;
+    f->prims[1].aux1 = 1u;
     f->prims[2].kind = ANO_UI_GLYPHS;
-    f->prims[2].paintRef = ANO_UI_REF_NONE;  f->prims[2].clipRef = ANO_UI_REF_NONE;
-    f->prims[2].aux0 = 0u;                   f->prims[2].aux1 = UI_GLYPHS_N;
-    f->clips[0].rrHalf[0] = -1.0f;           // rect-only clip
+    f->prims[2].paintRef = ANO_UI_REF_NONE;
+    f->prims[2].clipRef = ANO_UI_REF_NONE;
+    f->prims[2].aux0 = 0u;
+    f->prims[2].aux1 = UI_GLYPHS_N;
+    f->clips[0].rrHalf[0] = -1.0f; // rect-only clip
     f->paints[0].kind = ANO_UI_GRAD_LINEAR;
-    f->paints[0].stopFirst = 0u;             f->paints[0].stopCount = 2u;
+    f->paints[0].stopFirst = 0u;
+    f->paints[0].stopCount = 2u;
     f->stops[1].t = 1.0f;
-    f->curves[0] = 0x00000000u;              // start point, control, end: no sentinel in the walk
+    f->curves[0] = 0x00000000u; // start, control, end
     f->curves[1] = 0x3C003C00u;
     f->curves[2] = 0x40004000u;
-    f->b = (AnoUiBuilder){ .prims  = f->prims,  .primCap  = 3u, .primCount  = 3u,
-                           .clips  = f->clips,  .clipCap  = 1u, .clipCount  = 1u,
-                           .paints = f->paints, .paintCap = 1u, .paintCount = 1u,
-                           .stops  = f->stops,  .stopCap  = 2u, .stopCount  = 2u,
-                           .curves = f->curves, .curveCap = 3u, .curveCount = 3u };
+    f->b = (AnoUiBuilder){
+        .prims  = f->prims,  .primCap  = 3u, .primCount  = 3u,
+        .clips  = f->clips,  .clipCap  = 1u, .clipCount  = 1u,
+        .paints = f->paints, .paintCap = 1u, .paintCount = 1u,
+        .stops  = f->stops,  .stopCap  = 2u, .stopCount  = 2u,
+        .curves = f->curves, .curveCap = 3u, .curveCount = 3u,
+    };
 }
 
 #define BULK_N 3u
@@ -197,7 +198,7 @@ typedef struct
 } BulkFixture;
 
 // in:  f (uninitialized)
-// out: f->batch over BULK_N rows naming every bulk field, each array present and stamped
+// out: f->batch over BULK_N rows, every bulk field present and stamped
 static void bulk_fixture_init(BulkFixture *f)
 {
     memset(f, 0, sizeof *f);
@@ -210,20 +211,24 @@ static void bulk_fixture_init(BulkFixture *f)
         f->inst[i].packed[0] = 400u + i;
     }
     f->batch = (RenderUpdateBatch){
-        .count = BULK_N, .fields = RFIELD_TRANSFORM | RFIELD_ANIM | RFIELD_MESH_MAT | RFIELD_USERDATA,
-        .render_ids = f->ids, .transforms = (const mat4 *)f->xforms, .motion = f->motion,
-        .mesh = f->mesh, .material = f->material, .instance_data = f->inst };
+        .count = BULK_N,
+        .fields = RFIELD_TRANSFORM | RFIELD_ANIM | RFIELD_MESH_MAT | RFIELD_USERDATA,
+        .render_ids = f->ids,
+        .transforms = (const mat4 *)f->xforms,
+        .motion = f->motion,
+        .mesh = f->mesh,
+        .material = f->material,
+        .instance_data = f->inst,
+    };
 }
 
-// Packed size of the block bulk_fixture_init's batch produces (the packer's own accumulation,
-// including the round-up that puts the over-aligned sub-arrays on a 16-byte offset).
+// Packed size for bulk_fixture_init's batch (16-byte pad before over-aligned arrays).
 #define BULK_IDS_END (sizeof(RenderUpdateBatch) + (size_t)BULK_N * sizeof(uint32_t))
-#define BULK_UPDATE_BYTES (((BULK_IDS_END + 15u) & ~(size_t)15u)                           \
-    + (size_t)BULK_N * (sizeof(mat4) + sizeof(AnoMotionDescriptor)                         \
+#define BULK_UPDATE_BYTES (((BULK_IDS_END + 15u) & ~(size_t)15u) \
+    + (size_t)BULK_N * (sizeof(mat4) + sizeof(AnoMotionDescriptor) \
                         + sizeof(AnoInstanceData) + 2u * sizeof(uint32_t)))
 
-// Every endpoint's ACCEPTED, verified at the ring: right kind and handle, ownership flagged where a
-// block rides along, and each interior pointer addressing that block instead of the caller's arrays.
+// ACCEPTED on every endpoint: kind, handle, ownership, interior pointers inside the packed block.
 static void test_accepted(mi_heap_t *heap)
 {
     AnoRenderBridge b;
@@ -339,8 +344,7 @@ static void test_accepted(mi_heap_t *heap)
     ano_render_bridge_destroy(&b);
 }
 
-// A ring at capacity refuses all six, and the refusal enqueues nothing: the packed block is released
-// on the way out, so the depth is exactly what the bare submits left.
+// Full ring: all six return BACKPRESSURE, depth unchanged, only the fill commands remain.
 static void test_backpressure(mi_heap_t *heap)
 {
     AnoRenderBridge b;
@@ -355,8 +359,10 @@ static void test_backpressure(mi_heap_t *heap)
     fill_glyphs(inst, 2u);
     AnoGlyphInstance uglyph[UI_GLYPHS_N];
     fill_glyphs(uglyph, UI_GLYPHS_N);
-    UiFixture uf;   ui_fixture_init(&uf);
-    BulkFixture bf; bulk_fixture_init(&bf);
+    UiFixture uf;
+    ui_fixture_init(&uf);
+    BulkFixture bf;
+    bulk_fixture_init(&bf);
     AnoRenderSubmitResult r;
 
     r = ano_render_text_set(&b, 1u, inst, 2u);
@@ -373,7 +379,7 @@ static void test_backpressure(mi_heap_t *heap)
     CHECK(r.code == ANO_RENDER_SUBMIT_BACKPRESSURE, "bulk_destroy: BACKPRESSURE on a full ring");
     CHECK(cmd_depth(&b) == 2u, "backpressure: ring depth unchanged");
 
-    // What is on the ring is the two bare fills, in order, and nothing else.
+    // Two bare fills, in order.
     RenderCommand c;
     uint32_t drained = 0;
     while (ano_render_next_command(&b, &c)) {
@@ -384,8 +390,7 @@ static void test_backpressure(mi_heap_t *heap)
     ano_render_bridge_destroy(&b);
 }
 
-// One case per refusal arm. INVALID is deterministic, so it must also enqueue nothing 〜 the depth
-// is asserted after each, and the run ends with the ring still empty.
+// One case per INVALID arm. Depth stays 0 after each.
 static void test_invalid(mi_heap_t *heap)
 {
     AnoRenderBridge b;
@@ -404,7 +409,8 @@ static void test_invalid(mi_heap_t *heap)
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "ui_set: a NULL builder is INVALID, never a silent clear");
 
-    ui_fixture_init(&uf); uf.b.primCount = ANO_RENDER_UI_MAX_PRIMS + 1u;
+    ui_fixture_init(&uf);
+    uf.b.primCount = ANO_RENDER_UI_MAX_PRIMS + 1u;
     r = ano_render_ui_set(&b, 1u, 0u, &uf.b, uglyph, UI_GLYPHS_N);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "ui_set: primCount over its per-block cap is INVALID, nothing enqueued");
@@ -414,27 +420,32 @@ static void test_invalid(mi_heap_t *heap)
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "ui_set: a glyphCount without glyphs is INVALID, nothing enqueued");
 
-    ui_fixture_init(&uf); uf.b.clipCount = 0u; // prim 0 still names clip 0
+    ui_fixture_init(&uf);
+    uf.b.clipCount = 0u; // prim 0 still names clip 0
     r = ano_render_ui_set(&b, 1u, 0u, &uf.b, uglyph, UI_GLYPHS_N);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "ui_set: an out-of-range clipRef is INVALID, nothing enqueued");
 
-    ui_fixture_init(&uf); uf.b.paintCount = 0u; // prim 0 still names paint 0
+    ui_fixture_init(&uf);
+    uf.b.paintCount = 0u; // prim 0 still names paint 0
     r = ano_render_ui_set(&b, 1u, 0u, &uf.b, uglyph, UI_GLYPHS_N);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "ui_set: an out-of-range paintRef is INVALID, nothing enqueued");
 
-    ui_fixture_init(&uf); uf.paints[0].stopFirst = 1u; // window leaves the two-entry stop table
+    ui_fixture_init(&uf);
+    uf.paints[0].stopFirst = 1u; // stop window leaves the two-entry table
     r = ano_render_ui_set(&b, 1u, 0u, &uf.b, uglyph, UI_GLYPHS_N);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "ui_set: a paint whose stop window leaves the table is INVALID, nothing enqueued");
 
-    ui_fixture_init(&uf); uf.prims[2].aux1 = UI_GLYPHS_N + 1u;
+    ui_fixture_init(&uf);
+    uf.prims[2].aux1 = UI_GLYPHS_N + 1u;
     r = ano_render_ui_set(&b, 1u, 0u, &uf.b, uglyph, UI_GLYPHS_N);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "ui_set: a GLYPHS window past the array is INVALID, nothing enqueued");
 
-    ui_fixture_init(&uf); uf.b.curveCount = 2u; // the quad's end word is off the stream
+    ui_fixture_init(&uf);
+    uf.b.curveCount = 2u; // PATH end word off the stream
     r = ano_render_ui_set(&b, 1u, 0u, &uf.b, uglyph, UI_GLYPHS_N);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "ui_set: a PATH walk overrunning the curve stream is INVALID, nothing enqueued");
@@ -443,32 +454,38 @@ static void test_invalid(mi_heap_t *heap)
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "bulk_update: a NULL batch is INVALID, nothing enqueued");
 
-    bulk_fixture_init(&bf); bf.batch.render_ids = NULL;
+    bulk_fixture_init(&bf);
+    bf.batch.render_ids = NULL;
     r = ano_render_submit_bulk_update(&b, &bf.batch);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "bulk_update: NULL render_ids is INVALID, nothing enqueued");
 
-    bulk_fixture_init(&bf); bf.batch.transforms = NULL;
+    bulk_fixture_init(&bf);
+    bf.batch.transforms = NULL;
     r = ano_render_submit_bulk_update(&b, &bf.batch);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "bulk_update: RFIELD_TRANSFORM without transforms is INVALID, nothing enqueued");
 
-    bulk_fixture_init(&bf); bf.batch.motion = NULL;
+    bulk_fixture_init(&bf);
+    bf.batch.motion = NULL;
     r = ano_render_submit_bulk_update(&b, &bf.batch);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "bulk_update: RFIELD_ANIM without motion is INVALID, nothing enqueued");
 
-    bulk_fixture_init(&bf); bf.batch.mesh = NULL;
+    bulk_fixture_init(&bf);
+    bf.batch.mesh = NULL;
     r = ano_render_submit_bulk_update(&b, &bf.batch);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "bulk_update: RFIELD_MESH_MAT without mesh is INVALID, nothing enqueued");
 
-    bulk_fixture_init(&bf); bf.batch.material = NULL;
+    bulk_fixture_init(&bf);
+    bf.batch.material = NULL;
     r = ano_render_submit_bulk_update(&b, &bf.batch);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "bulk_update: RFIELD_MESH_MAT without material is INVALID, nothing enqueued");
 
-    bulk_fixture_init(&bf); bf.batch.instance_data = NULL;
+    bulk_fixture_init(&bf);
+    bf.batch.instance_data = NULL;
     r = ano_render_submit_bulk_update(&b, &bf.batch);
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "bulk_update: RFIELD_USERDATA without instance_data is INVALID, nothing enqueued");
@@ -477,22 +494,20 @@ static void test_invalid(mi_heap_t *heap)
     CHECK(r.code == ANO_RENDER_SUBMIT_INVALID && cmd_depth(&b) == 0u,
           "bulk_destroy: a count without render_ids is INVALID, nothing enqueued");
 
-    // The remaining INVALID arm, an unrepresentable packed size, has no case here: the counts are
-    // uint32_t and bulk_update's widest row costs 156 bytes, so the largest packed size the public
-    // signature can ask for is about 2^39 〜 representable on every 64-bit size_t. Its guard is
-    // covered directly at ano_size_add_array below rather than by faking reachability.
+    // Unrepresentable packed size: test_size_add_array
     CHECK(cmd_depth(&b) == 0u, "invalid: the ring stayed empty throughout");
     ano_render_bridge_destroy(&b);
 }
 
-// count 0 and an empty builder tail-forward to the matching CLEAR and answer ITS result. The kind on
-// the ring proves the forward; a full ring proves it forwards rather than forcing success.
+// count 0 / empty builder forward to CLEAR; full ring returns that CLEAR's BACKPRESSURE.
 static void test_delegation(mi_heap_t *heap)
 {
     AnoRenderBridge b;
     CHECK(ano_render_bridge_init(&b, heap, 16, 2), "delegation: bridge init");
     RenderCommand c;
-    UiFixture uf; ui_fixture_init(&uf); uf.b.primCount = 0u;
+    UiFixture uf;
+    ui_fixture_init(&uf);
+    uf.b.primCount = 0u;
     AnoGlyphInstance uglyph[UI_GLYPHS_N];
     fill_glyphs(uglyph, UI_GLYPHS_N);
 
@@ -508,7 +523,7 @@ static void test_delegation(mi_heap_t *heap)
     CHECK(cmd_depth(&b) == 0u, "delegation: ring drained");
     ano_render_bridge_destroy(&b);
 
-    // The forward carries the clear's refusal back out; it never launders a full ring into success.
+    // Forwarded CLEAR refuses on a full ring.
     AnoRenderBridge full;
     CHECK(ano_render_bridge_init(&full, heap, 2, 2), "delegation: bridge init (cap 2)");
     RenderCommand fill = { .kind = RCMD_UPDATE };
@@ -523,7 +538,7 @@ static void test_delegation(mi_heap_t *heap)
     ano_render_bridge_destroy(&full);
 }
 
-// The documented zero-count no-op is ACCEPTED with NOTHING enqueued 〜 both halves.
+// Zero-count bulk no-op: ACCEPTED, nothing enqueued.
 static void test_bulk_zero(mi_heap_t *heap)
 {
     AnoRenderBridge b;
@@ -538,10 +553,7 @@ static void test_bulk_zero(mi_heap_t *heap)
     ano_render_bridge_destroy(&b);
 }
 
-// mat4 is aligned(16) and both payload structs embed an alignas(16) Vector4, but they are packed
-// behind a 4-aligned id array whose length moves with the row count 〜 so the packer must round the
-// offset up, and the residue that exposes a missing round-up depends on the count. Sweeping 1..8
-// covers every residue class: three counts in four misalign if the pad is dropped.
+// Sweep row counts 1..8: over-aligned bulk sub-arrays sit on their natural alignment.
 static void test_bulk_alignment(mi_heap_t *heap)
 {
     enum { MAXROWS = 8u };
@@ -554,28 +566,28 @@ static void test_bulk_alignment(mi_heap_t *heap)
     CHECK(ano_render_bridge_init(&b, heap, 32, 2), "bulk align: bridge init");
     for (uint32_t n = 1u; n <= MAXROWS; n++) {
         RenderUpdateBatch batch = {
-            .count = n, .fields = RFIELD_TRANSFORM | RFIELD_ANIM | RFIELD_USERDATA,
-            .render_ids = ids, .transforms = (const mat4 *)xforms,
-            .motion = motion, .instance_data = inst };
+            .count = n,
+            .fields = RFIELD_TRANSFORM | RFIELD_ANIM | RFIELD_USERDATA,
+            .render_ids = ids,
+            .transforms = (const mat4 *)xforms,
+            .motion = motion,
+            .instance_data = inst,
+        };
         AnoRenderSubmitResult r = ano_render_submit_bulk_update(&b, &batch);
         CHECK(r.code == ANO_RENDER_SUBMIT_ACCEPTED, "bulk align: ACCEPTED");
         RenderCommand c;
         if (!ano_spsc_pop(&b.commands, &c)) { CHECK(false, "bulk align: command popped"); continue; }
         const RenderUpdateBatch *u = c.update;
-        // The block base is mi_malloc's, so an aligned offset is an aligned address. Forming these
-        // pointers at a misaligned offset is undefined, and the render side reads them through the
-        // 16-aligned type, which entitles the compiler to aligned loads.
-        CHECK(((uintptr_t)u->transforms    % _Alignof(mat4))                == 0u
+        CHECK(((uintptr_t)u->transforms    % _Alignof(mat4)) == 0u
               && ((uintptr_t)u->motion        % _Alignof(AnoMotionDescriptor)) == 0u
-              && ((uintptr_t)u->instance_data % _Alignof(AnoInstanceData))      == 0u,
+              && ((uintptr_t)u->instance_data % _Alignof(AnoInstanceData)) == 0u,
               "bulk align: over-aligned sub-arrays sit on their own alignment");
         ano_render_command_release(&c);
     }
     ano_render_bridge_destroy(&b);
 }
 
-// ano_size_add_array is the packers' only guard against an unrepresentable packed size, and the only
-// place that guard is reachable: both of its arms sit far above what a uint32_t count can ask for.
+// ano_size_add_array overflow arms (unreachable via uint32_t public counts).
 static void test_size_add_array(void)
 {
     const size_t huge = SIZE_MAX / 4u; // SIZE_MAX / huge == 4
@@ -602,16 +614,14 @@ static void test_size_add_array(void)
 
 /* Shutdown During Backpressure */
 
-// A producer parked on a full ring must observe the stop flag BETWEEN attempts, or a window close
-// during startup wedges main's join forever. This runs hud_text_spin's loop shape against a full
-// ring and asks main to end it; the ctest TIMEOUT is the watchdog.
+// Producer parked on a full ring observes stop between attempts (hud_text_spin loop shape).
 
 typedef struct
 {
     AnoRenderBridge          *b;
     _Atomic bool              stop;
     AnoGlyphInstance          inst[2];
-    uint32_t                  attempts;   // thread-owned; read after the join
+    uint32_t                  attempts; // thread-owned; read after join
     AnoRenderSubmitResultCode code;
 } SpinCtx;
 
@@ -626,7 +636,7 @@ static void *spin_fn(void *arg)
         case ANO_RENDER_SUBMIT_OOM:
         case ANO_RENDER_SUBMIT_INVALID:
             ctx->code = r.code;
-            return NULL; // the block landed, or it never can
+            return NULL; // landed, or never can
         case ANO_RENDER_SUBMIT_BACKPRESSURE:
             if (atomic_load(&ctx->stop)) { ctx->code = r.code; return NULL; }
             ano_sleep(1000);
@@ -663,8 +673,7 @@ int main(void)
 
     test_single_threaded(heap);
 
-    // ui_set warns once per drop. This suite never brings the logger up, so route WARN through the
-    // NOW path, which is a plain stderr write before ano_log_init 〜 nothing touches the dead ring.
+    // ui_set drop WARN -> stderr NOW (no logger init).
     ano_log_set_route(ANO_WARN, ANO_TERM | ANO_NOW);
 
     test_accepted(heap);

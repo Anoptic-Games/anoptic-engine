@@ -330,7 +330,23 @@ pixels of outline-evaluated shapes. The ladder, each step gated on measurement:
 Clone the text verbs: `RCMD_UI_SET`/`RCMD_UI_CLEAR`, `ano_render_ui_set(bridge, ui_id, blob)`
 packing header + prim array + side tables in one allocation, `bulk_owned`, registry adoption
 (`ANO_UI_MAX_BLOCKS` ≈ 64), full-replace semantics, compose + version bump + per-slot refresh.
-Both verbs answer `AnoRenderSubmitResult`, the text endpoints' domain verbatim: ACCEPTED means the block was packed, enqueued and owned by the bridge; BACKPRESSURE means the ring was full, the packed block was released and nothing was enqueued, so retry next tick; OOM means the allocation itself was refused and must be shed rather than retried at tick rate; INVALID means the block violates the contract and can never land unchanged, so the caller retires it. A non-NULL builder holding no prims tail-forwards to `ano_render_ui_clear` and returns that clear's answer. A NULL builder is INVALID, not a silent clear 〜 an absent block is spelled by calling clear, so a caller that lost its builder learns about it instead of quietly erasing a live block. INVALID also covers the per-block caps being exceeded, a glyphCount above zero with NULL glyphs, out-of-range clip/paint/glyph references, and a UI_PATH whose curve walk would read past the stream. `ano_render_ui_clear` allocates nothing and validates nothing, so its domain is ACCEPTED or BACKPRESSURE alone. Callers inspect `result.code` only; ACCEPTED is 0, so `if (result)` inverts success, and an exhaustive switch with no `default` turns a future fifth code into a compile-time diagnostic at every policy site.
+Both verbs answer `AnoRenderSubmitResult`, same domain as the text endpoints.
+ACCEPTED: the block was packed, enqueued, and owned by the bridge.
+BACKPRESSURE: the ring was full; the packed block was released and nothing was
+enqueued 〜 retry next tick. OOM: the allocation itself was refused; shed it
+rather than retry at tick rate. INVALID: the block violates the contract and
+can never land unchanged, so the caller retires it. A non-NULL builder holding
+no prims tail-forwards to `ano_render_ui_clear` and returns that clear's
+answer. A NULL builder is INVALID, not a silent clear 〜 an absent block is
+spelled by calling clear, so a caller that lost its builder learns about it
+instead of quietly erasing a live block. INVALID also covers per-block caps
+exceeded, glyphCount > 0 with NULL glyphs, out-of-range clip/paint/glyph
+references, and a UI_PATH whose curve walk would read past the stream.
+`ano_render_ui_clear` allocates nothing and validates nothing, so its domain
+is ACCEPTED or BACKPRESSURE alone. Callers inspect `result.code` only;
+ACCEPTED is 0, so `if (result)` inverts success, and an exhaustive switch with
+no `default` turns a future fifth code into a compile-time diagnostic at every
+policy site.
 Block header carries the layer byte and a scroll offset (applied CPU-side at compose v0; a
 GPU-side per-block offset later makes scrolling re-compose-free). Logic side gets a thin pure
 prim-builder API in `include/anoptic_ui.h` (push_rrect/push_shadow/push_image/push_text/
@@ -538,8 +554,8 @@ async, self-test gates at every step.
    (layer, scroll, five counted tables packed in ONE adopted allocation, block-LOCAL
    clip/paint/glyph refs), ano_render_ui_set validates producer-side and answers INVALID
    for a dropped block, with one warning 〜 backpressure retry loops still never spin on
-   bad input, because INVALID is a distinct code the loop retires the block on rather than
-   a refusal it cannot tell from a full ring. Render side: 64-entry id-keyed
+   bad input, because INVALID is distinct from ring-full and the loop retires the block.
+   Render side: 64-entry id-keyed
    registry (text semantics verbatim), compose = stable layer sort + whole-block skip on
    table-budget overflow (truncation would corrupt refs) + ref rebase (clipRef/paintRef/
    stopFirst/UI_GLYPHS aux0) + scroll fold + bounds; per-slot refresh copies pending

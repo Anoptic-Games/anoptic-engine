@@ -2,9 +2,9 @@
 
 Remediation map for the 2026-07-21 census of `docs/BUGS.md`. Active defects live in `docs/BUGS.md`. Retired defects, fix records, and campaign history live in `docs/BUGS_DONE.md`.
 
-As of 2026-07-26 the board is **139 fixed of 151 tallied**, with **11 open** and **1 wontfix**. The systemic swoops named below are largely spent, and the last three entries blocked on a product decision are closed 〜 their fix records are in `docs/BUGS_DONE.md`, and nothing open is waiting on a contract choice.
+As of 2026-07-26 the board is **139 fixed of 151 tallied**, with **11 open** and **1 wontfix**. The systemic swoops named below are largely spent. The last three product-decision blockers are closed 〜 fix records in `docs/BUGS_DONE.md`; nothing open waits on a contract choice.
 
-Open lines in `docs/BUGS.md` are unfinished code. Fixes below are keyed only by those `file:line` entries. An open entry does not mean the fix is undecided.
+Open lines in `docs/BUGS.md` are unfinished code. Fixes below key only those `file:line` entries 〜 open does not mean undecided.
 
 
 ## Accounting
@@ -87,7 +87,7 @@ Swoop: repair locally; pin with a focused regression test.
 
 ## Fine-grained source tags
 
-Tag assignments from the source census (not unique findings). The status tag `pending-design-decision` once marked five entries; those retired write-ups live under Settled open decisions in `docs/BUGS_DONE.md`. It is not counted here. The tag currently marks nothing.
+Tag assignments from the source census (not unique findings). The status tag `pending-design-decision` once marked five entries; those retired write-ups live under Settled open decisions in `docs/BUGS_DONE.md`. Not counted here; the tag currently marks nothing.
 
 | Source tag | Assignments |
 |---|---:|
@@ -131,53 +131,44 @@ Failure modes are values when callers must react differently. Not `Result<T, E>`
 - Switch exhaustively without `default`, so adding a code forces every policy site to revisit.
 - Results stay domain-specific; there is no engine-wide error enum.
 
-Collapsed result domains are how the census’s big families look in practice: `ANO_FATAL` fallthrough, partial out-parameters, ownership leaks, retry exhaustion, and OOM mistaken for backpressure.
+Collapsed result domains cover the census's big families in practice: `ANO_FATAL` fallthrough, partial out-parameters, ownership leaks, retry exhaustion, and OOM mistaken for backpressure.
 
 
 ## Fixes for open entries
 
-Eleven open lines in `docs/BUGS.md`, plus `time_win64.c:310` wontfix. Each subsection is the fix for that entry (or shared fix for a listed set). No other names. The `main.c:691`, `ano_GltfParser.c:435` and texture-custody subsections retired with their entries on 2026-07-26.
-
+Eleven open lines in `docs/BUGS.md`, plus `time_win64.c:310` wontfix. Each subsection is the fix for that key (or shared fix for a listed set). The `main.c:691`, `ano_GltfParser.c:435`, and texture-custody subsections retired with their entries on 2026-07-26.
 
 ### `shadow_resources.c:22`
 
-Labelled unwind (or local acquisition ledger): inert-init destinations; `goto fail` instead of mid-function returns; one cleanup path in reverse dependency order; return `false` only after local construction state is discharged. Success path unchanged.
-
+Labelled unwind: inert-init destinations; `goto fail` instead of mid-function returns; one cleanup path in reverse dependency order; return `false` only after local construction state is discharged. Success path unchanged.
 
 ### `ano_GltfParser.c:236`
 
 At primitive record creation set `geometryPoolIndex = ANO_RENDER_NO_MESH`. Only a successful geometry upload overwrites it. Every early exit then fails closed.
 
-
 ### `text_gpos.c:294`
 
 Filter to PairPos before spending the lookup budget. Return nonzero when relevant lookups or subtables still exceed capacity. `0` remains success including legitimately no kerns.
 
-
 ### `music_host.c:45`, `music_host.c:232`, `music_host.c:226`
 
-Reject invalid override values at ingress. Cadence: pin of `-1` refused; config `NONE` is fallback, never a table index; returned policy ∈ `[0, ANO_CADENCE_POLICY_COUNT)`. Register center: MIDI 0–127, reject non-finite/non-integral/out of range (no silent clamp). Tempo: same mapped domain as the mapping table (apparently 60–160), reject NaN/inf/≤0/out of range. Explicit RELEASE remains the clear path.
-
+Reject invalid override values at ingress. Cadence: pin of `-1` refused; config `NONE` is fallback, never a table index; returned policy ∈ `[0, ANO_CADENCE_POLICY_COUNT)`. Register center: MIDI 0-127, reject non-finite/non-integral/out of range (no silent clamp). Tempo: same mapped domain as the mapping table (`[60,160]`), reject NaN/inf/≤0/out of range. Explicit RELEASE remains the clear path.
 
 ### `filesystem_win64.c:33`
 
 Trim the executable filename first, then validate the directory length against `MAXPATH` (POSIX sibling order). Keep a post-trim bound on the copy.
 
-
 ### `time_win64.c:402`
 
-`ano_sleep` for requests at or below 1 ms (including exactly 1000 µs) must enter the scheduler at least once and must not return early merely because a yield returned. `ano_busywait` remains the explicit spin API.
-
+`ano_sleep` for requests at or below 1 ms (including exactly 1000 µs) must enter the scheduler at least once; a yield return alone is not completion. `ano_busywait` remains the explicit spin API.
 
 ### `memory.c:9`
 
 `ano_heap_release`: destroy only if `*in` is non-NULL, then clear.
 
-
 ### `instance.c:192`
 
 Stop `strdup`ing extension names. Allocate the pointer array only; store borrowed GLFW/literal pointers; free the array on both arms after `vkCreateInstance`.
-
 
 ### `ano_strings_collate.c:504`
 
@@ -188,8 +179,8 @@ Allocation-failure sort fallbacks must remain stable. Not `qsort`. Prefer an in-
 
 Non-blocking. For a later layout pass.
 
-- Monitors ledger: hardened but unread; `initWindow` re-queries GLFW. Keep for a future config surface, or delete and let `initWindow` own the only query.
-- Bindless capacity: consumers latch the registrar’s refusal word. Prefer a checked face that answers slot and closure together over a stale second reader.
+- Monitors ledger: `enumerateMonitors` hardened but unread; `initWindow` re-queries GLFW. Keep for a future config surface, or delete and let `initWindow` own the only query.
+- Bindless capacity: consumers latch the registrar's refusal word. Prefer a checked face that answers slot and closure together over a stale second reader; interacts with whether slots are ever released.
 - `PipelinePrototype` inline `PipelineImplementation[3]`: would delete the count/pointer pair and the unchecked-calloc family. Touches `components.h`.
 
 Campaign history is in `docs/BUGS_DONE.md`.

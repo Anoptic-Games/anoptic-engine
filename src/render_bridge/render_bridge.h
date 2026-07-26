@@ -109,30 +109,27 @@ static inline bool ano_spsc_pop(AnoSpscRing *ring, void *out)
 
 /* Checked Sizing */
 
-// in:  *bytes (running byte total), count (elements), stride (> 0, always a sizeof here)
-// out: true with *bytes advanced by count*stride; false leaves *bytes untouched
-// inv: divide before multiplying, so neither the product nor the sum is ever formed out of range.
-//      Both arms are unreachable through the public 32-bit counts on a 64-bit size_t; the packers
-//      still route through here rather than assume that holds on every target.
+// in:  *bytes (running total), count, stride (> 0)
+// out: true with *bytes += count*stride; false leaves *bytes untouched
+// inv: overflow-checked; neither product nor sum formed out of range
 static inline bool ano_size_add_array(size_t *bytes, uint32_t count, size_t stride)
 {
     if ((size_t)count > SIZE_MAX / stride) return false;
     size_t add = (size_t)count * stride;
-    if (add > SIZE_MAX - *bytes)           return false;
-    *bytes += add;  return true;
+    if (add > SIZE_MAX - *bytes) return false;
+    *bytes += add;
+    return true;
 }
 
-// in:  *bytes (running byte offset into a packed block), align (a power of two)
-// out: true with *bytes rounded up to the next multiple of align; false leaves *bytes untouched
-// inv: a packer must round the SIZE and the CURSOR by the same call, or the pack overruns the
-//      block. The block base is mi_malloc's, which is at least 16-aligned, so an aligned offset
-//      is an aligned address 〜 which is what makes forming a pointer to an over-aligned sub-array
-//      defined rather than merely lucky.
+// in:  *bytes (running offset), align (power of two)
+// out: true with *bytes rounded up to align; false leaves *bytes untouched
+// inv: packer must align SIZE and CURSOR with the same call
 static inline bool ano_size_align_up(size_t *bytes, size_t align)
 {
     size_t pad = (align - (*bytes & (align - 1u))) & (align - 1u);
     if (pad > SIZE_MAX - *bytes) return false;
-    *bytes += pad;  return true;
+    *bytes += pad;
+    return true;
 }
 
 

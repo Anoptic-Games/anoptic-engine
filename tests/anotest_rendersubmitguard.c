@@ -3,29 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: the CUSTODY half of AnoRenderSubmitResult. The owned-payload endpoints in
-// ano_render_bridge.c allocate a render-owned block BEFORE they push, so every answer is also a
-// custody claim: OOM means the allocator refused and nothing was packed, BACKPRESSURE means a block
-// WAS packed and ano_render_command_release retired it again, INVALID means the arm answered before
-// the allocator was ever asked, and ACCEPTED means exactly one block crossed into the bridge 〜 which
-// the bridge then discharges, at drain or at teardown. None of that is observable through a real
-// allocator, so this guard drives the endpoints over a ledgering arena that refuses on command. The
-// distinction the typed result exists for is pinned first: an allocator refusal must never be spelled
-// BACKPRESSURE, because a retry loop cannot tell those apart and spins forever on one.
-//
-// Harness: compiles the REAL ano_render_bridge.c TU and links NOTHING 〜 anoptic_core drags
-// mimalloc-static in PUBLIC, which would make a locally defined mi_malloc a duplicate symbol (and an
-// ODR hazard under Release LTO besides). This TU therefore DEFINES the four seams the production TU
-// leaves open: mi_malloc, mi_free, mi_heap_calloc and ano_log_write. ano_spsc_*, ano_seqpub_* and
-// ano_size_add_array are static inline in the private header and close on their own.
-//
-// HAZARD, read this before touching the allocator: anoptic_memory.h pulls <mimalloc-override.h>,
-// which #defines malloc -> mi_malloc and free -> mi_free in every TU that sees it 〜 and this one
-// sees it, transitively, through render_bridge.h. A fake mi_malloc written over malloc therefore
-// calls ITSELF and recurses until the stack dies. The allocator below is backed by a static byte
-// arena for exactly that reason. If a later edit really does want libc backing, #undef malloc and
-// #undef free first.
-//
+// Coverage: AnoRenderSubmitResult custody on packing endpoints (OOM / BACKPRESSURE / INVALID / ACCEPTED).
+// Harness: real ano_render_bridge.c; this TU defines mi_malloc, mi_free, mi_heap_calloc, ano_log_write.
+// HAZARD: anoptic_memory.h maps malloc->mi_malloc; fake mi_malloc uses the static arena, never malloc.
 // No GPU, no threads, no logger. Exit 0 == pass.
 
 #include <inttypes.h>
@@ -35,14 +15,14 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "render_bridge/render_bridge.h" // private transport: SPSC ring + bridge + the endpoints
+#include "render_bridge/render_bridge.h" // private transport: SPSC ring + bridge + endpoints
 #include <anoptic_log.h>
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
-// Same, for a claim that must name the endpoint or arm it is about.
+// Same, with a printf format that names the endpoint or arm.
 #define CHECKF(cond, ...) do { \
     if (!(cond)) { printf("FAIL: "); printf(__VA_ARGS__); printf(" (%s:%d)\n", __FILE__, __LINE__); failures++; } \
 } while (0)
@@ -50,16 +30,15 @@ static int failures = 0;
 
 /* Ledgering Arena */
 
-// Bump-only over a static arena: an address is never reused, so no two ledger entries can ever be
-// confused and a stale pointer is always recognisable as a double free.
+// Bump-only static arena; addresses never reuse.
 
 #define ARENA_BYTES (512u * 1024u)
 #define MAX_SLOTS   256u
 
 typedef enum BlockKind
 {
-    BLK_PAYLOAD = 0, // mi_malloc: a packed render-owned block
-    BLK_RING,        // mi_heap_calloc: an SPSC ring buffer
+    BLK_PAYLOAD = 0, // mi_malloc: packed render-owned block
+    BLK_RING,        // mi_heap_calloc: SPSC ring buffer
 } BlockKind;
 
 typedef struct Slot
@@ -75,21 +54,19 @@ static size_t   g_arenaUsed;
 static Slot     g_slot[MAX_SLOTS];
 static uint32_t g_slots;
 
-static uint32_t g_payloadAllocs;   // grants through mi_malloc, whole run
-static uint32_t g_payloadRefusals; // refusals through mi_malloc, whole run
+static uint32_t g_payloadAllocs;   // mi_malloc grants, whole run
+static uint32_t g_payloadRefusals; // mi_malloc refusals, whole run
 static uint32_t g_doubleFrees;     // whole-run invariant
 static uint32_t g_unknownFrees;    // whole-run invariant
-static uint32_t g_arenaExhausted;  // a run that outgrows the arena must FAIL, never pass quietly
+static uint32_t g_arenaExhausted;  // arena overflow must FAIL
 static uint32_t g_slotsExhausted;
 
-static uint32_t g_failNextAlloc;   // refuse the next N payload allocations; 0 = healthy
-static size_t   g_failAllocAbove;  // refuse any payload allocation larger than this; 0 = off
+static uint32_t g_failNextAlloc;   // refuse next N payload allocs; 0 = healthy
+static size_t   g_failAllocAbove;  // refuse payload larger than this; 0 = off
 
-// in:  bytes (requested), kind (which ledger class the block belongs to)
-// out: a 16-aligned arena block with a live ledger entry, or NULL when the arena or the slot table
-//      is spent (both counted, both asserted zero at exit)
-// inv: bump only. mi_malloc's 16-byte guarantee is reproduced here because the packers place mat4 and
-//      Vector4-bearing sub-arrays inside the block they are handed.
+// in:  bytes, kind
+// out: 16-aligned arena block + live ledger entry, or NULL on arena/slot exhaustion
+// inv: bump only; 16-byte align matches mi_malloc (mat4 / Vector4 sub-arrays)
 static void *arena_take(size_t bytes, BlockKind kind)
 {
     size_t need = (bytes + 15u) & ~(size_t)15u;
@@ -103,7 +80,7 @@ static void *arena_take(size_t bytes, BlockKind kind)
 }
 
 // in:  kind
-// out: how many blocks of that class the ledger still holds live
+// out: live block count of that class
 static uint32_t live_of(BlockKind kind)
 {
     uint32_t n = 0;
@@ -116,8 +93,8 @@ static uint32_t live_blocks(void) { return live_of(BLK_PAYLOAD); }
 static uint32_t live_rings(void)  { return live_of(BLK_RING); }
 
 // in:  size
-// out: an arena block, or NULL when the refusal switch is armed
-// inv: NEVER back this with malloc 〜 malloc IS mi_malloc in this TU (see the banner).
+// out: arena block, or NULL when refusal switch is armed
+// inv: never back with malloc (malloc IS mi_malloc here)
 void *mi_malloc(size_t size)
 {
     if (g_failNextAlloc > 0u) { g_failNextAlloc--; g_payloadRefusals++; return NULL; }
@@ -127,10 +104,9 @@ void *mi_malloc(size_t size)
     return p;
 }
 
-// in:  heap (ignored 〜 the bridge only needs a non-NULL token), count, size
-// out: a zeroed arena block, or NULL on overflow / exhaustion
-// inv: the ring lane deliberately ignores the refusal switch, so arming an OOM for a packing endpoint
-//      can never fail a bridge init by accident.
+// in:  heap (ignored; bridge needs non-NULL), count, size
+// out: zeroed arena block, or NULL on overflow / exhaustion
+// inv: ring lane ignores the refusal switch
 void *mi_heap_calloc(mi_heap_t *heap, size_t count, size_t size)
 {
     (void)heap;
@@ -140,8 +116,8 @@ void *mi_heap_calloc(mi_heap_t *heap, size_t count, size_t size)
     return p;
 }
 
-// in:  p (NULL, an arena block, or something nobody minted)
-// out: nothing; discharges the ledger entry and counts the two ways a free can be wrong
+// in:  p (NULL, arena block, or unknown)
+// out: discharges ledger entry; counts double/unknown frees
 void mi_free(void *p)
 {
     if (!p) return;
@@ -160,9 +136,8 @@ void mi_free(void *p)
 #define LOG_LEVELS ((size_t)ANO_FATAL + 1u)
 static uint32_t g_logs[LOG_LEVELS];
 
-// in:  level, route, sourceFile, lineNumber, printFormat, ... 〜 ano_log's non-macro half
-// out: 0; records nothing but the count, per level, so "the bridge may warn" is assertable and a
-//      warning storm in a per-submit path is visible as a count that outruns the calls
+// in:  level, route, sourceFile, lineNumber, printFormat, ...
+// out: 0; increments per-level count only
 int ano_log_write(ano_loglevel_t level, ano_logroute_t route,
                   const char *sourceFile, int lineNumber,
                   const char *printFormat, ...)
@@ -177,8 +152,8 @@ static uint32_t warns(void) { return g_logs[ANO_WARN]; }
 
 /* Bridge Probes */
 
-// in:  r (a ring nobody else is touching)
-// out: how many elements it holds. Single-threaded here, so the relaxed pair is exact.
+// in:  r
+// out: element count (single-threaded: relaxed loads are exact)
 static uint32_t ring_depth(const AnoSpscRing *r)
 {
     uint32_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed);
@@ -186,7 +161,7 @@ static uint32_t ring_depth(const AnoSpscRing *r)
     return tail - head;
 }
 
-static int        g_heapToken;                                  // the bridge only checks heap != NULL
+static int        g_heapToken;                                  // bridge checks heap != NULL
 static mi_heap_t *const g_heap = (mi_heap_t *)&g_heapToken;
 
 
@@ -212,13 +187,11 @@ static AnoUiClip  g_clips[1];
 static AnoUiPaint g_paints[1];
 static AnoUiStop  g_stops[2];
 static uint32_t   g_curves[UI_CURVES];
-static AnoUiBuilder g_ui;      // valid: RRECT with both refs, GLYPHS over the whole array, PATH
-static AnoUiBuilder g_uiEmpty; // primCount 0: tail-forwards to clear
+static AnoUiBuilder g_ui;      // valid: RRECT + GLYPHS + PATH
+static AnoUiBuilder g_uiEmpty; // primCount 0: forwards to clear
 
-// out: nothing; every fixture holds a distinct recognisable value so a packer that copies the wrong
-//      array, the wrong count, or nothing at all cannot pass the control's memcmp.
-// inv: the UI builder is hand-built. The builder verbs live in src/ui, which this target does not
-//      link, and the packer reads only counts plus array pointers anyway.
+// out: fixtures filled with distinct values for memcmp controls
+// inv: UI builder is hand-built (ui verbs not linked); packer reads counts + pointers only
 static void fixtures_init(void)
 {
     for (uint32_t i = 0; i < TEXT_GLYPHS; i++) {
@@ -277,8 +250,7 @@ static void fixtures_init(void)
 
 /* Packing Endpoints */
 
-// The four endpoints that allocate a block before they push. text_clear / ui_clear allocate nothing
-// and so have no custody to claim; they serve here only as ring ballast.
+// Endpoints that allocate before push. text_clear / ui_clear allocate nothing (ring ballast only).
 typedef enum Endpoint
 {
     EP_TEXT_SET = 0,
@@ -291,9 +263,8 @@ typedef enum Endpoint
 static const char *const kEndpoint[EP_COUNT] = { "text_set", "ui_set", "bulk_update", "bulk_destroy" };
 
 // in:  bridge, ep
-// out: that endpoint's result over the shared valid fixtures
-// inv: every arm here is contract-valid input, so the only thing that can move the answer off
-//      ACCEPTED is the allocator or the ring.
+// out: endpoint result over shared valid fixtures
+// inv: every arm is contract-valid; only allocator or ring can leave ACCEPTED
 static AnoRenderSubmitResult drive(AnoRenderBridge *bridge, Endpoint ep)
 {
     switch (ep) {
@@ -309,11 +280,7 @@ static AnoRenderSubmitResult drive(AnoRenderBridge *bridge, Endpoint ep)
 
 /* Case 1 〜 OOM */
 
-// in:  nothing; builds and tears down its own bridge
-// out: nothing; every failure lands in `failures`
-// inv: the four packing endpoints ask the allocator before they touch the ring, so a refusal must
-//      answer OOM with the ledger and the ring exactly where they were. OOM spelled BACKPRESSURE is
-//      the defect this case exists to catch: the two codes drive opposite caller policies.
+// inv: packing endpoints ask allocator before ring; refusal -> OOM, ledger and ring unchanged
 static void case_oom(void)
 {
     printf("case 1: the allocator refuses under each packing endpoint\n");
@@ -345,17 +312,14 @@ static void case_oom(void)
 
 /* Case 2 〜 Release After Ring Refusal */
 
-// inv: the ring refuses AFTER the endpoint has packed, so BACKPRESSURE is honest only if
-//      ano_render_command_release has already retired that block: exactly one grant, and a ledger
-//      back at zero. A refused push that skipped the release would leak one block per retry 〜 which
-//      is the shape a retry loop repeats forever.
+// inv: ring refuses after pack -> BACKPRESSURE with one grant and ledger back at zero
 static void case_backpressure_release(void)
 {
     printf("case 2: the ring refuses after the block is already packed\n");
     AnoRenderBridge b;
     CHECK(ano_render_bridge_init(&b, g_heap, 2u, 2u), "backpressure: bridge init");
 
-    // Ballast: clear commands own no payload, so only the endpoint under test can move the ledger.
+    // Ballast: clear commands own no payload.
     AnoRenderSubmitResult fill;
     fill = ano_render_text_clear(&b, 7u);
     CHECK(fill.code == ANO_RENDER_SUBMIT_ACCEPTED, "backpressure: ring ballast 1 accepted");
@@ -390,9 +354,7 @@ static void case_backpressure_release(void)
 
 /* Case 3 〜 Teardown With Owned Blocks Queued */
 
-// inv: ACCEPTED transfers ownership, so a bridge torn down with undelivered commands must discharge
-//      their payloads itself. The drain in ano_render_bridge_destroy is the only thing standing
-//      between a shutdown and one leaked block per unread owned command.
+// inv: destroy drains undelivered owned payloads
 static void case_destroy_discharges(void)
 {
     printf("case 3: teardown with four accepted, undrained, owned blocks\n");
@@ -417,23 +379,21 @@ static void case_destroy_discharges(void)
 
 typedef enum InvalidArm
 {
-    INV_TEXT_NULL = 0,     // count > 0 with a NULL instances pointer
-    INV_UI_NULL_BUILDER,   // a NULL builder is INVALID, never a silent clear
-    INV_UI_CAP,            // primCount past the per-block cap
+    INV_TEXT_NULL = 0,     // count > 0 with NULL instances
+    INV_UI_NULL_BUILDER,   // NULL builder
+    INV_UI_CAP,            // primCount past cap
     INV_UI_GLYPH_PAIR,     // glyphCount > 0 with NULL glyphs
-    INV_UI_PAINT_REF,      // paintRef past the block's paint table
-    INV_UI_STOP_WINDOW,    // a paint whose stop window leaves the block
-    INV_UI_PATH_WALK,      // a PATH whose curve walk would read past the stream
-    INV_UPDATE_NULL_BATCH, // a NULL batch cannot even be probed for a count
-    INV_UPDATE_NULL_IDS,   // nonzero count with no id array
-    INV_UPDATE_NO_ARRAY,   // a field the mask names whose array is absent
+    INV_UI_PAINT_REF,      // paintRef past paint table
+    INV_UI_STOP_WINDOW,    // stop window leaves the block
+    INV_UI_PATH_WALK,      // PATH curve walk past stream
+    INV_UPDATE_NULL_BATCH, // NULL batch
+    INV_UPDATE_NULL_IDS,   // nonzero count, no id array
+    INV_UPDATE_NO_ARRAY,   // mask names a missing array
     INV_DESTROY_NULL_IDS,
     INV_COUNT
 } InvalidArm;
 
-// warns: the exact warning count the arm owes, or -1 where the contract names no warning and only
-// the "no storm" bound applies. The UI drops the public header documents as warned are the ones
-// pinned at 1: caps, the glyph pair, out-of-range refs, and the path walk.
+// warns: exact warn count owed, or -1 for "no storm" bound only. Pinned at 1: caps, glyph pair, refs, path walk.
 static const struct { const char *name; int warns; } kInvalid[INV_COUNT] = {
     { "text_set(count>0, NULL instances)", -1 },
     { "ui_set(NULL builder)",              -1 },
@@ -449,10 +409,8 @@ static const struct { const char *name; int warns; } kInvalid[INV_COUNT] = {
 };
 
 // in:  bridge, arm
-// out: that arm's result
-// inv: each arm mutates a LOCAL copy of a fixture, so the shared valid fixtures stay valid for the
-//      control. The cap arm leaves primCount pointing past its own array on purpose: the cap is
-//      refused before any prim is read, which is precisely the ordering it pins.
+// out: arm result
+// inv: mutates a LOCAL fixture copy; shared fixtures stay valid for controls
 static AnoRenderSubmitResult drive_invalid(AnoRenderBridge *bridge, InvalidArm arm)
 {
     AnoUiBuilder ui = g_ui;
@@ -500,9 +458,7 @@ static AnoRenderSubmitResult drive_invalid(AnoRenderBridge *bridge, InvalidArm a
     return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_ACCEPTED); // unreachable: fails the arm
 }
 
-// inv: INVALID is deterministic, so the caller retires rather than retries 〜 which is only safe if
-//      the arm answered before it ever asked the allocator. Nothing allocated, nothing enqueued,
-//      and a warning at most once per drop.
+// inv: INVALID answers before allocator; nothing allocated, nothing enqueued, warn at most once
 static void case_invalid(void)
 {
     printf("case 4: every INVALID arm answers before the allocator is asked\n");
@@ -538,10 +494,8 @@ static void case_invalid(void)
 
 /* Case 5 〜 Controls */
 
-// in:  cmd (a drained command), ep (which endpoint produced it)
-// out: nothing; asserts the packed block carries the fixture verbatim
-// inv: every read is byte-wise. The packed sub-arrays land at whatever offset the running byte total
-//      reached, so a typed walk over them is the packer's business, not this guard's.
+// in:  cmd, ep
+// out: asserts packed block matches fixture byte-wise
 static void check_packed(const RenderCommand *cmd, Endpoint ep)
 {
     switch (ep) {
@@ -595,17 +549,14 @@ static void check_packed(const RenderCommand *cmd, Endpoint ep)
     }
 }
 
-// inv: without this case a reject-everything implementation passes every case above. ACCEPTED must
-//      cost exactly one block per call, hand it over whole, and hold it until the consumer drains and
-//      releases it. The documented no-ops must cost none.
+// inv: ACCEPTED costs one block per call; documented no-ops cost none
 static void case_controls(void)
 {
     printf("case 5: the accepted path allocates exactly one block per call and hands it over\n");
     AnoRenderBridge b;
     CHECK(ano_render_bridge_init(&b, g_heap, 8u, 4u), "control: bridge init");
 
-    // The documented no-ops: ACCEPTED with nothing allocated. The two `set` forms tail-forward to
-    // their clear (one command, no block); the two bulk forms answer without enqueueing at all.
+    // Documented no-ops: ACCEPTED, no block. set(count 0) forwards to clear; bulk zero-count enqueues nothing.
     uint32_t allocs = g_payloadAllocs;
     AnoRenderSubmitResult noop;
     noop = ano_render_text_set(&b, 31u, NULL, 0u);
@@ -633,7 +584,7 @@ static void case_controls(void)
                kEndpoint[ep]);
     }
 
-    // Consumer side: drain in FIFO order, verify the payload, and release what the drain adopted.
+    // Drain FIFO, verify payload, release adopted blocks.
     RenderCommand cmd;
     CHECK(ano_render_next_command(&b, &cmd) && cmd.kind == RCMD_TEXT_CLEAR, "control: drain 1 is the forwarded text clear");
     ano_render_command_release(&cmd);
@@ -667,8 +618,7 @@ int main(void)
     case_invalid();
     case_controls();
 
-    // Whole-run ledger invariants. These never reset, so a case that quietly double-discharged or
-    // leaked is caught here even when every claim above happened to line up.
+    // Whole-run ledger invariants (never reset across cases).
     CHECK(live_blocks() == 0u, "whole run: no payload block outlives the suite");
     CHECK(live_rings() == 0u, "whole run: no ring buffer outlives the suite");
     CHECK(g_doubleFrees == 0u, "whole run: no block freed twice");

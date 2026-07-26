@@ -61,8 +61,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
         rendererState.entities = NULL;
 	}
 
-    // Two live views over one image are always distinct handles, so each is destroyed once and the
-    // shared image once, with no aliasing check.
+    // Dual-view texture: srgbView, unormView, shared image
     for (uint32_t i = 0; i < rendererState.primitives.textureCount; i++)
     {
         TextureData* record = &rendererState.primitives.textureBuffers[i];
@@ -72,7 +71,6 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
             vkDestroyImageView(ctx->device, record->unormView, NULL);
         if (record->textureImage)
             vkDestroyImage(ctx->device, record->textureImage, NULL);
-
     }
     ano_vk_cleanup_primitives(&rendererState.primitives);
 

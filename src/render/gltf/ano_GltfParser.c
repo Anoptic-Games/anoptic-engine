@@ -78,16 +78,16 @@ static bool prim_accessors(const cgltf_primitive* prim, cgltf_accessor** pos,
     return *pos != NULL && prim->indices != NULL;
 }
 
-// Inputs: d, imgUsage (per-image mask), tex (a texture from d, or NULL for an absent slot), bit.
-// Outputs: tex's role folded into its image's mask; two textures naming one image in opposite roles
-// consolidate into one mutable-format image.
+// Inputs: d, imgUsage, tex (or NULL), bit.
+// Output: bit OR'd into tex's image mask.
 static inline void mark_texture(const cgltf_data* d, TextureUsageFlags* imgUsage,
                                 const cgltf_texture* tex, TextureUsageFlags bit)
 {
     if (tex && tex->image) imgUsage[tex->image - d->images] |= bit;
 }
 
-// Inputs: d, a per-image slot table, a texture from d or NULL. Outputs: the slot that texture samples in that domain 〜 no image, an unbuilt image, and an interpretation the image does not carry are one answer to the shader: the refusal word, never slot 0.
+// Inputs: d, slots (per-image), tex (or NULL).
+// Output: bindless slot for tex's image, or ANO_BINDLESS_NONE.
 static inline uint32_t gltf_slot(const cgltf_data* d, const uint32_t* slots, const cgltf_texture* tex)
 {
     return (tex && tex->image) ? slots[tex->image - d->images] : ANO_BINDLESS_NONE;
@@ -196,7 +196,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     // and reused across all of them; maxStaging upper-bounds needed textures + 10.
     size_t maxVerts, maxIdx;
     scratch_extents(gltf, &maxVerts, &maxIdx);
-    // One upload per image, not per texture, so the staging bound follows images.
+    // Staging bound follows images (one upload each).
     size_t maxStaging = 10 + data->images_count;
     size_t scratchBytes = gltf_span(maxVerts, sizeof(Vertex))
                         + gltf_span(maxIdx, sizeof(uint32_t))
@@ -220,9 +220,8 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     TextureUsageFlags* imageUsage     = gltf_carve(&scratchBlk, data->images_count, sizeof(uint32_t));
     VkBuffer*          stagingBuffers = gltf_carve(&scratchBlk, maxStaging, sizeof(VkBuffer));
 
-    // The block is calloc'd, so a zero index would spell bindless slot 0 〜 the fallback texture 〜
-    // and alias every unavailable interpretation onto it. Seed the refusal word instead.
-    static_assert(ANO_BINDLESS_NONE == 0xFFFFFFFFu, "the 0xFF fill must spell the refusal word");
+    // Seed ANO_BINDLESS_NONE (calloc would leave slot 0).
+    static_assert(ANO_BINDLESS_NONE == 0xFFFFFFFFu, "0xFF fill must equal ANO_BINDLESS_NONE");
     memset(colorIndex, 0xFF, data->images_count * sizeof(uint32_t));
     memset(dataIndex,  0xFF, data->images_count * sizeof(uint32_t));
 
@@ -241,6 +240,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 
         for (size_t p = 0; p < cgMesh->primitives_count; ++p) {
             cgltf_primitive* prim = &cgMesh->primitives[p];
+            outMesh->primitives[p].geometryPoolIndex = ANO_MESH_NONE;
 
             cgltf_accessor *posAccessor, *normAccessor, *texAccessor;
             if (!prim_accessors(prim, &posAccessor, &normAccessor, &texAccessor)) {
@@ -298,8 +298,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     PbrFeatureFlags activeFeatures = ano_vk_get_active_pipelines_supported_features(&rendererState);
     ano_debug_log(ANO_INFO, "[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X", activeFeatures);
 
-    // Mark every needed texture's roles; color slots decode sRGB, data slots stay linear, and one
-    // image used both ways carries both views over one allocation.
+    // Mark texture roles per image (COLOR=sRGB, DATA=linear).
     if (data->textures_count > 0) {
         for (size_t m = 0; m < data->materials_count; ++m) {
             cgltf_material* mat = &data->materials[m];
@@ -358,20 +357,13 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     if (textureCmd == VK_NULL_HANDLE)
         ano_log(ANO_WARN, "No transient command buffer for the texture batch; uploading per image.");
     uint32_t stagingCount = 0;
-    // One latch over the three causes that all mean "stop constructing": a device or arena refusal,
-    // a refused registry adoption, and a full bindless array. None of the three ever un-refuses 〜
-    // gpu_alloc is monotonic and the bindless array never releases a slot 〜 so the first proves
-    // every later one. Each cause logs itself once.
+    // Halt latch: device/arena, registry, or bindless full.
     bool haltLoad = false;
     uint32_t skipped = 0;
-    // A refused adoption leaves the parser holding an image the unsubmitted batch has already
-    // copied and blitted into, so it is discharged in the epilogue rather than here. The latch is
-    // what keeps that pending wreckage to a single package.
+    // Registry-refused package: destroy in epilogue after the batch retires.
     TexturePackage refused = {0};
 
-    // Upload keyed by IMAGE: one decode, one VkImage, one arena span and one mip chain per glTF
-    // image, carrying whichever views the union of its textures' roles asked for. Keying this loop
-    // by texture is what used to split an image reached through two textures into two of everything.
+    // One upload per image; views follow imageUsage.
     for (size_t i = 0; i < data->images_count; ++i) {
         cgltf_image* img = &data->images[i];
         if (!img->uri)
@@ -380,7 +372,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             ano_debug_log(ANO_INFO, "[GLTF DEBUG] Skipping image %zu: %s (not needed or unsupported by pipeline)", i, img->uri);
             continue;
         }
-        // Skips before any acquisition, so it lands in the same state as the URI skip below.
+        // Halted: skip before acquisition.
         if (haltLoad) {
             skipped++;
             continue;
@@ -395,8 +387,8 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         cgltf_combine_paths(texPath, fileName, img->uri);
         cgltf_decode_uri(texPath + strlen(texPath) - strlen(img->uri));
 
-        TexturePackage pkg = {0}; // inert locally: the refusal arms below never depend on the callee's own total
-        // Total over AnoTextureResultCode, no default: a new code forces this policy to be revisited.
+        TexturePackage pkg = {0};
+        // Exhaustive over AnoTextureResultCode.
         switch (createTextureImage(ctx, textureCmd, &pkg, texPath, false, imageUsage[i], true).code) {
         case ANO_TEXTURE_BUILT:
             break;
@@ -407,22 +399,20 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             ano_log(ANO_ERROR, "Image request outside the constructor's contract: %s", img->uri);
             continue;
         case ANO_TEXTURE_DEVICE:
-            // gpu_alloc is monotonic, so every attempt past the first refusal burns another span.
             ano_log(ANO_ERROR, "Device or texture arena refused %s; halting texture construction.", img->uri);
             haltLoad = true;
             continue;
         }
 
-        if (pkg.staging) stagingBuffers[stagingCount++] = pkg.staging; // the batch owns it from here
+        if (pkg.staging) stagingBuffers[stagingCount++] = pkg.staging; // batch-owned
 
         if (!ano_vk_register_texture(&rendererState.primitives, ano_texture_record(&pkg))) {
             ano_log(ANO_ERROR, "Texture registry refused %s; halting texture construction.", img->uri);
-            refused = pkg; // discharged in the epilogue, after the batch retires
+            refused = pkg; // epilogue destroy
             haltLoad = true;
             continue;
         }
-        // Slots are per image and per domain, minted the moment the registry owns it: every texture naming this image reads the same two cells, so it costs one slot per interpretation however many textures reach it, and the array is bump-only.
-        // A refusal stays ANO_BINDLESS_NONE, the word the bake and the shaders read as "no texture", so it carries to the SSBO instead of aliasing onto slot 0.
+        // Bindless slots per image domain. ANO_BINDLESS_NONE on refusal.
         if (imageUsage[i] & TEXTURE_USE_COLOR) {
             colorIndex[i] = bindless_register_texture(ctx, &rendererState.bindlessTextures, pkg.srgbView, rendererState.textureSampler);
             haltLoad |= colorIndex[i] == ANO_BINDLESS_NONE;
@@ -440,8 +430,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 
     if (textureCmd != VK_NULL_HANDLE) endSingleTimeCommands(ctx, textureCmd);
 
-    // Past the submit and its fence wait, so no command buffer references these any more. The arena
-    // span behind refused.alloc is not reclaimed here: gpu_alloc has no per-allocation free.
+    // Post-submit: destroy staging and any refused views/image (arena span stays).
     for (uint32_t i = 0; i < stagingCount; ++i) {
         vkDestroyBuffer(ctx->device, stagingBuffers[i], NULL);
     }
@@ -459,12 +448,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     }
 
     // 3. Bake Material SSBO entries per primitive
-    // Every slot takes its interpretation's index unconditionally: colour slots read colorIndex,
-    // data slots read dataIndex, and both arrays already hold ANO_BINDLESS_NONE wherever the view
-    // or its registration was unavailable 〜 the same word ano_vk_init_default_material_data wrote.
-    // Writing NONE over NONE is a no-op, so "an unavailable interpretation stays NONE" holds by
-    // construction instead of by a gate nineteen sites could get wrong. Normal and occlusion keep a
-    // guard because their scalar companions ride along with the index.
+    // Slot = colorIndex/dataIndex (already NONE when unavailable). Normal/occlusion guard their scalars.
     for (size_t m = 0; m < data->meshes_count; ++m) {
         cgltf_mesh* cgMesh = &data->meshes[m];
         ModelMesh* outMesh = &asset->meshes[m];
