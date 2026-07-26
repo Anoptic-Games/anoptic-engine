@@ -441,12 +441,16 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
         0, 0, 0, 255,       255, 0, 255, 255
     };
 
-    GpuAllocation fallbackImageAlloc; // Memory managed by gpu_allocator
+    TexturePackage fallbackPkg; // Memory managed by gpu_allocator
 
-    if (!createTextureImageFromPixels(ctx, VK_NULL_HANDLE, &state->fallbackImage, &fallbackImageAlloc, &state->fallbackImageView, fallbackPixels, 2, 2, NULL)) {
+    // Colour role only, and no borrowed batch, so the staging buffer retires inside the call.
+    if (createTextureImageFromPixels(ctx, VK_NULL_HANDLE, &fallbackPkg, fallbackPixels, 2, 2,
+                                     TEXTURE_USE_COLOR, false).code != ANO_TEXTURE_BUILT) {
         ano_log(ANO_WARN, "Warning: Failed to create fallback texture!");
         return false;
     }
+    state->fallbackImage = fallbackPkg.image;
+    state->fallbackImageView = fallbackPkg.srgbView;
 
     // 3. Register Fallback Texture
     uint32_t fallbackTexIdx = bindless_register_texture(ctx, &state->bindlessTextures, state->fallbackImageView, state->textureSampler);

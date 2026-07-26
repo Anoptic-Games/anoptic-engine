@@ -33,9 +33,7 @@ typedef struct GltfBlock {
 static_assert(alignof(ModelAsset) <= 16 && alignof(ModelMesh) <= 16 &&
               alignof(ModelPrimitive) <= 16 && alignof(ModelNode) <= 16,
               "asset block carves assume <=16-byte alignment");
-static_assert(alignof(Vertex) <= 16 && alignof(uint32_t) <= 16 && alignof(bool) <= 16 &&
-              alignof(VkImageView) <= 16 && alignof(VkImage) <= 16 &&
-              alignof(VkBuffer) <= 16 && alignof(GpuAllocation) <= 16,
+static_assert(alignof(Vertex) <= 16 && alignof(uint32_t) <= 16 && alignof(VkBuffer) <= 16,
               "scratch block carves assume <=16-byte alignment");
 
 // Inputs: element count n, element size sz. Output: 16-rounded byte footprint.
@@ -78,6 +76,21 @@ static bool prim_accessors(const cgltf_primitive* prim, cgltf_accessor** pos,
         }
     }
     return *pos != NULL && prim->indices != NULL;
+}
+
+// Inputs: d, imgUsage (per-image mask), tex (a texture from d, or NULL for an absent slot), bit.
+// Outputs: tex's role folded into its image's mask; two textures naming one image in opposite roles
+// consolidate into one mutable-format image.
+static inline void mark_texture(const cgltf_data* d, TextureUsageFlags* imgUsage,
+                                const cgltf_texture* tex, TextureUsageFlags bit)
+{
+    if (tex && tex->image) imgUsage[tex->image - d->images] |= bit;
+}
+
+// Inputs: d, a per-image slot table, a texture from d or NULL. Outputs: the slot that texture samples in that domain 〜 no image, an unbuilt image, and an interpretation the image does not carry are one answer to the shader: the refusal word, never slot 0.
+static inline uint32_t gltf_slot(const cgltf_data* d, const uint32_t* slots, const cgltf_texture* tex)
+{
+    return (tex && tex->image) ? slots[tex->image - d->images] : ANO_BINDLESS_NONE;
 }
 
 // Inputs: g (validated, so every count is bounded by delivered bytes).
@@ -183,17 +196,14 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     // and reused across all of them; maxStaging upper-bounds needed textures + 10.
     size_t maxVerts, maxIdx;
     scratch_extents(gltf, &maxVerts, &maxIdx);
-    size_t maxStaging = 10 + data->textures_count;
+    // One upload per image, not per texture, so the staging bound follows images.
+    size_t maxStaging = 10 + data->images_count;
     size_t scratchBytes = gltf_span(maxVerts, sizeof(Vertex))
                         + gltf_span(maxIdx, sizeof(uint32_t))
-                        + gltf_span(data->textures_count, sizeof(bool))          // textureNeeded
-                        + gltf_span(data->textures_count, sizeof(bool))          // textureSrgb
-                        + gltf_span(data->textures_count, sizeof(bool))          // textureLoaded
-                        + gltf_span(data->textures_count, sizeof(VkImageView))   // loadedTextures
-                        + gltf_span(data->textures_count, sizeof(VkImage))       // loadedImages
-                        + gltf_span(data->textures_count, sizeof(GpuAllocation)) // loadedAllocs
-                        + gltf_span(data->textures_count, sizeof(uint32_t))      // bindlessIndices
-                        + gltf_span(maxStaging, sizeof(VkBuffer));               // stagingBuffers
+                        + gltf_span(data->images_count, sizeof(uint32_t))          // colorIndex
+                        + gltf_span(data->images_count, sizeof(uint32_t))          // dataIndex
+                        + gltf_span(data->images_count, sizeof(uint32_t))          // imageUsage
+                        + gltf_span(maxStaging, sizeof(VkBuffer));                 // stagingBuffers
     mi_heap_t* scratchHeap LOCALHEAPATTR = mi_heap_new();
     void* scratchBase = scratchHeap ? mi_heap_calloc(scratchHeap, 1, scratchBytes) : NULL;
     if (!scratchBase) {
@@ -203,16 +213,18 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         return NULL;
     }
     GltfBlock scratchBlk = { scratchBase, (uint8_t*)scratchBase + scratchBytes };
-    Vertex*        vertices        = gltf_carve(&scratchBlk, maxVerts, sizeof(Vertex));
-    uint32_t*      indices         = gltf_carve(&scratchBlk, maxIdx, sizeof(uint32_t));
-    bool*          textureNeeded   = gltf_carve(&scratchBlk, data->textures_count, sizeof(bool));
-    bool*          textureSrgb     = gltf_carve(&scratchBlk, data->textures_count, sizeof(bool));
-    bool*          textureLoaded   = gltf_carve(&scratchBlk, data->textures_count, sizeof(bool));
-    VkImageView*   loadedTextures  = gltf_carve(&scratchBlk, data->textures_count, sizeof(VkImageView));
-    VkImage*       loadedImages    = gltf_carve(&scratchBlk, data->textures_count, sizeof(VkImage));
-    GpuAllocation* loadedAllocs    = gltf_carve(&scratchBlk, data->textures_count, sizeof(GpuAllocation));
-    uint32_t*      bindlessIndices = gltf_carve(&scratchBlk, data->textures_count, sizeof(uint32_t));
-    VkBuffer*      stagingBuffers  = gltf_carve(&scratchBlk, maxStaging, sizeof(VkBuffer));
+    Vertex*            vertices       = gltf_carve(&scratchBlk, maxVerts, sizeof(Vertex));
+    uint32_t*          indices        = gltf_carve(&scratchBlk, maxIdx, sizeof(uint32_t));
+    uint32_t*          colorIndex     = gltf_carve(&scratchBlk, data->images_count, sizeof(uint32_t));
+    uint32_t*          dataIndex      = gltf_carve(&scratchBlk, data->images_count, sizeof(uint32_t));
+    TextureUsageFlags* imageUsage     = gltf_carve(&scratchBlk, data->images_count, sizeof(uint32_t));
+    VkBuffer*          stagingBuffers = gltf_carve(&scratchBlk, maxStaging, sizeof(VkBuffer));
+
+    // The block is calloc'd, so a zero index would spell bindless slot 0 〜 the fallback texture 〜
+    // and alias every unavailable interpretation onto it. Seed the refusal word instead.
+    static_assert(ANO_BINDLESS_NONE == 0xFFFFFFFFu, "the 0xFF fill must spell the refusal word");
+    memset(colorIndex, 0xFF, data->images_count * sizeof(uint32_t));
+    memset(dataIndex,  0xFF, data->images_count * sizeof(uint32_t));
 
     // 1. Upload Geometry & Map to Asset Meshes
     asset->meshCount = data->meshes_count;
@@ -286,7 +298,8 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     PbrFeatureFlags activeFeatures = ano_vk_get_active_pipelines_supported_features(&rendererState);
     ano_debug_log(ANO_INFO, "[GLTF DEBUG] Active pipeline PBR features supported: 0x%08X", activeFeatures);
 
-    // Mark needed textures and their color space; color slots decode sRGB, data slots stay linear.
+    // Mark every needed texture's roles; color slots decode sRGB, data slots stay linear, and one
+    // image used both ways carries both views over one allocation.
     if (data->textures_count > 0) {
         for (size_t m = 0; m < data->materials_count; ++m) {
             cgltf_material* mat = &data->materials[m];
@@ -296,103 +309,43 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                    m, mat->name ? mat->name : "unnamed", matFeatures, supportedFeatures);
 
             if (mat->has_pbr_metallic_roughness) {
-                if ((supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE) && mat->pbr_metallic_roughness.base_color_texture.texture) {
-                    size_t texIdx = mat->pbr_metallic_roughness.base_color_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                    textureSrgb[texIdx] = true;
-                }
-                if ((supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE) && mat->pbr_metallic_roughness.metallic_roughness_texture.texture) {
-                    size_t texIdx = mat->pbr_metallic_roughness.metallic_roughness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
+                if (supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE)
+                    mark_texture(data, imageUsage, mat->pbr_metallic_roughness.base_color_texture.texture, TEXTURE_USE_COLOR);
+                if (supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE)
+                    mark_texture(data, imageUsage, mat->pbr_metallic_roughness.metallic_roughness_texture.texture, TEXTURE_USE_DATA);
             }
-            if ((supportedFeatures & PBR_FEATURE_NORMAL_TEXTURE) && mat->normal_texture.texture) {
-                size_t texIdx = mat->normal_texture.texture - data->textures;
-                textureNeeded[texIdx] = true;
-            }
-            if ((supportedFeatures & PBR_FEATURE_OCCLUSION_TEXTURE) && mat->occlusion_texture.texture) {
-                size_t texIdx = mat->occlusion_texture.texture - data->textures;
-                textureNeeded[texIdx] = true;
-            }
-            if ((supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE) && mat->emissive_texture.texture) {
-                size_t texIdx = mat->emissive_texture.texture - data->textures;
-                textureNeeded[texIdx] = true;
-                textureSrgb[texIdx] = true;
-            }
+            if (supportedFeatures & PBR_FEATURE_NORMAL_TEXTURE)
+                mark_texture(data, imageUsage, mat->normal_texture.texture, TEXTURE_USE_DATA);
+            if (supportedFeatures & PBR_FEATURE_OCCLUSION_TEXTURE)
+                mark_texture(data, imageUsage, mat->occlusion_texture.texture, TEXTURE_USE_DATA);
+            if (supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE)
+                mark_texture(data, imageUsage, mat->emissive_texture.texture, TEXTURE_USE_COLOR);
             if (supportedFeatures & PBR_FEATURE_CLEARCOAT) {
-                if (mat->clearcoat.clearcoat_texture.texture) {
-                    size_t texIdx = mat->clearcoat.clearcoat_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->clearcoat.clearcoat_roughness_texture.texture) {
-                    size_t texIdx = mat->clearcoat.clearcoat_roughness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->clearcoat.clearcoat_normal_texture.texture) {
-                    size_t texIdx = mat->clearcoat.clearcoat_normal_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
+                mark_texture(data, imageUsage, mat->clearcoat.clearcoat_texture.texture, TEXTURE_USE_DATA);
+                mark_texture(data, imageUsage, mat->clearcoat.clearcoat_roughness_texture.texture, TEXTURE_USE_DATA);
+                mark_texture(data, imageUsage, mat->clearcoat.clearcoat_normal_texture.texture, TEXTURE_USE_DATA);
             }
-            if (supportedFeatures & PBR_FEATURE_TRANSMISSION) {
-                if (mat->transmission.transmission_texture.texture) {
-                    size_t texIdx = mat->transmission.transmission_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
-            if (supportedFeatures & PBR_FEATURE_VOLUME) {
-                if (mat->volume.thickness_texture.texture) {
-                    size_t texIdx = mat->volume.thickness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
+            if (supportedFeatures & PBR_FEATURE_TRANSMISSION)
+                mark_texture(data, imageUsage, mat->transmission.transmission_texture.texture, TEXTURE_USE_DATA);
+            if (supportedFeatures & PBR_FEATURE_VOLUME)
+                mark_texture(data, imageUsage, mat->volume.thickness_texture.texture, TEXTURE_USE_DATA);
             if (supportedFeatures & PBR_FEATURE_SPECULAR) {
-                if (mat->specular.specular_texture.texture) {
-                    size_t texIdx = mat->specular.specular_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->specular.specular_color_texture.texture) {
-                    size_t texIdx = mat->specular.specular_color_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                    textureSrgb[texIdx] = true;
-                }
+                mark_texture(data, imageUsage, mat->specular.specular_texture.texture, TEXTURE_USE_DATA);
+                mark_texture(data, imageUsage, mat->specular.specular_color_texture.texture, TEXTURE_USE_COLOR);
             }
             if (supportedFeatures & PBR_FEATURE_SHEEN) {
-                if (mat->sheen.sheen_color_texture.texture) {
-                    size_t texIdx = mat->sheen.sheen_color_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                    textureSrgb[texIdx] = true;
-                }
-                if (mat->sheen.sheen_roughness_texture.texture) {
-                    size_t texIdx = mat->sheen.sheen_roughness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
+                mark_texture(data, imageUsage, mat->sheen.sheen_color_texture.texture, TEXTURE_USE_COLOR);
+                mark_texture(data, imageUsage, mat->sheen.sheen_roughness_texture.texture, TEXTURE_USE_DATA);
             }
             if (supportedFeatures & PBR_FEATURE_IRIDESCENCE) {
-                if (mat->iridescence.iridescence_texture.texture) {
-                    size_t texIdx = mat->iridescence.iridescence_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->iridescence.iridescence_thickness_texture.texture) {
-                    size_t texIdx = mat->iridescence.iridescence_thickness_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
+                mark_texture(data, imageUsage, mat->iridescence.iridescence_texture.texture, TEXTURE_USE_DATA);
+                mark_texture(data, imageUsage, mat->iridescence.iridescence_thickness_texture.texture, TEXTURE_USE_DATA);
             }
-            if (supportedFeatures & PBR_FEATURE_ANISOTROPY) {
-                if (mat->anisotropy.anisotropy_texture.texture) {
-                    size_t texIdx = mat->anisotropy.anisotropy_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-            }
+            if (supportedFeatures & PBR_FEATURE_ANISOTROPY)
+                mark_texture(data, imageUsage, mat->anisotropy.anisotropy_texture.texture, TEXTURE_USE_DATA);
             if (supportedFeatures & PBR_FEATURE_DIFFUSE_TRANSMISSION) {
-                if (mat->diffuse_transmission.diffuse_transmission_texture.texture) {
-                    size_t texIdx = mat->diffuse_transmission.diffuse_transmission_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                }
-                if (mat->diffuse_transmission.diffuse_transmission_color_texture.texture) {
-                    size_t texIdx = mat->diffuse_transmission.diffuse_transmission_color_texture.texture - data->textures;
-                    textureNeeded[texIdx] = true;
-                    textureSrgb[texIdx] = true;
-                }
+                mark_texture(data, imageUsage, mat->diffuse_transmission.diffuse_transmission_texture.texture, TEXTURE_USE_DATA);
+                mark_texture(data, imageUsage, mat->diffuse_transmission.diffuse_transmission_color_texture.texture, TEXTURE_USE_COLOR);
             }
         }
     }
@@ -403,72 +356,99 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     // epilogue below discharges only a CB this scope actually holds.
     VkCommandBuffer textureCmd = beginSingleTimeCommands(ctx);
     if (textureCmd == VK_NULL_HANDLE)
-        ano_log(ANO_WARN, "No transient command buffer for the texture batch; uploading per texture.");
+        ano_log(ANO_WARN, "No transient command buffer for the texture batch; uploading per image.");
     uint32_t stagingCount = 0;
-    // The bindless array never releases a slot, so the registrar's first refusal proves every
-    // later one: latch it and stop decoding for textures that can never be addressed.
-    bool bindlessFull = false;
-    uint32_t bindlessSkipped = 0;
+    // One latch over the three causes that all mean "stop constructing": a device or arena refusal,
+    // a refused registry adoption, and a full bindless array. None of the three ever un-refuses 〜
+    // gpu_alloc is monotonic and the bindless array never releases a slot 〜 so the first proves
+    // every later one. Each cause logs itself once.
+    bool haltLoad = false;
+    uint32_t skipped = 0;
+    // A refused adoption leaves the parser holding an image the unsubmitted batch has already
+    // copied and blitted into, so it is discharged in the epilogue rather than here. The latch is
+    // what keeps that pending wreckage to a single package.
+    TexturePackage refused = {0};
 
-    for (size_t t = 0; t < data->textures_count; ++t) {
-        cgltf_texture* tex = &data->textures[t];
-        if (tex->image && tex->image->uri && textureNeeded[t]) {
-            // Skips before any acquisition, so it lands in the same state as the URI skip below.
-            if (bindlessFull) {
-                textureLoaded[t] = false;
-                bindlessSkipped++;
-                continue;
-            }
-            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Loading texture %zu: %s", t, tex->image->uri);
-            // Resolve image URI against the glTF file's directory, then percent-decode the tail.
-            char texPath[1024];
-            if (strlen(fileName) + strlen(tex->image->uri) + 1 >= sizeof texPath) {
-                ano_log(ANO_WARN, "Texture URI too long, skipping: %s", tex->image->uri);
-                textureLoaded[t] = false;
-                continue;
-            }
-            cgltf_combine_paths(texPath, fileName, tex->image->uri);
-            cgltf_decode_uri(texPath + strlen(texPath) - strlen(tex->image->uri));
-            bool success = createTextureImage(
-                ctx, textureCmd, &loadedImages[t], &loadedAllocs[t],
-                &loadedTextures[t], texPath, false,
-                textureSrgb[t], // sRGB color slots, linear data slots
-                &stagingBuffers[stagingCount++]
-            );
-            textureLoaded[t] = success;
-            if (success) {
-                TextureData td = {0};
-                td.textureImage = loadedImages[t];
-                td.textureImageAlloc = loadedAllocs[t];
-                td.textureImageView = loadedTextures[t];
-                ano_vk_register_texture(&rendererState.primitives, td);
-                
-                // A full array answers ANO_BINDLESS_NONE, which is the same word the material
-                // bake and every fragment shader already read as "no texture": the refusal
-                // carries through to the SSBO instead of aliasing onto slot 0. The view stays
-                // registered for teardown either way.
-                bindlessIndices[t] = bindless_register_texture(
-                    ctx, &rendererState.bindlessTextures,
-                    loadedTextures[t], rendererState.textureSampler
-                );
-                if (bindlessIndices[t] == ANO_BINDLESS_NONE) {
-                    ano_log(ANO_WARN, "No bindless slot for %s; its materials sample untextured.", tex->image->uri);
-                    bindlessFull = true;
-                }
-            }
-        } else if (tex->image && tex->image->uri) {
-            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Skipping texture %zu: %s (not needed or unsupported by pipeline)", t, tex->image->uri);
+    // Upload keyed by IMAGE: one decode, one VkImage, one arena span and one mip chain per glTF
+    // image, carrying whichever views the union of its textures' roles asked for. Keying this loop
+    // by texture is what used to split an image reached through two textures into two of everything.
+    for (size_t i = 0; i < data->images_count; ++i) {
+        cgltf_image* img = &data->images[i];
+        if (!img->uri)
+            continue;
+        if (imageUsage[i] == TEXTURE_USE_NONE) {
+            ano_debug_log(ANO_INFO, "[GLTF DEBUG] Skipping image %zu: %s (not needed or unsupported by pipeline)", i, img->uri);
+            continue;
         }
+        // Skips before any acquisition, so it lands in the same state as the URI skip below.
+        if (haltLoad) {
+            skipped++;
+            continue;
+        }
+        ano_debug_log(ANO_INFO, "[GLTF DEBUG] Loading image %zu: %s", i, img->uri);
+        // Resolve image URI against the glTF file's directory, then percent-decode the tail.
+        char texPath[1024];
+        if (strlen(fileName) + strlen(img->uri) + 1 >= sizeof texPath) {
+            ano_log(ANO_WARN, "Image URI too long, skipping: %s", img->uri);
+            continue;
+        }
+        cgltf_combine_paths(texPath, fileName, img->uri);
+        cgltf_decode_uri(texPath + strlen(texPath) - strlen(img->uri));
+
+        TexturePackage pkg = {0}; // inert locally: the refusal arms below never depend on the callee's own total
+        // Total over AnoTextureResultCode, no default: a new code forces this policy to be revisited.
+        switch (createTextureImage(ctx, textureCmd, &pkg, texPath, false, imageUsage[i], true).code) {
+        case ANO_TEXTURE_BUILT:
+            break;
+        case ANO_TEXTURE_SOURCE:
+            ano_log(ANO_WARN, "Unusable image source, skipping: %s", img->uri);
+            continue;
+        case ANO_TEXTURE_INVALID:
+            ano_log(ANO_ERROR, "Image request outside the constructor's contract: %s", img->uri);
+            continue;
+        case ANO_TEXTURE_DEVICE:
+            // gpu_alloc is monotonic, so every attempt past the first refusal burns another span.
+            ano_log(ANO_ERROR, "Device or texture arena refused %s; halting texture construction.", img->uri);
+            haltLoad = true;
+            continue;
+        }
+
+        if (pkg.staging) stagingBuffers[stagingCount++] = pkg.staging; // the batch owns it from here
+
+        if (!ano_vk_register_texture(&rendererState.primitives, ano_texture_record(&pkg))) {
+            ano_log(ANO_ERROR, "Texture registry refused %s; halting texture construction.", img->uri);
+            refused = pkg; // discharged in the epilogue, after the batch retires
+            haltLoad = true;
+            continue;
+        }
+        // Slots are per image and per domain, minted the moment the registry owns it: every texture naming this image reads the same two cells, so it costs one slot per interpretation however many textures reach it, and the array is bump-only.
+        // A refusal stays ANO_BINDLESS_NONE, the word the bake and the shaders read as "no texture", so it carries to the SSBO instead of aliasing onto slot 0.
+        if (imageUsage[i] & TEXTURE_USE_COLOR) {
+            colorIndex[i] = bindless_register_texture(ctx, &rendererState.bindlessTextures, pkg.srgbView, rendererState.textureSampler);
+            haltLoad |= colorIndex[i] == ANO_BINDLESS_NONE;
+        }
+        if (!haltLoad && (imageUsage[i] & TEXTURE_USE_DATA)) {
+            dataIndex[i] = bindless_register_texture(ctx, &rendererState.bindlessTextures, pkg.unormView, rendererState.textureSampler);
+            haltLoad |= dataIndex[i] == ANO_BINDLESS_NONE;
+        }
+        if (haltLoad)
+            ano_log(ANO_WARN, "No bindless slot for image %s; halting texture construction.", img->uri);
     }
 
-    if (bindlessSkipped)
-        ano_log(ANO_WARN, "Bindless texture array full: skipped %u further texture uploads; those materials sample untextured.", bindlessSkipped);
+    if (skipped)
+        ano_log(ANO_WARN, "Texture construction halted: skipped %u further image uploads; those materials sample untextured.", skipped);
 
     if (textureCmd != VK_NULL_HANDLE) endSingleTimeCommands(ctx, textureCmd);
 
+    // Past the submit and its fence wait, so no command buffer references these any more. The arena
+    // span behind refused.alloc is not reclaimed here: gpu_alloc has no per-allocation free.
     for (uint32_t i = 0; i < stagingCount; ++i) {
         vkDestroyBuffer(ctx->device, stagingBuffers[i], NULL);
     }
+    vkDestroyImageView(ctx->device, refused.unormView, NULL);
+    vkDestroyImageView(ctx->device, refused.srgbView, NULL);
+    vkDestroyImage(ctx->device, refused.image, NULL);
+    refused = (TexturePackage){0};
     gpu_alloc_reset(&stagingAllocator);
 
     // Pre-validate material buffer capacity
@@ -479,6 +459,12 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     }
 
     // 3. Bake Material SSBO entries per primitive
+    // Every slot takes its interpretation's index unconditionally: colour slots read colorIndex,
+    // data slots read dataIndex, and both arrays already hold ANO_BINDLESS_NONE wherever the view
+    // or its registration was unavailable 〜 the same word ano_vk_init_default_material_data wrote.
+    // Writing NONE over NONE is a no-op, so "an unavailable interpretation stays NONE" holds by
+    // construction instead of by a gate nineteen sites could get wrong. Normal and occlusion keep a
+    // guard because their scalar companions ride along with the index.
     for (size_t m = 0; m < data->meshes_count; ++m) {
         cgltf_mesh* cgMesh = &data->meshes[m];
         ModelMesh* outMesh = &asset->meshes[m];
@@ -515,10 +501,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         if (supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE) {
                             cgltf_texture_view* texView = &prim->material->pbr_metallic_roughness.base_color_texture;
                             if (texView->texture) {
-                                size_t texIdx = texView->texture - data->textures;
-                                if (textureLoaded[texIdx]) {
-                                    matData.baseColorTexture = bindlessIndices[texIdx];
-                                }
+                                matData.baseColorTexture = gltf_slot(data, colorIndex, texView->texture);
                             }
                         }
                         
@@ -531,10 +514,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         if (supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE) {
                             cgltf_texture_view* texView = &prim->material->pbr_metallic_roughness.metallic_roughness_texture;
                             if (texView->texture) {
-                                size_t texIdx = texView->texture - data->textures;
-                                if (textureLoaded[texIdx]) {
-                                    matData.metallicRoughnessTexture = bindlessIndices[texIdx];
-                                }
+                                matData.metallicRoughnessTexture = gltf_slot(data, dataIndex, texView->texture);
                             }
                         }
                     }
@@ -542,9 +522,8 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                     // 2. Core properties
                     if (supportedFeatures & PBR_FEATURE_NORMAL_TEXTURE) {
                         if (prim->material->normal_texture.texture) {
-                            size_t texIdx = prim->material->normal_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.normalTexture = bindlessIndices[texIdx];
+                            matData.normalTexture = gltf_slot(data, dataIndex, prim->material->normal_texture.texture);
+                            if (matData.normalTexture != ANO_BINDLESS_NONE) {
                                 matData.normalScale = (float)prim->material->normal_texture.scale;
                             }
                         }
@@ -552,9 +531,8 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                     
                     if (supportedFeatures & PBR_FEATURE_OCCLUSION_TEXTURE) {
                         if (prim->material->occlusion_texture.texture) {
-                            size_t texIdx = prim->material->occlusion_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.occlusionTexture = bindlessIndices[texIdx];
+                            matData.occlusionTexture = gltf_slot(data, dataIndex, prim->material->occlusion_texture.texture);
+                            if (matData.occlusionTexture != ANO_BINDLESS_NONE) {
                                 matData.occlusionStrength = (float)prim->material->occlusion_texture.scale;
                             }
                         }
@@ -562,10 +540,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                     
                     if (supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE) {
                         if (prim->material->emissive_texture.texture) {
-                            size_t texIdx = prim->material->emissive_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.emissiveTexture = bindlessIndices[texIdx];
-                            }
+                            matData.emissiveTexture = gltf_slot(data, colorIndex, prim->material->emissive_texture.texture);
                         }
                     }
                     
@@ -591,22 +566,13 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.clearcoatRoughnessFactor = (float)prim->material->clearcoat.clearcoat_roughness_factor;
                         
                         if (prim->material->clearcoat.clearcoat_texture.texture) {
-                            size_t texIdx = prim->material->clearcoat.clearcoat_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.clearcoatTexture = bindlessIndices[texIdx];
-                            }
+                            matData.clearcoatTexture = gltf_slot(data, dataIndex, prim->material->clearcoat.clearcoat_texture.texture);
                         }
                         if (prim->material->clearcoat.clearcoat_roughness_texture.texture) {
-                            size_t texIdx = prim->material->clearcoat.clearcoat_roughness_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.clearcoatRoughnessTexture = bindlessIndices[texIdx];
-                            }
+                            matData.clearcoatRoughnessTexture = gltf_slot(data, dataIndex, prim->material->clearcoat.clearcoat_roughness_texture.texture);
                         }
                         if (prim->material->clearcoat.clearcoat_normal_texture.texture) {
-                            size_t texIdx = prim->material->clearcoat.clearcoat_normal_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.clearcoatNormalTexture = bindlessIndices[texIdx];
-                            }
+                            matData.clearcoatNormalTexture = gltf_slot(data, dataIndex, prim->material->clearcoat.clearcoat_normal_texture.texture);
                         }
                     }
                     
@@ -614,10 +580,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                     if (supportedFeatures & PBR_FEATURE_TRANSMISSION) {
                         matData.transmissionFactor = (float)prim->material->transmission.transmission_factor;
                         if (prim->material->transmission.transmission_texture.texture) {
-                            size_t texIdx = prim->material->transmission.transmission_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.transmissionTexture = bindlessIndices[texIdx];
-                            }
+                            matData.transmissionTexture = gltf_slot(data, dataIndex, prim->material->transmission.transmission_texture.texture);
                         }
                     }
                     
@@ -631,10 +594,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.attenuationColor[3] = 1.0f; // Padding
                         
                         if (prim->material->volume.thickness_texture.texture) {
-                            size_t texIdx = prim->material->volume.thickness_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.thicknessTexture = bindlessIndices[texIdx];
-                            }
+                            matData.thicknessTexture = gltf_slot(data, dataIndex, prim->material->volume.thickness_texture.texture);
                         }
                     }
                     
@@ -652,16 +612,10 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.specularColorFactor[3] = 1.0f; // Padding
                         
                         if (prim->material->specular.specular_texture.texture) {
-                            size_t texIdx = prim->material->specular.specular_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.specularTexture = bindlessIndices[texIdx];
-                            }
+                            matData.specularTexture = gltf_slot(data, dataIndex, prim->material->specular.specular_texture.texture);
                         }
                         if (prim->material->specular.specular_color_texture.texture) {
-                            size_t texIdx = prim->material->specular.specular_color_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.specularColorTexture = bindlessIndices[texIdx];
-                            }
+                            matData.specularColorTexture = gltf_slot(data, colorIndex, prim->material->specular.specular_color_texture.texture);
                         }
                     }
                     
@@ -674,16 +628,10 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.sheenColorFactor[3] = 1.0f; // Padding
                         
                         if (prim->material->sheen.sheen_color_texture.texture) {
-                            size_t texIdx = prim->material->sheen.sheen_color_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.sheenColorTexture = bindlessIndices[texIdx];
-                            }
+                            matData.sheenColorTexture = gltf_slot(data, colorIndex, prim->material->sheen.sheen_color_texture.texture);
                         }
                         if (prim->material->sheen.sheen_roughness_texture.texture) {
-                            size_t texIdx = prim->material->sheen.sheen_roughness_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.sheenRoughnessTexture = bindlessIndices[texIdx];
-                            }
+                            matData.sheenRoughnessTexture = gltf_slot(data, dataIndex, prim->material->sheen.sheen_roughness_texture.texture);
                         }
                     }
                     
@@ -695,16 +643,10 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.iridescenceThicknessMaximum = (float)prim->material->iridescence.iridescence_thickness_max;
                         
                         if (prim->material->iridescence.iridescence_texture.texture) {
-                            size_t texIdx = prim->material->iridescence.iridescence_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.iridescenceTexture = bindlessIndices[texIdx];
-                            }
+                            matData.iridescenceTexture = gltf_slot(data, dataIndex, prim->material->iridescence.iridescence_texture.texture);
                         }
                         if (prim->material->iridescence.iridescence_thickness_texture.texture) {
-                            size_t texIdx = prim->material->iridescence.iridescence_thickness_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.iridescenceThicknessTexture = bindlessIndices[texIdx];
-                            }
+                            matData.iridescenceThicknessTexture = gltf_slot(data, dataIndex, prim->material->iridescence.iridescence_thickness_texture.texture);
                         }
                     }
                     
@@ -714,10 +656,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.anisotropyRotation = (float)prim->material->anisotropy.anisotropy_rotation;
                         
                         if (prim->material->anisotropy.anisotropy_texture.texture) {
-                            size_t texIdx = prim->material->anisotropy.anisotropy_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.anisotropyTexture = bindlessIndices[texIdx];
-                            }
+                            matData.anisotropyTexture = gltf_slot(data, dataIndex, prim->material->anisotropy.anisotropy_texture.texture);
                         }
                     }
                     
@@ -735,16 +674,10 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.diffuseTransmissionColorFactor[3] = 1.0f; // Padding
                         
                         if (prim->material->diffuse_transmission.diffuse_transmission_texture.texture) {
-                            size_t texIdx = prim->material->diffuse_transmission.diffuse_transmission_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.diffuseTransmissionTexture = bindlessIndices[texIdx];
-                            }
+                            matData.diffuseTransmissionTexture = gltf_slot(data, dataIndex, prim->material->diffuse_transmission.diffuse_transmission_texture.texture);
                         }
                         if (prim->material->diffuse_transmission.diffuse_transmission_color_texture.texture) {
-                            size_t texIdx = prim->material->diffuse_transmission.diffuse_transmission_color_texture.texture - data->textures;
-                            if (textureLoaded[texIdx]) {
-                                matData.diffuseTransmissionColorTexture = bindlessIndices[texIdx];
-                            }
+                            matData.diffuseTransmissionColorTexture = gltf_slot(data, colorIndex, prim->material->diffuse_transmission.diffuse_transmission_color_texture.texture);
                         }
                     }
                     

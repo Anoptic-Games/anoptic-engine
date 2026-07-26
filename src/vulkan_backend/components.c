@@ -69,20 +69,21 @@ void ano_vk_decrement_mesh_usage(RenderPrimitives* primitives, uint32_t index) {
     }
 }
 
-void ano_vk_register_texture(RenderPrimitives* primitives, TextureData data) {
+bool ano_vk_register_texture(RenderPrimitives* primitives, TextureData data) {
     if (primitives->textureCount >= primitives->textureCapacity) {
         uint32_t newCapacity = primitives->textureCapacity == 0 ? 8 : primitives->textureCapacity * 2;
         void* temp = realloc(primitives->textureBuffers, sizeof(TextureData) * newCapacity);
         if (!temp) {
             ano_log(ANO_ERROR, "Error: Failed to reallocate memory for textures!");
-            return;
+            return false;
         }
         primitives->textureBuffers = temp;
         primitives->textureCapacity = newCapacity;
     }
-    
+
     data.usageCount = 0;
     primitives->textureBuffers[primitives->textureCount++] = data;
+    return true;
 }
 
 void ano_vk_increment_texture_usage(RenderPrimitives* primitives, uint32_t index) {

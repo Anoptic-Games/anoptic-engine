@@ -754,11 +754,19 @@ void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         PerFrameResources* fr = &state->frames[i];
-        createImageShared(ctx, &swapchainAllocator, state->imageExtent.width, state->imageExtent.height,
+        if (!createImageShared(ctx, &swapchainAllocator, state->imageExtent.width, state->imageExtent.height,
                     1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &fr->textOverlayImage, &fr->textOverlayAlloc, false,
-                    shareFamilies, state->asyncText ? 2u : 0u);
+                    shareFamilies, state->asyncText ? 2u : 0u, NULL, 0))
+        {
+            // Images made so far stay handle-guarded for ano_vk_text_destroy_overlay.
+            ano_log(ANO_WARN, "Text overlay disabled: overlay image creation failed.");
+            state->textOverlay = false;
+            state->asyncText = false;
+            state->textWorld = false;
+            return;
+        }
         fr->textOverlayView = createImageView(ctx->device, fr->textOverlayImage,
                                               VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1);
         if (fr->textOverlayView == VK_NULL_HANDLE)

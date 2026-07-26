@@ -39,9 +39,16 @@ int main() {
 
     TextureData td1 = {0};
     td1.textureImage = (VkImage)0x4;
-    ano_vk_register_texture(&primitives, td1);
+    td1.srgbView = (VkImageView)0x8;
+    // Adoption is the ownership transfer, so its answer is consumed rather than assumed.
+    if (!ano_vk_register_texture(&primitives, td1)) {
+        printf("Texture registry refused a complete record!\n");
+        return 1;
+    }
 
     assert(primitives.textureCount == 1);
+    assert(primitives.textureBuffers[0].srgbView == (VkImageView)0x8);
+    assert(primitives.textureBuffers[0].unormView == VK_NULL_HANDLE);
     ano_vk_increment_texture_usage(&primitives, 0);
     assert(primitives.textureBuffers[0].usageCount == 1);
 

@@ -251,7 +251,7 @@ if(Vulkan_FOUND)
         set(SPV_OUTPUTS ${SPV_OUTPUTS} ${SHADER_BIN_DIR}/${output}.spv PARENT_SCOPE)
     endfunction()
 
-    foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag textraster.comp overlay.frag textworld.vert textworld.frag)
+    foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag textraster.comp overlay.frag textworld.vert textworld.frag texdomain_probe.comp)
         ano_add_shader(${shader} ${shader})
     endforeach()
     # Depth-only variants for the depth pre-pass and shadow atlas.

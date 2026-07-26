@@ -81,12 +81,16 @@ typedef struct RenderPassDef
 
 /* Primitive Assets */
 
+// One registry record over one image and its allocation. At least one view is live in any record
+// that entered the registry, and when both are live they are distinct handles, so teardown destroys
+// each unconditionally with no aliasing check.
 typedef struct TextureData
 {
 	uint32_t usageCount; // number of active meshes using this resource
 	VkImage textureImage;
 	GpuAllocation textureImageAlloc;
-	VkImageView textureImageView;
+	VkImageView srgbView;    // colour interpretation, or VK_NULL_HANDLE
+	VkImageView unormView;   // data interpretation, or VK_NULL_HANDLE
 } TextureData;
 
 typedef struct MeshData
@@ -110,7 +114,9 @@ void ano_vk_register_mesh(RenderPrimitives* primitives, MeshData data);
 void ano_vk_increment_mesh_usage(RenderPrimitives* primitives, uint32_t index);
 void ano_vk_decrement_mesh_usage(RenderPrimitives* primitives, uint32_t index);
 
-void ano_vk_register_texture(RenderPrimitives* primitives, TextureData data);
+// out: true only once the complete record has entered the registry. False means the registry is
+// unchanged and the caller still owns every handle in data.
+[[nodiscard]] bool ano_vk_register_texture(RenderPrimitives* primitives, TextureData data);
 void ano_vk_increment_texture_usage(RenderPrimitives* primitives, uint32_t index);
 void ano_vk_decrement_texture_usage(RenderPrimitives* primitives, uint32_t index);
 

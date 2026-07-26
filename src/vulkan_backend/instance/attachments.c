@@ -105,7 +105,7 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 					state->viewExtent[v].height, 1, VK_SAMPLE_COUNT_1_BIT, state->depthFormat,
 					VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 								 &vr->depthResolveImage, &vr->depthResolveAlloc, false,
-								 shareFamilies, state->asyncHiz ? 2u : 0u))
+								 shareFamilies, state->asyncHiz ? 2u : 0u, NULL, 0))
 				{
 					ano_log(ANO_FATAL, "Failed to create depth-resolve resource for frame %d view %u!", i, v);
 					return false;
@@ -154,7 +154,7 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 				VK_FORMAT_R32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
 				VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 				&vr->hizImage, &vr->hizAlloc, false,
-				shareFamilies, state->asyncHiz ? 2u : 0u))
+				shareFamilies, state->asyncHiz ? 2u : 0u, NULL, 0))
 			{
 				ano_log(ANO_FATAL, "Failed to create Hi-Z image for frame %u view %u!", i, v);
 				return false;

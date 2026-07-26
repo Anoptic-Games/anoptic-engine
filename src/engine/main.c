@@ -44,9 +44,16 @@ static atomic_bool g_logicShouldStop = false;
 
 // Logic composes scene + emits creates. Render world owns GPU assets.
 
-// Retry until the command ring accepts.
-static void submit_blocking(AnoRenderBridge* bridge, const RenderCommand* c) {
-	while (!ano_render_submit(bridge, c)) ano_sleep(1000);
+// Retry until the command ring accepts, or until shutdown is asked for.
+// out: true once enqueued; false means the logic thread is stopping and the command was dropped.
+// inv: the wait observes g_logicShouldStop, so a window close during scene composition ends this
+//      thread instead of stranding main's join behind a ring nobody is draining any more.
+[[nodiscard]] static bool submit_blocking(AnoRenderBridge* bridge, const RenderCommand* c) {
+	while (!ano_render_submit(bridge, c)) {
+		if (atomic_load(&g_logicShouldStop)) return false;
+		ano_sleep(1000);
+	}
+	return true;
 }
 
 // One renderable per primitive of asset_id at root. Shares motion (+ speed for spin/orbit).
@@ -66,7 +73,7 @@ static uint32_t spawn_asset(AnoRenderBridge* bridge, uint32_t* nextId, uint32_t 
 		memcpy(c.transform, descs[i].transform, sizeof(mat4));
 		c.motion.type = (uint32_t)motion;
 		if (motion == ANO_MOTION_SPIN || motion == ANO_MOTION_ORBIT) c.motion.p0.v[1] = speed; // about +Y
-		submit_blocking(bridge, &c);
+		if (!submit_blocking(bridge, &c)) return UINT32_MAX; // shutdown mid-spawn
 	}
 	return first;
 }
@@ -79,7 +86,7 @@ static uint32_t spawn_box(AnoRenderBridge* bridge, uint32_t* nextId, const mat4 
 		.light_index = ANO_RENDER_NO_LIGHT };
 	memcpy(c.transform, transform, sizeof(mat4));
 	c.motion.type = (uint32_t)ANO_MOTION_STATIC;
-	submit_blocking(bridge, &c);
+	if (!submit_blocking(bridge, &c)) return UINT32_MAX; // shutdown mid-spawn
 	return id;
 }
 
@@ -95,7 +102,7 @@ static uint32_t spawn_light_entity(AnoRenderBridge* bridge, uint32_t* nextId, co
 	memcpy(c.transform, transform, sizeof(mat4));
 	c.motion.type = (uint32_t)motion;
 	if (motion == ANO_MOTION_SPIN || motion == ANO_MOTION_ORBIT) c.motion.p0.v[1] = speed; // about +Y
-	submit_blocking(bridge, &c);
+	if (!submit_blocking(bridge, &c)) return UINT32_MAX; // shutdown mid-spawn
 	return id;
 }
 
@@ -159,8 +166,11 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 		RenderLightParams p = { .color={cl[i].col[0],cl[i].col[1],cl[i].col[2]}, .intensity=cl[i].in,
 			.range=cl[i].rng, .innerConeCos=cl[i].inner, .outerConeCos=cl[i].outer, .type=cl[i].type,
 			.localDir={cl[i].dir[0],cl[i].dir[1],cl[i].dir[2]} };
-		while (!ano_render_light_attach(bridge, lid++, candleSlot, &p, cl[i].ox, cl[i].oy, cl[i].oz))
+		uint32_t id = lid++; // hoisted: a retry must re-offer the same light_id, not the next one
+		while (!ano_render_light_attach(bridge, id, candleSlot, &p, cl[i].ox, cl[i].oy, cl[i].oz)) {
+			if (atomic_load(&g_logicShouldStop)) return; // shutdown: drop the rest
 			ano_sleep(1000); // ring full: retry
+		}
 	}
 }
 
@@ -175,8 +185,8 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 #define HUD_TEXT_CAP     128u
 
 // Shape + submit one block. Clamp to HUD_TEXT_CAP.
-static bool hud_text_submit(AnoRenderBridge* bridge, uint32_t text_id,
-                            AnoGlyphInstance* inst, uint32_t shaped) {
+static AnoRenderSubmitResult hud_text_submit(AnoRenderBridge* bridge, uint32_t text_id,
+                                             AnoGlyphInstance* inst, uint32_t shaped) {
 	if (shaped > HUD_TEXT_CAP) shaped = HUD_TEXT_CAP;
 	return ano_render_text_set(bridge, text_id, inst, shaped);
 }
@@ -238,9 +248,10 @@ static void ui_label(AnoUiBuilder* b, const AnoFontBake* bake, anostr_t text, fl
 	ano_ui_glyphs(b, lo, hi, first, n, white, ANO_UI_REF_NONE, 0);
 }
 
-// Builds + submits the menu block (or clears it). false == ring full, retry next tick.
-static bool submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const MenuLayout* m,
-                        bool visible, int hovered, uint32_t optionsCount)
+// Builds + submits the menu block (or clears it). Invisible tail-forwards to the clear, so the
+// answer is always the endpoint's own 〜 submit_policy owns what each code means.
+static AnoRenderSubmitResult submit_menu(AnoRenderBridge* bridge, const AnoFontBake* bake, const MenuLayout* m,
+                                         bool visible, int hovered, uint32_t optionsCount)
 {
 	if (!visible)
 		return ano_render_ui_clear(bridge, HUD_UI_MENU);
@@ -385,9 +396,19 @@ static bool music_world_start(void)
 	AnoAudioBridge *ab = anoAudioBridge();
 	AnoAudioOfflineEvent setup[64];
 	uint32_t n = ano_synth_console_setup(setup, 64);
-	for (uint32_t i = 0; i < n; i++)
-		while (!ano_audio_submit(ab, &setup[i].cmd))
+	// Bounded like the telemetry wait below: 1000 tries at 1 ms. This runs on the main thread during
+	// init, and an audio command ring that has not drained in a second is not going to 〜 exhaustion
+	// takes the unwind rather than spinning the process before the window ever opens.
+	for (uint32_t i = 0; i < n; i++) {
+		uint32_t spin = 0;
+		while (!ano_audio_submit(ab, &setup[i].cmd)) {
+			if (++spin >= 1000u) {
+				ano_log(ANO_WARN, "Music: audio command ring full for 1 s; console setup abandoned.");
+				goto fail;
+			}
 			ano_sleep(1000);
+		}
+	}
 
 	// Transport start a few blocks ahead of playhead. No publish in ~1 s -> no seed.
 	AnoAudioTelemetry t;
@@ -511,10 +532,10 @@ static void music_drag_apply(const MusicLayout* m, int drag, float x, float y,
 	}
 }
 
-// Builds + submits the music panel (or clears it). false == ring full, retry next tick.
-static bool submit_music(AnoRenderBridge* bridge, const AnoFontBake* bake,
-                         const MusicLayout* m, bool visible, const MusicState* st,
-                         int hovered, uint64_t now)
+// Builds + submits the music panel (or clears it). Forwards its endpoint's answer unchanged.
+static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFontBake* bake,
+                                          const MusicLayout* m, bool visible, const MusicState* st,
+                                          int hovered, uint64_t now)
 {
 	if (!visible)
 		return ano_render_ui_clear(bridge, HUD_UI_MUSIC);
@@ -659,8 +680,8 @@ static bool submit_music(AnoRenderBridge* bridge, const AnoFontBake* bake,
 	return ano_render_ui_set(bridge, HUD_UI_MUSIC, 96, &b, glyphs, gcount);
 }
 
-// Status bar, bottom-left. Resubmit on logical viewport change.
-static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float vpH)
+// Status bar, bottom-left. Resubmit on logical viewport change; forwards its endpoint's answer.
+static AnoRenderSubmitResult submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float vpH)
 {
 	AnoUiPrim prims[8];
 	AnoGlyphInstance glyphs[HUD_UI_GCAP];
@@ -681,6 +702,58 @@ static bool submit_bar(AnoRenderBridge* bridge, const AnoFontBake* bake, float v
 	ui_label(&b, bake, anostr_lit("M menu · N music · drag the square"), 20.0f, rect, label,
 	         glyphs, &gcount);
 	return ano_render_ui_set(bridge, HUD_UI_BAR, 16, &b, glyphs, gcount);
+}
+
+/* Submit Policy */
+
+// OOM cooldown for an optional HUD block. The tick is ~2 ms, so retrying a refused allocation every
+// tick would hammer an allocator that just said no; 500 ms is 250 ticks.
+#define HUD_OOM_RETRY_US 500000ull
+
+// in:  r (an endpoint's answer), now, dirty (the block's resubmit latch, or NULL), retryAt (its
+//      cooldown stamp, or NULL), what (diagnostic name)
+// out: nothing; *dirty and *retryAt carry this block's policy into the next tick
+// inv: the switch is total over AnoRenderSubmitResultCode with no default, so a fifth code is a
+//      compile-time diagnostic at every policy site instead of a silently wrong retry.
+static void submit_policy(AnoRenderSubmitResult r, uint64_t now, bool *dirty, uint64_t *retryAt,
+                          const char *what)
+{
+	switch (r.code) {
+	case ANO_RENDER_SUBMIT_ACCEPTED:     if (dirty) *dirty = false; if (retryAt) *retryAt = 0; break;
+	case ANO_RENDER_SUBMIT_BACKPRESSURE: if (retryAt) *retryAt = 0; break;              // next tick
+	case ANO_RENDER_SUBMIT_OOM:          if (retryAt) *retryAt = now + HUD_OOM_RETRY_US; break;
+	case ANO_RENDER_SUBMIT_INVALID:      if (dirty) *dirty = false; if (retryAt) *retryAt = 0;
+		ano_log(ANO_WARN, "HUD: %s block refused as invalid; retired.", what); break;
+	}
+}
+
+// in:  bridge, text_id, inst/shaped (a shaped block), what (diagnostic name)
+// out: the code the wait stopped on 〜 ACCEPTED once enqueued, OOM or INVALID when the block can
+//      never land (logged here, once), BACKPRESSURE only when shutdown was asked for mid-wait
+// inv: the sole unbounded wait left in startup, and it observes g_logicShouldStop, so a window
+//      close during it ends the logic thread instead of making main's join permanent.
+static AnoRenderSubmitResult hud_text_spin(AnoRenderBridge* bridge, uint32_t text_id,
+                                           AnoGlyphInstance* inst, uint32_t shaped,
+                                           const char* what)
+{
+	for (;;) {
+		AnoRenderSubmitResult r = hud_text_submit(bridge, text_id, inst, shaped);
+		switch (r.code) {
+		case ANO_RENDER_SUBMIT_ACCEPTED:
+			return r;
+		case ANO_RENDER_SUBMIT_OOM:
+			ano_log(ANO_WARN, "HUD: no memory for the %s block; running without it.", what);
+			return r;
+		case ANO_RENDER_SUBMIT_INVALID:
+			ano_log(ANO_WARN, "HUD: the %s block was refused as invalid; running without it.", what);
+			return r;
+		case ANO_RENDER_SUBMIT_BACKPRESSURE:
+			if (atomic_load(&g_logicShouldStop))
+				return r; // shutdown: the caller abandons the rest of the HUD
+			ano_sleep(1000);
+			break;
+		}
+	}
 }
 
 /* Logic Thread */
@@ -707,7 +780,8 @@ void* anoLogicThreadMain(void* arg)
 		const float titleOrg[2] = { 24.0f, 150.0f };
 		uint32_t n = ano_text_shape_runs_lit(bake, TITLE_HEAD TITLE_TAIL, titleRuns, 2,
 		                                     titleOrg, hud, HUD_TEXT_CAP, NULL);
-		while (!hud_text_submit(bridge, HUD_TEXT_TITLE, hud, n)) ano_sleep(1000);
+		if (hud_text_spin(bridge, HUD_TEXT_TITLE, hud, n, "title").code == ANO_RENDER_SUBMIT_BACKPRESSURE)
+			goto hudDone;
 		#undef TITLE_HEAD
 		#undef TITLE_TAIL
 
@@ -715,7 +789,8 @@ void* anoLogicThreadMain(void* arg)
 		const float grey[4] = { 0.6f, 0.6f, 0.6f, 1.0f };
 		n = ano_text_shape_lit(bake, "this line clears itself in 15 s",
 		                       20.0f, noticeOrg, grey, hud, HUD_TEXT_CAP, NULL);
-		while (!hud_text_submit(bridge, HUD_TEXT_NOTICE, hud, n)) ano_sleep(1000);
+		if (hud_text_spin(bridge, HUD_TEXT_NOTICE, hud, n, "notice").code == ANO_RENDER_SUBMIT_BACKPRESSURE)
+			goto hudDone;
 
 		// Unicode sampler: Elder Futhark + Latin-1 + Cyrillic.
 		const float samplerOrg[2] = { 24.0f, 240.0f };
@@ -723,7 +798,8 @@ void* anoLogicThreadMain(void* arg)
 		n = ano_text_shape_lit(bake,
 		                       "ᛖᚲ ᚺᛚᛖᚹᚨᚷᚨᛊᛏᛁᛉ ᚺᛟᛚᛏᛁᛃᚨᛉ ᚺᛟᚱᚾᚨ ᛏᚨᚹᛁᛞᛟ · Руны · æ ß",
 		                       22.0f, samplerOrg, gold, hud, HUD_TEXT_CAP, NULL);
-		while (!hud_text_submit(bridge, HUD_TEXT_UNICODE, hud, n)) ano_sleep(1000);
+		if (hud_text_spin(bridge, HUD_TEXT_UNICODE, hud, n, "unicode sampler").code == ANO_RENDER_SUBMIT_BACKPRESSURE)
+			goto hudDone;
 
 		// Homer Odyssey 1.1 (polytonic Greek).
 		const float homerOrg[2] = { 24.0f, 270.0f };
@@ -731,8 +807,12 @@ void* anoLogicThreadMain(void* arg)
 		n = ano_text_shape_lit(bake,
 		                       "Ἄνδρα μοι ἔννεπε, Μοῦσα, πολύτροπον",
 		                       22.0f, homerOrg, aegean, hud, HUD_TEXT_CAP, NULL);
-		while (!hud_text_submit(bridge, HUD_TEXT_HOMER, hud, n)) ano_sleep(1000);
+		if (hud_text_spin(bridge, HUD_TEXT_HOMER, hud, n, "homer").code == ANO_RENDER_SUBMIT_BACKPRESSURE)
+			goto hudDone;
 	}
+// Only a shutdown during a startup wait reaches here early; the tick loop below sees the same flag
+// and returns at once, so the thread ends and main's join completes.
+hudDone:
 	uint64_t noticeDeadline = 0; // armed 15s after first frame
 	bool     noticeCleared = false;
 
@@ -749,6 +829,7 @@ void* anoLogicThreadMain(void* arg)
 	// UI demo: resubmit on change. ANO_MENU opens menu at boot.
 	bool     menuVisible = getenv("ANO_MENU") != NULL;
 	bool     menuDirty = menuVisible, barSubmitted = false;
+	uint64_t menuRetryAt = 0, barRetryAt = 0; // OOM cooldown stamps (submit_policy)
 	int      menuHovered = -1;
 	uint32_t optionsCount = 0;
 	float    vpW = 0.0f, vpH = 0.0f; // last-known logical viewport (RenderSnapshot)
@@ -758,6 +839,7 @@ void* anoLogicThreadMain(void* arg)
 	AnoAudioBridge* ab = anoAudioBridge(); // NULL if music_world_start failed
 	MusicState mus = { .valence = 0.30f, .energy = 0.35f, .tension = 0.20f, .bar = -1 };
 	bool musicVisible = false, musicDirty = false, affectDirty = false, flashOn = false;
+	uint64_t musicRetryAt = 0; // OOM cooldown stamp (submit_policy)
 	int  musicDrag = MUS_DRAG_NONE, musicHovered = MUS_DRAG_NONE;
 	uint64_t lastTelem = 0;
 
@@ -888,9 +970,10 @@ void* anoLogicThreadMain(void* arg)
 			ano_render_publish_view(bridge, &view);
 		}
 
-		// Clear transient notice once. Ring full -> retry next tick.
+		// Clear transient notice once. Only an ACCEPTED clear retires it; backpressure refires
+		// next tick. This clear allocates nothing, so OOM and INVALID are unreachable for it.
 		if (bake != NULL && !noticeCleared && noticeDeadline != 0 && now > noticeDeadline)
-			noticeCleared = ano_render_text_clear(bridge, HUD_TEXT_NOTICE);
+			noticeCleared = ano_render_text_clear(bridge, HUD_TEXT_NOTICE).code == ANO_RENDER_SUBMIT_ACCEPTED;
 
 		// Menu hover -> dirty resubmit. Ring full keeps dirty.
 		if (menuVisible && vpW > 0.0f) {
@@ -902,11 +985,13 @@ void* anoLogicThreadMain(void* arg)
 				menuDirty = true;
 			}
 		}
-		if (menuDirty && vpW > 0.0f) {
+		// The OOM cooldown gates the BUILD, not just the submit: under memory pressure the panel is
+		// not laid out again either, which is the point of shedding it.
+		if (menuDirty && vpW > 0.0f && now >= menuRetryAt) {
 			MenuLayout ml;
 			menu_layout(vpW, vpH, &ml);
-			if (submit_menu(bridge, bake, &ml, menuVisible, menuHovered, optionsCount))
-				menuDirty = false;
+			submit_policy(submit_menu(bridge, bake, &ml, menuVisible, menuHovered, optionsCount),
+			              now, &menuDirty, &menuRetryAt, "menu");
 		}
 
 		// Audiovisual loop
@@ -959,11 +1044,12 @@ void* anoLogicThreadMain(void* arg)
 				musicDirty = true;
 			}
 		}
-		if (musicDirty && vpW > 0.0f) {
+		// Same cooldown discipline as the menu: an OOM sheds the rebuild along with the submit.
+		if (musicDirty && vpW > 0.0f && now >= musicRetryAt) {
 			MusicLayout ml;
 			music_layout(vpW, vpH, &ml);
-			if (submit_music(bridge, bake, &ml, musicVisible, &mus, musicHovered, now))
-				musicDirty = false;
+			submit_policy(submit_music(bridge, bake, &ml, musicVisible, &mus, musicHovered, now),
+			              now, &musicDirty, &musicRetryAt, "music panel");
 		}
 
 		// Snapshot: log frameId ~1/s, refresh cam readout.
@@ -980,9 +1066,13 @@ void* anoLogicThreadMain(void* arg)
 				vpW = snap.uiWidth;
 				vpH = snap.uiHeight;
 			}
-			// Status bar: resubmit on vpH change.
-			if ((!barSubmitted || barVpH != vpH) && vpH > 0.0f) {
-				barSubmitted = submit_bar(bridge, bake, vpH);
+			// Status bar: resubmit on vpH change. barSubmitted/barVpH stand in for a dirty flag, so
+			// the local latch below keeps the one policy switch driving this site too. On INVALID it
+			// latches for the current vpH: the rejected block is not rebuilt until the viewport moves.
+			if ((!barSubmitted || barVpH != vpH) && vpH > 0.0f && now >= barRetryAt) {
+				bool barDirty = true;
+				submit_policy(submit_bar(bridge, bake, vpH), now, &barDirty, &barRetryAt, "status bar");
+				barSubmitted = !barDirty;
 				if (barSubmitted)
 					barVpH = vpH;
 			}
@@ -999,7 +1089,10 @@ void* anoLogicThreadMain(void* arg)
 						const float mint[4] = { 0.45f, 0.95f, 0.6f, 1.0f };
 						uint32_t n = ano_text_shape(bake, anostr_view(cam, (size_t)len),
 						                            20.0f, camOrg, mint, hud, HUD_TEXT_CAP, NULL);
-						(void)hud_text_submit(bridge, HUD_TEXT_CAM, hud, n);
+						// Replaceable state inside a 1 s refresh gate: the next scheduled refresh IS
+						// the retry, so this site carries no dirty flag and no cooldown of its own.
+						submit_policy(hud_text_submit(bridge, HUD_TEXT_CAM, hud, n), now, NULL, NULL,
+						              "camera readout");
 					}
 				}
 			}

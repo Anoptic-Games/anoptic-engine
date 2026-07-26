@@ -183,6 +183,25 @@ target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)
 add_test(NAME anoptic_render_bridge COMMAND anotest_render_bridge)
 set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
 
+# Render-submit result guard: the four AnoRenderSubmitResult codes across the six owned-payload
+# endpoints, with a ledgering allocator that refuses deterministically. Compiles the REAL
+# ano_render_bridge.c TU and links NOTHING 〜 anoptic_core drags mimalloc-static in PUBLIC, which
+# would make a locally defined mi_malloc a duplicate symbol (and an ODR hazard under Release LTO),
+# so this target satisfies the TU's seams itself. No GPU, no threads, no logger.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_rendersubmitguard.c)
+    add_executable(anotest_rendersubmitguard anotest_rendersubmitguard.c
+            ${CMAKE_SOURCE_DIR}/src/render_bridge/ano_render_bridge.c)
+    target_include_directories(anotest_rendersubmitguard PRIVATE
+            ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+            ${CMAKE_SOURCE_DIR}/external/mimalloc/include)
+    if(UNIX)
+        target_compile_definitions(anotest_rendersubmitguard PRIVATE
+                _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE _DARWIN_C_SOURCE)
+    endif()
+    add_test(NAME anoptic_rendersubmitguard COMMAND anotest_rendersubmitguard)
+    set_tests_properties(anoptic_rendersubmitguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+endif()
+
 # Testing for the audio stack Phase 0 (churned-heap offline determinism; WAV; live null-backend round-trip)
 add_executable(anotest_audio anotest_audio.c)
 target_link_libraries(anotest_audio PRIVATE anoptic_core)
@@ -345,6 +364,65 @@ if(TARGET anoptic_render)
     # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
     set_tests_properties(anotest_vk_sync PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
         DISABLED "$<CONFIG:Release>" SKIP_RETURN_CODE 77)
+
+    # Texture-custody guards. Each compiles a real TU against link-seam vk/helper stubs keeping a
+    # mint/destroy ledger 〜 no GPU device, no loader. The EXISTS gates let the suite configure
+    # while these sources are still being written; drop them once every guard is in tree.
+
+    # Every failure arm of createTextureImage / createTextureImageFromPixels leaves *pkg inert,
+    # destroys the staging buffer, image and either view that call acquired, and answers the right
+    # AnoTextureResult code. Also asserts MUTABLE_FORMAT + VkImageFormatListCreateInfo per usage mask.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_texunwindguard.c)
+        add_executable(anotest_texunwindguard anotest_texunwindguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/texture/texture.c)
+        target_include_directories(anotest_texunwindguard PRIVATE ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+        target_link_libraries(anotest_texunwindguard PRIVATE anoptic_core m)
+        add_test(NAME anoptic_texunwindguard COMMAND anotest_texunwindguard)
+        set_tests_properties(anoptic_texunwindguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+    endif()
+
+    # ano_vk_register_texture answers false on a refused growth and leaves the registry unchanged.
+    # mi_realloc/mi_free are renamed to test seams so the refusal is deterministic.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_texregisterguard.c)
+        add_executable(anotest_texregisterguard anotest_texregisterguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/components.c)
+        target_include_directories(anotest_texregisterguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+        target_compile_definitions(anotest_texregisterguard PRIVATE mi_realloc=anotest_seam_realloc mi_free=anotest_seam_free)
+        target_link_libraries(anotest_texregisterguard PRIVATE anoptic_core m)
+        add_test(NAME anoptic_texregisterguard COMMAND anotest_texregisterguard)
+        set_tests_properties(anoptic_texregisterguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+    endif()
+
+    # parseGltf's custody chain: a refused construction discharges nothing, a refused adoption
+    # discharges image and both views in the epilogue AFTER the batch retires, and haltLoad stops
+    # construction on a device refusal but not on an unusable source.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_gltftexleakguard.c)
+        add_executable(anotest_gltftexleakguard anotest_gltftexleakguard.c ${CMAKE_SOURCE_DIR}/src/render/gltf/ano_GltfParser.c)
+        target_include_directories(anotest_gltftexleakguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+        target_link_libraries(anotest_gltftexleakguard PRIVATE anoptic_core m)
+        add_test(NAME anoptic_gltftexleakguard COMMAND anotest_gltftexleakguard)
+        set_tests_properties(anoptic_gltftexleakguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+    endif()
+
+    # The colour/data split: one texture reached by both domains asks for both views, registers two
+    # distinct bindless slots, and bakes the colour index into colour slots and the data index into
+    # data slots. A refusal in one domain never aliases onto the other.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_gltftexdomainguard.c)
+        add_executable(anotest_gltftexdomainguard anotest_gltftexdomainguard.c ${CMAKE_SOURCE_DIR}/src/render/gltf/ano_GltfParser.c)
+        target_include_directories(anotest_gltftexdomainguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+        target_link_libraries(anotest_gltftexdomainguard PRIVATE anoptic_core m)
+        add_test(NAME anoptic_gltftexdomainguard COMMAND anotest_gltftexdomainguard)
+        set_tests_properties(anoptic_gltftexdomainguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+    endif()
+
+    # Device readback: a stored 0.5 sampled through the SRGB view is ~0.2159 and through the UNORM
+    # view ~0.5020. Only a sampler reads through a view, so this dispatches a compute probe 〜 an
+    # image copy applies no transfer function and vkCmdBlitImage cannot select an interpretation.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_vk_texdomain.c)
+        add_executable(anotest_vk_texdomain anotest_vk_texdomain.c)
+        target_link_libraries(anotest_vk_texdomain PRIVATE anoptic_render)
+        add_test(NAME anotest_vk_texdomain COMMAND anotest_vk_texdomain)
+        set_tests_properties(anotest_vk_texdomain PROPERTIES TIMEOUT 30 LABELS "unit;vulkan" SKIP_RETURN_CODE 77)
+        add_dependencies(anotest_vk_texdomain anoptic_test_resources)
+    endif()
 
     # A lone `--build --target anotest_vk_*` must still stage this directory's
     # shaders/assets before the test can run.

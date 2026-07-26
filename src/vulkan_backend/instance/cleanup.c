@@ -61,12 +61,17 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
         rendererState.entities = NULL;
 	}
 
+    // Two live views over one image are always distinct handles, so each is destroyed once and the
+    // shared image once, with no aliasing check.
     for (uint32_t i = 0; i < rendererState.primitives.textureCount; i++)
     {
-        if (rendererState.primitives.textureBuffers[i].textureImageView)
-            vkDestroyImageView(ctx->device, rendererState.primitives.textureBuffers[i].textureImageView, NULL);
-        if (rendererState.primitives.textureBuffers[i].textureImage)
-            vkDestroyImage(ctx->device, rendererState.primitives.textureBuffers[i].textureImage, NULL);
+        TextureData* record = &rendererState.primitives.textureBuffers[i];
+        if (record->srgbView)
+            vkDestroyImageView(ctx->device, record->srgbView, NULL);
+        if (record->unormView)
+            vkDestroyImageView(ctx->device, record->unormView, NULL);
+        if (record->textureImage)
+            vkDestroyImage(ctx->device, record->textureImage, NULL);
 
     }
     ano_vk_cleanup_primitives(&rendererState.primitives);
@@ -235,7 +240,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
 	{
 		vkDestroySampler(ctx->device, rendererState.textureSampler, NULL);
 	}
-	
+
 	if (ctx->device != VK_NULL_HANDLE) 
 	{
 		vkDeviceWaitIdle(ctx->device);

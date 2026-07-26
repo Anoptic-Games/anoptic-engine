@@ -14,7 +14,7 @@ extern GpuAllocator stagingAllocator;
 
 // Functions
 
-Texture8 readTexture8bit(char* fileName)
+Texture8 readTexture8bit(const char* fileName)
 {
 	Texture8 texture = {};
 	texture.pixels = stbi_load(fileName, &texture.texWidth, &texture.texHeight, &texture.texChannels, STBI_rgb_alpha);
@@ -24,6 +24,13 @@ Texture8 readTexture8bit(char* fileName)
 
 uint32_t bindless_register_texture(VulkanContext* ctx, BindlessTextureArray* bta, VkImageView view, VkSampler sampler)
 { // out: the granted slot, or ANO_BINDLESS_NONE. A grant is < maxTextures, so it never spells refusal.
+	// Accept-form, and ahead of the bump: a null view or sampler is an invalid VkWriteDescriptorSet
+	// with nullDescriptor unenabled anywhere in the tree, and the slot it would consume never comes
+	// back 〜 the array is bump-only and flush_deletion_queue's arm for it is a bare break.
+	if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
+		ano_log(ANO_ERROR, "ERROR: Bindless registration refused an absent view or sampler!");
+		return ANO_BINDLESS_NONE;
+	}
 	if (bta->textureCount >= bta->maxTextures) {
 		ano_log(ANO_ERROR, "ERROR: Bindless texture array full!");
 		return ANO_BINDLESS_NONE;
@@ -183,8 +190,10 @@ bool transitionImageLayout(VulkanContext* ctx, VkCommandBuffer cmd, VkImage imag
 
 bool createImageShared(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format,
 				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, GpuAllocation* imageAlloc, bool flag16,
-				const uint32_t* shareFamilies, uint32_t shareFamilyCount)
+				const uint32_t* shareFamilies, uint32_t shareFamilyCount,
+				const VkFormat* viewFormats, uint32_t viewFormatCount)
 {
+	VkImageFormatListCreateInfo formatList = { .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO };
 	VkImageCreateInfo imageInfo = {};
 	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -208,6 +217,16 @@ bool createImageShared(VulkanContext* ctx, GpuAllocator* allocator, uint32_t wid
 	}
 	imageInfo.samples = numSamples;
 	imageInfo.flags = 0; // optional
+	// Two+ view formats -> MUTABLE_FORMAT plus the explicit list, so the driver plans for exactly
+	// these aliases instead of the whole compatibility class. Core since Vulkan 1.2.
+	if (viewFormats != NULL && viewFormatCount >= 2)
+	{
+		formatList.viewFormatCount = viewFormatCount;
+		formatList.pViewFormats = viewFormats;
+		formatList.pNext = imageInfo.pNext;
+		imageInfo.pNext = &formatList;
+		imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+	}
 
 	// Every refusal below is total: *image VK_NULL_HANDLE, *imageAlloc the empty allocation.
 	if (vkCreateImage(ctx->device, &imageInfo, NULL, image) != VK_SUCCESS)
@@ -246,7 +265,7 @@ bool createImage(VulkanContext* ctx, GpuAllocator* allocator, uint32_t width, ui
 				VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage* image, GpuAllocation* imageAlloc, bool flag16)
 {
 	return createImageShared(ctx, allocator, width, height, mipLevels, numSamples, format,
-							 tiling, usage, properties, image, imageAlloc, flag16, NULL, 0);
+							 tiling, usage, properties, image, imageAlloc, flag16, NULL, 0, NULL, 0);
 }
 
 // in: format. out: true iff the driver can linear-filter optimal-tiled blits of it.
@@ -377,98 +396,172 @@ static bool formatFiltersLinear(VulkanContext* ctx, VkFormat format)
 	return true;
 }
 
-bool createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, const unsigned char* pixels, uint32_t width, uint32_t height, VkBuffer* outStagingBuffer)
+// The two interpretations one image can be sampled through, in the order handed to the mutable
+// format list. Both are in the same compatibility class, so they share texels and one allocation.
+static const VkFormat textureViewFormats[2] = { VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM };
+
+// in: usage. out: the one create-time format for the image and its whole blit chain.
+// One image, one blit chain, one format 〜 mip filtering cannot be correct in both spaces. An SRGB
+// base keeps the colour role byte-identical to a colour-only load at every level, and leaves the
+// data role exact at mip 0 and approximate only in the minified tail.
+static VkFormat textureBaseFormat(TextureUsageFlags usage)
 {
+	return (usage & TEXTURE_USE_COLOR) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+}
+
+// in: usage. out: 2 when both interpretations are wanted, which is what selects MUTABLE_FORMAT.
+static uint32_t textureViewFormatCount(TextureUsageFlags usage)
+{
+	return ((usage & TEXTURE_USE_COLOR) && (usage & TEXTURE_USE_DATA)) ? 2u : 0u;
+}
+
+AnoTextureResult createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffer cmd, TexturePackage* pkg,
+                                              const unsigned char* pixels, uint32_t width, uint32_t height,
+                                              TextureUsageFlags usage, bool keepStaging)
+{ // in: ctx, a borrowed cmd or VK_NULL_HANDLE, caller-supplied RGBA8 pixels, the wanted views.
+	// out: BUILT publishes a whole package into *pkg; every other code leaves *pkg inert.
+	if (pkg == NULL) return ANO_RESULT(AnoTextureResult, ANO_TEXTURE_INVALID);
+	*pkg = (TexturePackage){0};                       // total before the first acquisition
+	// Accept-form, so an unknown bit refuses instead of passing: a mask carrying no view bit builds
+	// no view, and BUILT would then publish a record whose teardown has nothing to destroy. A
+	// borrowed cmd with keepStaging false is the twin refusal 〜 the copy that CB carries reads the
+	// staging buffer until the caller submits, so discharging it here would be a use-after-free.
+	if ((usage & ~(TextureUsageFlags)(TEXTURE_USE_COLOR | TEXTURE_USE_DATA)) != 0u
+	    || (usage & (TEXTURE_USE_COLOR | TEXTURE_USE_DATA)) == 0u
+	    || (cmd != VK_NULL_HANDLE && !keepStaging))
+		return ANO_RESULT(AnoTextureResult, ANO_TEXTURE_INVALID);
+
+	VkImage image = VK_NULL_HANDLE; GpuAllocation alloc = (GpuAllocation){0};
+	VkBuffer staging = VK_NULL_HANDLE; GpuAllocation stagingAlloc = (GpuAllocation){0};
+	VkImageView srgbView = VK_NULL_HANDLE, unormView = VK_NULL_HANDLE;
+	const VkFormat texFormat = textureBaseFormat(usage);
+	const uint32_t mipLevels = 1;
+	AnoTextureResultCode code = ANO_TEXTURE_DEVICE;   // every arm below is an acquisition but one
+
 	// This face's extents come from the caller, not a decoder, so it owns its own domain: accept-form,
 	// so a NULL source, a zero (or wrapped-negative) dim, or a pixel count whose RGBA byte count would
 	// overflow the widened math refuses here rather than reaching a zero-extent vkCreateImage or a
-	// mip derivation. Nothing acquired: total the face.
+	// mip derivation.
 	if (pixels == NULL || !(width >= 1) || !(height >= 1) ||
 	    !((VkDeviceSize)width * height <= UINT64_MAX / 4u))
 	{
 		ano_log(ANO_ERROR, "Pixel upload outside the domain: %ux%u", width, height);
-		*textureImage = VK_NULL_HANDLE;
-		*textureImageAlloc = (GpuAllocation){0};
-		*textureImageView = VK_NULL_HANDLE;
-		return false;
+		code = ANO_TEXTURE_SOURCE;
+		goto fail;
 	}
 
 	// Widen before multiplying: the uint32_t product wraps and would undersize the staging buffer.
 	VkDeviceSize imageSize = (VkDeviceSize)width * height * 4;
-	uint32_t mipLevels = 1;
 
-	VkBuffer stagingBuffer;
-	GpuAllocation stagingAlloc;
-	// Refused before anything is acquired: the mapping below is only reachable on the arm that wrote it.
-	if (!createDataBuffer(ctx, &stagingAllocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc))
+	if (!createDataBuffer(ctx, &stagingAllocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging, &stagingAlloc))
 	{
 		ano_log(ANO_ERROR, "Staging buffer creation failure!");
-		// Nothing acquired: total the face so the caller's render state never keeps prior contents.
-		*textureImage = VK_NULL_HANDLE;
-		*textureImageAlloc = (GpuAllocation){0};
-		*textureImageView = VK_NULL_HANDLE;
-		return false;
+		goto fail;
 	}
 
-	void* data = stagingAlloc.mapped;
-	memcpy(data, pixels, (size_t)(imageSize));
+	memcpy(stagingAlloc.mapped, pixels, (size_t)(imageSize));
 
-	if(!createImage(ctx, &textureAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
+	if (!createImageShared(ctx, &textureAllocator, width, height, mipLevels, VK_SAMPLE_COUNT_1_BIT, texFormat, VK_IMAGE_TILING_OPTIMAL,
+					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+					&image, &alloc, false, NULL, 0, textureViewFormats, textureViewFormatCount(usage)))
 	{
 		ano_log(ANO_ERROR, "Image creation failure!");
-		return false;
+		goto fail;
 	}
 
-	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels))
+	// Views are layout- and content-independent, so building them before any recording is free and
+	// leaves no failure arm below the first vkCmd*: destroying an image a recorded borrowed CB
+	// already references drives that CB invalid, and submitting it afterwards is undefined.
+	if ((usage & TEXTURE_USE_COLOR) && !createTextureImageView(ctx, image, &srgbView, VK_FORMAT_R8G8B8A8_SRGB, mipLevels))
+	{
+		ano_log(ANO_ERROR, "Colour image view creation failure!");
+		goto fail;
+	}
+	if ((usage & TEXTURE_USE_DATA) && !createTextureImageView(ctx, image, &unormView, VK_FORMAT_R8G8B8A8_UNORM, mipLevels))
+	{
+		ano_log(ANO_ERROR, "Data image view creation failure!");
+		goto fail;
+	}
+
+	if (!transitionImageLayout(ctx, cmd, image, texFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels))
 	{
 		ano_olog(ANO_ERROR, "Layout transition failure!");
-		return false;
+		goto fail;
 	}
 
-	if(!copyBufferToImage(ctx, cmd, stagingBuffer, *textureImage, width, height))
+	if (!copyBufferToImage(ctx, cmd, staging, image, width, height))
 	{
 		ano_log(ANO_ERROR, "Pixel upload failure!");
-		return false;
+		goto fail;
 	}
 
-	if(!transitionImageLayout(ctx, cmd, *textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels))
+	if (!transitionImageLayout(ctx, cmd, image, texFormat, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels))
 	{
 		ano_olog(ANO_ERROR, "Layout transition failure!");
-		return false;
+		goto fail;
 	}
 
-	if (outStagingBuffer) *outStagingBuffer = stagingBuffer; else vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
-	
-	if(!createTextureImageView(ctx, *textureImage, textureImageView, VK_FORMAT_R8G8B8A8_SRGB, mipLevels))
-	{
-		ano_log(ANO_ERROR, "Image view creation failure!");
-		return false;
-	}
+	// Published only here, so the label above never owns what the caller now does.
+	if (keepStaging) pkg->staging = staging; else vkDestroyBuffer(ctx->device, staging, NULL);
+	pkg->image = image; pkg->alloc = alloc;
+	pkg->srgbView = srgbView; pkg->unormView = unormView;
+	pkg->mipLevels = mipLevels; pkg->width = width; pkg->height = height;
+	return ANO_RESULT(AnoTextureResult, ANO_TEXTURE_BUILT);
 
-	return true;
+fail:
+	// Every deallocator named here is a no-op on its inert value, so the discharge is unconditional
+	// and nothing acquired is discharged twice. It deliberately does not own the arena span behind
+	// alloc: gpu_alloc is monotonic with no per-allocation free, so that span stays consumed until
+	// allocator teardown.
+	vkDestroyImageView(ctx->device, unormView, NULL);
+	vkDestroyImageView(ctx->device, srgbView, NULL);
+	vkDestroyImage(ctx->device, image, NULL);
+	vkDestroyBuffer(ctx->device, staging, NULL);
+	return ANO_RESULT(AnoTextureResult, code);
 }
-bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textureImage, GpuAllocation* textureImageAlloc, VkImageView* textureImageView, char* fileName, bool flag16, bool srgb, VkBuffer* outStagingBuffer)
-{
+
+AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, TexturePackage* pkg,
+                                    const char* fileName, bool flag16,
+                                    TextureUsageFlags usage, bool keepStaging)
+{ // in: ctx, a borrowed cmd or VK_NULL_HANDLE, a source path, the wanted views.
+	// out: BUILT publishes a whole package into *pkg; every other code leaves *pkg inert.
 	//!TODO Add logic for 16-bit images
+	(void)flag16;
+	if (pkg == NULL) return ANO_RESULT(AnoTextureResult, ANO_TEXTURE_INVALID);
+	*pkg = (TexturePackage){0};                       // total before the first acquisition
+	// Accept-form, so an unknown bit refuses instead of passing: a mask carrying no view bit builds
+	// no view, and BUILT would then publish a record whose teardown has nothing to destroy. A
+	// borrowed cmd with keepStaging false is the twin refusal 〜 the copy that CB carries reads the
+	// staging buffer until the caller submits, so discharging it here would be a use-after-free.
+	if ((usage & ~(TextureUsageFlags)(TEXTURE_USE_COLOR | TEXTURE_USE_DATA)) != 0u
+	    || (usage & (TEXTURE_USE_COLOR | TEXTURE_USE_DATA)) == 0u
+	    || (cmd != VK_NULL_HANDLE && !keepStaging))
+		return ANO_RESULT(AnoTextureResult, ANO_TEXTURE_INVALID);
+
+	VkImage image = VK_NULL_HANDLE; GpuAllocation alloc = (GpuAllocation){0};
+	VkBuffer staging = VK_NULL_HANDLE; GpuAllocation stagingAlloc = (GpuAllocation){0};
+	VkImageView srgbView = VK_NULL_HANDLE, unormView = VK_NULL_HANDLE;
+	Texture8 texture = {0};
+	// sRGB for color textures, linear UNORM for data textures; mixed use takes the sRGB base.
+	const VkFormat texFormat = textureBaseFormat(usage);
+	AnoTextureResultCode code = ANO_TEXTURE_DEVICE;   // every arm below is an acquisition but one
+
 	// The decode seam owns the extent domain: accept-form, so a zero or negative dim refuses here
 	// rather than reaching log2 in the mip derivation below. Freeing NULL is a no-op.
-	Texture8 texture = readTexture8bit(fileName);
+	texture = readTexture8bit(fileName);
 	if (!texture.pixels || !(texture.texWidth >= 1) || !(texture.texHeight >= 1))
 	{
 		ano_log(ANO_ERROR, "Failed to load texture image: %s", fileName);
-		stbi_image_free(texture.pixels);
-		*textureImage = VK_NULL_HANDLE;
-		*textureImageAlloc = (GpuAllocation){0};
-		*textureImageView = VK_NULL_HANDLE;
-		return false;
+		code = ANO_TEXTURE_SOURCE;
+		goto fail;
 	}
-
-	// sRGB for color textures, linear UNORM for data textures.
-	VkFormat texFormat = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
 
 	// Widen before multiplying: stbi's int32 dims overflow the int product above ~23170 square.
 	VkDeviceSize imageSize = (VkDeviceSize)texture.texWidth * texture.texHeight * 4;
 	texture.mipLevels = (uint32_t)(floor(log2(texture.texWidth > texture.texHeight ? texture.texWidth : texture.texHeight)) + 1); // dynamic mip levels; the log2 operand is >= 1 by the decode gate
+	// A blit chain filters in the base format's space, so every minified level of a mixed image would
+	// be exact through one view and wrong through the other. One level keeps both interpretations exact.
+	if (textureViewFormatCount(usage) == 2) texture.mipLevels = 1;
 	// The chain is only as long as the format can blit: no linear filter, no tail to leave unwritten.
 	if (texture.mipLevels > 1 && !formatFiltersLinear(ctx, texFormat))
 	{
@@ -478,59 +571,79 @@ bool createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, VkImage* textur
 
 	ano_debug_log(ANO_INFO, "Texture mip levels: %d", texture.mipLevels);
 
-	VkBuffer stagingBuffer;
-	GpuAllocation stagingAlloc;
-	// Refused before anything is acquired: the mapping below is only reachable on the arm that wrote it.
-	if (!createDataBuffer(ctx, &stagingAllocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &stagingBuffer, &stagingAlloc))
+	if (!createDataBuffer(ctx, &stagingAllocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging, &stagingAlloc))
 	{
 		ano_log(ANO_ERROR, "Staging buffer creation failure: %s", fileName);
-		stbi_image_free(texture.pixels);
-		// Nothing acquired: total the face so the caller's render state never keeps prior contents.
-		*textureImage = VK_NULL_HANDLE;
-		*textureImageAlloc = (GpuAllocation){0};
-		*textureImageView = VK_NULL_HANDLE;
-		return false;
+		goto fail;
 	}
 
-	void* data = stagingAlloc.mapped;
-	memcpy(data, texture.pixels, (size_t)(imageSize));
+	memcpy(stagingAlloc.mapped, texture.pixels, (size_t)(imageSize));
 
-	stbi_image_free(texture.pixels);
+	// Re-inert: the label frees it too, and holding multi-MB decoded pixels through mip generation
+	// is exactly the wrong thing on the memory-pressure path these arms fire on.
+	stbi_image_free(texture.pixels); texture.pixels = NULL;
 
-	if (!createImage(ctx, &textureAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, texFormat, VK_IMAGE_TILING_OPTIMAL,
-					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageAlloc, false))
+	if (!createImageShared(ctx, &textureAllocator, texture.texWidth, texture.texHeight, texture.mipLevels, VK_SAMPLE_COUNT_1_BIT, texFormat, VK_IMAGE_TILING_OPTIMAL,
+					VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+					&image, &alloc, false, NULL, 0, textureViewFormats, textureViewFormatCount(usage)))
 	{
 		ano_log(ANO_ERROR, "Image creation failure: %s", fileName);
-		return false;
+		goto fail;
 	}
 
-	if(!transitionImageLayout(ctx, cmd, *textureImage, texFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
+	// Views are layout- and content-independent, so building them before any recording is free and
+	// leaves no failure arm below the first vkCmd*: destroying an image a recorded borrowed CB
+	// already references drives that CB invalid, and submitting it afterwards is undefined.
+	if ((usage & TEXTURE_USE_COLOR) && !createTextureImageView(ctx, image, &srgbView, VK_FORMAT_R8G8B8A8_SRGB, texture.mipLevels))
+	{
+		ano_log(ANO_ERROR, "Colour image view creation failure: %s", fileName);
+		goto fail;
+	}
+	if ((usage & TEXTURE_USE_DATA) && !createTextureImageView(ctx, image, &unormView, VK_FORMAT_R8G8B8A8_UNORM, texture.mipLevels))
+	{
+		ano_log(ANO_ERROR, "Data image view creation failure: %s", fileName);
+		goto fail;
+	}
+
+	if (!transitionImageLayout(ctx, cmd, image, texFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture.mipLevels))
 	{
 		ano_log(ANO_ERROR, "Layout transition failure: %s", fileName);
-		return false;
+		goto fail;
 	}
 
-	if (!copyBufferToImage(ctx, cmd, stagingBuffer, *textureImage, (uint32_t) texture.texWidth, (uint32_t) texture.texHeight))
+	if (!copyBufferToImage(ctx, cmd, staging, image, (uint32_t) texture.texWidth, (uint32_t) texture.texHeight))
 	{
 		ano_log(ANO_ERROR, "Pixel upload failure: %s", fileName);
-		return false;
+		goto fail;
 	}
 
 	// Publishes the whole chain in SHADER_READ_ONLY_OPTIMAL, which is the layout the bindless descriptor pins.
-	if (!generateMipmaps(ctx, cmd, *textureImage, texFormat, texture.texWidth, texture.texHeight, texture.mipLevels))
+	if (!generateMipmaps(ctx, cmd, image, texFormat, texture.texWidth, texture.texHeight, texture.mipLevels))
 	{
 		ano_log(ANO_ERROR, "Mip chain generation failure: %s", fileName);
-		return false;
+		goto fail;
 	}
 
-	if (outStagingBuffer) *outStagingBuffer = stagingBuffer; else vkDestroyBuffer(ctx->device, stagingBuffer, NULL);
-	if(!createTextureImageView(ctx, *textureImage, textureImageView, texFormat, texture.mipLevels))
-	{
-		ano_log(ANO_ERROR, "Image view creation failure: %s", fileName);
-		return false;
-	}
-	
-	return true;
+	// Published only here, so the label above never owns what the caller now does.
+	if (keepStaging) pkg->staging = staging; else vkDestroyBuffer(ctx->device, staging, NULL);
+	pkg->image = image; pkg->alloc = alloc;
+	pkg->srgbView = srgbView; pkg->unormView = unormView;
+	pkg->mipLevels = texture.mipLevels;
+	pkg->width = (uint32_t)texture.texWidth; pkg->height = (uint32_t)texture.texHeight;
+	return ANO_RESULT(AnoTextureResult, ANO_TEXTURE_BUILT);
+
+fail:
+	// Every deallocator named here is a no-op on its inert value 〜 stbi_image_free(NULL) included,
+	// and the decoded pixels were re-inerted the moment they were staged 〜 so the discharge is
+	// unconditional and nothing is discharged twice. It deliberately does not own the arena span
+	// behind alloc: gpu_alloc is monotonic with no per-allocation free, so that span stays consumed
+	// until allocator teardown.
+	vkDestroyImageView(ctx->device, unormView, NULL);
+	vkDestroyImageView(ctx->device, srgbView, NULL);
+	vkDestroyImage(ctx->device, image, NULL);
+	vkDestroyBuffer(ctx->device, staging, NULL);
+	stbi_image_free(texture.pixels);
+	return ANO_RESULT(AnoTextureResult, code);
 }
 
 bool createTextureImageView(VulkanContext* ctx, VkImage textureImage, VkImageView* textureImageView, VkFormat format, uint32_t miplevels)
@@ -542,19 +655,20 @@ bool createTextureImageView(VulkanContext* ctx, VkImage textureImage, VkImageVie
 
 
 bool createTextureSampler(VulkanContext* ctx, RendererState* state)
-{ // One shared sampler suffices.
+{ // out: state->textureSampler, the engine's one sampler 〜 every bindless texture is described
+  // through it, as are the fallback texture, the Hi-Z chain and the depth reads.
 	VkSamplerCreateInfo samplerInfo = {};
 	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 	samplerInfo.magFilter = VK_FILTER_LINEAR;
 	samplerInfo.minFilter = VK_FILTER_LINEAR;
 	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT; // 2D only: W is never sampled
 
 	//TODO Cache physical device properties once.
 	VkPhysicalDeviceProperties properties = {};
 	vkGetPhysicalDeviceProperties(ctx->physicalDevice, &properties);
-	
+
 	//TODO Add an anisotropic filter setting to vulkanConfig
 	samplerInfo.anisotropyEnable = VK_TRUE;
 	samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
@@ -566,7 +680,6 @@ bool createTextureSampler(VulkanContext* ctx, RendererState* state)
 	samplerInfo.mipLodBias = 0.0f;
 	samplerInfo.minLod = 0.0f;
 	samplerInfo.maxLod = 20.0f; // 524K texture cap
-	
 	if (vkCreateSampler(ctx->device, &samplerInfo, NULL, &state->textureSampler) != VK_SUCCESS)
 	{
 		ano_log(ANO_FATAL, "Failed to create texture sampler!");

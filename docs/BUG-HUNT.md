@@ -1,42 +1,10 @@
 # Bug hunt
 
-Remediation map for the 2026-07-21 census of `docs/BUGS.md`, plus the product decisions that gated the residue. Active defects live in `docs/BUGS.md`. Retired defects, fix records, settled decisions, and campaign history live in `docs/BUGS_DONE.md`.
+Remediation map for the 2026-07-21 census of `docs/BUGS.md`. Active defects live in `docs/BUGS.md`. Retired defects, fix records, and campaign history live in `docs/BUGS_DONE.md`.
 
-As of 2026-07-26 the board is **129 fixed of 147 tallied**, with **17 open** and **1 wontfix**. The systemic swoops named below are largely spent. The three product forks that blocked autonomous residue work are settled below; implementation may proceed from those rulings.
+As of 2026-07-26 the board is **139 fixed of 151 tallied**, with **11 open** and **1 wontfix**. The systemic swoops named below are largely spent, and the last three entries blocked on a product decision are closed 〜 their fix records are in `docs/BUGS_DONE.md`, and nothing open is waiting on a contract choice.
 
-
-## New feature to use
-
-Introduce typed results for render submissions.
-
-Include `anoptic_results.h` from `anoptic_render.h`, then define:
-
-```c
-ANO_RESULT_TYPE(AnoRenderSubmitResult,
-    ANO_RENDER_SUBMIT_ACCEPTED = 0,
-    ANO_RENDER_SUBMIT_BACKPRESSURE,
-    ANO_RENDER_SUBMIT_OOM,
-    ANO_RENDER_SUBMIT_INVALID
-);
-```
-
-Change these functions to return `AnoRenderSubmitResult`:
-
-1. `ano_render_submit_bulk_update`
-2. `ano_render_submit_bulk_destroy`
-3. `ano_render_text_set`
-4. `ano_render_text_clear`
-5. `ano_render_ui_set`
-6. `ano_render_ui_clear`
-
-Return:
-
-- `ACCEPTED` when the command is successfully enqueued.
-- `BACKPRESSURE` when the command ring is full.
-- `OOM` when copying or packing the submission cannot allocate memory.
-- `INVALID` when the supplied payload or required pointers are invalid.
-
-Update every caller to inspect `result.code` explicitly. Do not treat the result as a Boolean, add a Boolean compatibility wrapper, or change any other render API.
+Open lines in `docs/BUGS.md` are unfinished code. Fixes below are keyed only by those `file:line` entries. An open entry does not mean the fix is undecided.
 
 
 ## Accounting
@@ -119,7 +87,7 @@ Swoop: repair locally; pin with a focused regression test.
 
 ## Fine-grained source tags
 
-Tag assignments from the source census (not unique findings). The status tag `pending-design-decision` once marked five entries; those settled 2026-07-25 and live under Settled open decisions in `docs/BUGS_DONE.md`. It is not counted here.
+Tag assignments from the source census (not unique findings). The status tag `pending-design-decision` once marked five entries; those retired write-ups live under Settled open decisions in `docs/BUGS_DONE.md`. It is not counted here. The tag currently marks nothing.
 
 | Source tag | Assignments |
 |---|---:|
@@ -152,239 +120,76 @@ Tag assignments from the source census (not unique findings). The status tag `pe
 | Total assignments | 72 |
 
 
-## Residue today (2026-07-26)
-
-Seventeen open entries in `docs/BUGS.md`, plus the `time_win64.c:310` wontfix in `docs/BUGS_DONE.md`. No open product decision remains; the three forks below are settled and implementation may proceed.
-
-| Cluster | Entries | Ruled by |
-|---|---|---|
-| Texture mint/adopt/register | `texture.c:426`, `texture.c:486`, `ano_GltfParser.c:277`, `components.c:72` | Decision 2, then mechanical ownership transfers |
-| Shadow-resource unwind | `shadow_resources.c:22` | Existing constructor/unwind contracts |
-| Music override ingress | `music_host.c:45`, `:232`, `:226` | Existing music domains |
-| glTF primitive default | `ano_GltfParser.c:236` | `ANO_RENDER_NO_MESH` sentinel |
-| Mixed colour/data textures | `ano_GltfParser.c:435` | Decision 1 |
-| GPOS capacity | `text_gpos.c:294` | Existing malformed/partial contract |
-| HUD / owned-payload submit | `main.c:691` (expands to UI + bulk-copy siblings) | Decision 3 |
-| Platform / hot-path one-offs | `filesystem_win64.c:33`, `time_win64.c:402`, `memory.c:9`, `instance.c:192`, `ano_strings_collate.c:504` | Sibling / header contracts |
-
-
 ## Result-domain rule
 
-Failure modes should be values when callers must react differently. Not `Result<T, E>` cosplay everywhere 〜 C interfaces that tell the truth.
+Failure modes are values when callers must react differently. Not `Result<T, E>` cosplay 〜 C interfaces that tell the truth.
 
-- Use `bool` for genuine binary facts: found/not found, empty/nonempty, accepted/backpressure when those are truly the only outcomes.
-- Use a result enum when outcomes imply different control flow: retry, degrade, reject, unwind, or abort initialization.
-- Use a result struct when success also returns a value or ownership package.
-- Mark actionable results `[[nodiscard]]`.
-- Switch exhaustively without `default`, so adding a result forces every policy site to be revisited.
-- Keep results domain-specific; avoid one vague engine-wide error enum.
+- `bool` for genuine binary facts: found/not found, empty/nonempty, accepted/backpressure when those are the only outcomes.
+- A domain-local result type when outcomes imply different control flow: retry, degrade, reject, unwind, or abort initialization.
+- A result struct when success also returns a value or ownership package.
+- Actionable results are `[[nodiscard]]`.
+- Switch exhaustively without `default`, so adding a code forces every policy site to revisit.
+- Results stay domain-specific; there is no engine-wide error enum.
 
-The census strongly supports this. Several major families 〜 `ANO_FATAL` fallthrough, partial out-parameters, ownership leaks, retry exhaustion, and OOM mistaken for backpressure 〜 are collapsed result domains. The renderer submission enum (Decision 3) is a precedent for that discipline, not merely a HUD fix.
+Collapsed result domains are how the census’s big families look in practice: `ANO_FATAL` fallthrough, partial out-parameters, ownership leaks, retry exhaustion, and OOM mistaken for backpressure.
 
 
-## Settled decisions (2026-07-26)
+## Fixes for open entries
 
-Three product forks settled the same day. Implementation follows these rulings; do not re-open them inside a patch.
+Eleven open lines in `docs/BUGS.md`, plus `time_win64.c:310` wontfix. Each subsection is the fix for that entry (or shared fix for a listed set). No other names. The `main.c:691`, `ano_GltfParser.c:435` and texture-custody subsections retired with their entries on 2026-07-26.
 
-### 1. Mixed colour/data textures
 
-Decision: represent one glTF image used in both colour and data roles as one mutable-format Vulkan image with separate SRGB and UNORM views and separate bindless indices.
+### `shadow_resources.c:22`
 
-This is the normal Vulkan-engine solution for compatible format interpretations. `VK_FORMAT_R8G8B8A8_SRGB` and `VK_FORMAT_R8G8B8A8_UNORM` share a compatible format class, so the texels and allocation need not be duplicated.
+Labelled unwind (or local acquisition ledger): inert-init destinations; `goto fail` instead of mid-function returns; one cleanup path in reverse dependency order; return `false` only after local construction state is discharged. Success path unchanged.
 
-Implementation consequences:
 
-1. Mixed-use images are created with `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT`.
-2. Prefer an attached `VkImageFormatListCreateInfo` listing the two allowed view formats, giving the driver a precise compatibility set.
-3. Replace the current sticky `textureSrgb[t]` boolean with a per-texture usage mask: colour use; data use; both.
-4. A colour-only texture needs an SRGB view; a data-only texture needs a UNORM view; a mixed texture needs both.
-5. The parser needs per-domain bindless indices rather than the current single `bindlessIndices[t]`.
-6. Material baking selects the colour or data index according to the material slot 〜 base colour, emissive, sheen colour, and similar colour-bearing slots use SRGB; normal, metallic/roughness, occlusion, transmission factors, thickness, and similar data slots use UNORM.
-7. `TextureData` must own one image/allocation and up to two views.
-8. Teardown destroys each distinct view once, then destroys the shared image once.
-9. A mixed texture consumes two bindless descriptors but only one texture allocation.
-10. If the second bindless registration fails, only material slots requiring that missing interpretation become untextured; they must not alias the other interpretation.
-11. The texture registry adopts the shared image and both views as one resource record before either view is exposed through bindless registration.
-12. Texture tests need colour-only, data-only, and mixed-use assets, verifying that 0.5 samples as SRGB-decoded approximately 0.214 in a colour role and as linear 0.5 in a data role.
+### `ano_GltfParser.c:236`
 
-Rejected alternatives:
+At primitive record creation set `geometryPoolIndex = ANO_RENDER_NO_MESH`. Only a successful geometry upload overwrites it. Every early exit then fails closed.
 
-- Duplicating the image wastes texture memory and upload bandwidth.
-- “Linear wins” or “SRGB wins” leaves one material role objectively wrong.
-- Rejecting legal mixed-domain glTF assets unnecessarily narrows importer compatibility.
 
-Gates `ano_GltfParser.c:435`.
+### `text_gpos.c:294`
 
-### 2. Failed GPU-allocation reclamation
+Filter to PairPos before spending the lookup budget. Return nonzero when relevant lookups or subtables still exceed capacity. `0` remains success including legitimately no kerns.
 
-Decision: preserve the existing arena allocator semantics.
 
-A failed texture construction must destroy all Vulkan objects, total every output, and transfer no ownership. Any GPU-arena span consumed before the failure remains unavailable until allocator teardown.
+### `music_host.c:45`, `music_host.c:232`, `music_host.c:226`
 
-This means:
+Reject invalid override values at ingress. Cadence: pin of `-1` refused; config `NONE` is fallback, never a table index; returned policy ∈ `[0, ANO_CADENCE_POLICY_COUNT)`. Register center: MIDI 0–127, reject non-finite/non-integral/out of range (no silent clamp). Tempo: same mapped domain as the mapping table (apparently 60–160), reject NaN/inf/≤0/out of range. Explicit RELEASE remains the clear path.
 
-1. `GpuAllocator` remains a monotonic arena with no individual free.
-2. No checkpoint/rollback, free list, or allocator API expansion lands in this remediation.
-3. Texture constructors zero all outputs before acquisition.
-4. Failed construction destroys any staging buffer, image view, and image it created.
-5. The associated `GpuAllocation` output is reset to the empty value even though its arena span remains consumed.
-6. The parser receives no partial ownership on failure.
-7. Failed registry adoption destroys the caller-owned views and image; the span still retires with the arena.
-8. The behavior is documented explicitly: failure leaks no Vulkan object or ownership record, but may consume arena capacity until teardown.
-9. Tests assert handle and ownership cleanup, not allocator-offset rollback.
-10. Repeated failed hot-loading can reduce remaining arena capacity. That is accepted for now and becomes allocator work only if field evidence shows it matters.
 
-This keeps the bug fix scoped to resource correctness rather than turning it into a GPU allocator redesign.
+### `filesystem_win64.c:33`
 
-Gates the texture custody chain (`texture.c:426`, `texture.c:486`, `ano_GltfParser.c:277`, `components.c:72`). Ownership transfers after this ruling are mechanical: callee owns locals until return; `false` leaves all outs inert; `true` transfers a complete package; `ano_vk_register_texture` becomes `[[nodiscard]] bool`; bindless registers only after adoption; parser destroys what it still owns. Arena spans follow items 5 and 8 above.
+Trim the executable filename first, then validate the directory length against `MAXPATH` (POSIX sibling order). Keep a post-trim bound on the copy.
 
-### 3. Submission result API
 
-Decision: replace ambiguous boolean results with a public result enum. No compatibility wrapper.
+### `time_win64.c:402`
 
-#### Result type
+`ano_sleep` for requests at or below 1 ms (including exactly 1000 µs) must enter the scheduler at least once and must not return early merely because a yield returned. `ano_busywait` remains the explicit spin API.
 
-```c
-typedef enum AnoRenderSubmitResult {
-    ANO_RENDER_SUBMIT_ACCEPTED = 0,
-    ANO_RENDER_SUBMIT_BACKPRESSURE,
-    ANO_RENDER_SUBMIT_OOM,
-    ANO_RENDER_SUBMIT_INVALID,
-} AnoRenderSubmitResult;
-```
 
-`ACCEPTED` means the operation was accepted by the producer endpoint. For an enqueued command, ownership crossed into the bridge. It does not promise that a later render-side registry or device operation has already applied the command.
+### `memory.c:9`
 
-All result-returning declarations should be `[[nodiscard]]`.
+`ano_heap_release`: destroy only if `*in` is non-NULL, then clear.
 
-#### API scope
 
-Broader than `ano_render_text_set`. Every producer endpoint that allocates and copies an owned payload currently conflates allocation failure with ring backpressure. The enum therefore replaces `bool` on:
+### `instance.c:192`
 
-```c
-AnoRenderSubmitResult ano_render_submit_bulk_update(
-    AnoRenderBridge *bridge,
-    const RenderUpdateBatch *batch);
+Stop `strdup`ing extension names. Allocate the pointer array only; store borrowed GLFW/literal pointers; free the array on both arms after `vkCreateInstance`.
 
-AnoRenderSubmitResult ano_render_submit_bulk_destroy(
-    AnoRenderBridge *bridge,
-    const uint32_t *render_ids,
-    uint32_t count);
 
-AnoRenderSubmitResult ano_render_text_set(
-    AnoRenderBridge *bridge,
-    uint32_t text_id,
-    const AnoGlyphInstance *instances,
-    uint32_t count);
+### `ano_strings_collate.c:504`
 
-AnoRenderSubmitResult ano_render_text_clear(
-    AnoRenderBridge *bridge,
-    uint32_t text_id);
-
-AnoRenderSubmitResult ano_render_ui_set(
-    AnoRenderBridge *bridge,
-    uint32_t ui_id,
-    uint32_t layer,
-    const AnoUiBuilder *ui,
-    const AnoGlyphInstance *glyphs,
-    uint32_t glyphCount);
-
-AnoRenderSubmitResult ano_render_ui_clear(
-    AnoRenderBridge *bridge,
-    uint32_t ui_id);
-```
-
-The clear functions do not allocate, but they return the same type so count-zero SET operations can delegate without changing result domains and callers can use one exhaustive result switch.
-
-The following remain boolean because they genuinely expose one binary condition and do not allocate an owned payload:
-
-- `ano_render_submit`: accepted or command-ring full.
-- `ano_render_stream_begin`: slice available or still GPU-owned.
-- `ano_render_stream_commit`: command accepted or ring full.
-- `ano_render_light_attach`, update, update-fields, and detach: accepted or ring full.
-- `ano_render_poll_event` and snapshot/view acquisition: value available or unavailable.
-
-`RCMD_BULK_CREATE` remains on the borrowed `ano_render_submit` path; the existing startup batch owns its storage and no copy allocation occurs inside the producer endpoint.
-
-#### Exact result semantics
-
-`ACCEPTED` 〜 returned when an owned payload was successfully allocated, packed, and enqueued; a clear command was enqueued; a documented zero-count bulk operation performed its no-op; or a documented count-zero text or empty UI operation successfully delegated to CLEAR. For an owned command, the caller relinquishes the packed block only on this result.
-
-`BACKPRESSURE` 〜 returned only when the command ring refuses the push. If a packed block was already allocated: `ano_render_command_release` frees it; no command remains enqueued; the caller retains its original source arrays; retrying later is safe. No warning or error for ordinary backpressure.
-
-`OOM` 〜 returned only when the producer cannot allocate the packed render-owned block. No command is enqueued; no ownership transfers; the caller’s arrays remain untouched; retry policy belongs to the caller’s content semantics; OOM is never represented as backpressure.
-
-`INVALID` 〜 returned when caller input violates the endpoint contract. Examples: text count nonzero while `instances == NULL`; UI builder NULL; UI caps exceeded; UI glyph count nonzero while `glyphs == NULL`; a UI primitive carries an invalid clip, paint, glyph, stop, or path reference; bulk count nonzero while required arrays are NULL; a bulk field bit names an absent parallel value array; bulk size arithmetic cannot be represented. Invalid input is deterministic and must never be retried unchanged. The bridge may emit one contextual warning naming the invalid ID or field; callers should not duplicate it.
-
-Existing documented behavior remains: text counts above `ANO_RENDER_TEXT_MAX` are truncated and can still be accepted; a non-NULL empty UI builder means CLEAR; zero-count bulk update/destroy is an accepted no-op; a NULL UI builder becomes INVALID rather than silently clearing an existing block.
-
-#### Ownership consequences
-
-| Result | Packed block exists after return | Command enqueued | Ownership |
-|---|---:|---:|---|
-| `ACCEPTED` | Yes, when the operation carries one | Yes | Bridge/render side |
-| `BACKPRESSURE` | No | No | Caller retains original inputs |
-| `OOM` | No | No | Caller retains original inputs |
-| `INVALID` | No | No | Caller retains original inputs |
-
-`ano_render_command_release` remains the sole drop-path decoder for owned command payloads. Bridge teardown remains responsible for draining and releasing accepted commands that were never consumed.
-
-#### Engine call-site consequences
-
-`hud_text_submit` returns `AnoRenderSubmitResult` and forwards `ano_render_text_set` exactly.
-
-Four startup HUD submissions (title, notice, Unicode sample, Homer sample): `ACCEPTED` → next block; `BACKPRESSURE` → retry while `!g_logicShouldStop`, yielding; `OOM` → omit that optional block and continue; `INVALID` → drop the programmer-invalid block and continue; shutdown during backpressure → exit the logic thread. Eliminates the OOM infinite loop and shutdown deadlock.
-
-Transient notice clear: `noticeCleared` becomes true only on `ACCEPTED`; `BACKPRESSURE` retries next tick; `OOM`/`INVALID` impossible for a valid clear, but the switch stays exhaustive.
-
-Camera readout (replaceable state): `ACCEPTED` lands; `BACKPRESSURE`/`OOM`/`INVALID` drop this update 〜 no retry loop.
-
-`submit_menu`, `submit_music`, `submit_bar` return `AnoRenderSubmitResult`. Dirty-state consumers must not treat every nonzero as success: `ACCEPTED` clears dirty (bar also sets `barSubmitted` / `barVpH`); `BACKPRESSURE` retains dirty and retries next tick; `OOM` retains desired state but must not retry allocation every 2 ms 〜 short deadline or wait for the next relevant state change; `INVALID` clears dirty for that exact built block (retrying identical data cannot succeed). Hidden menu/music delegates to CLEAR with the same ACCEPTED/BACKPRESSURE rules.
-
-`submit_blocking` continues to call boolean `ano_render_submit` (no allocation ambiguity) but still needs shutdown-aware cancellation as part of the `main.c:691` liveness repair.
-
-#### Bulk submission consequences
-
-No in-tree callers of `ano_render_submit_bulk_update` / `ano_render_submit_bulk_destroy` today, but their public contracts already conflate OOM and ring-full. They adopt the enum now so future game code does not repeat the HUD defect. Additional `INVALID` validation: nonzero count requires `render_ids`; each field bit requires its array; checked byte-size accumulation before allocation; unknown field bits rejected or masked per `RenderFieldBits`; zero count remains `ACCEPTED` without allocation or enqueue.
-
-#### C-language migration hazard
-
-Changing `bool` to an enum does not guarantee a compiler error at old call sites. C permits enum values in boolean conditions. Every caller must compare a named enumerator explicitly (`if (result == ANO_RENDER_SUBMIT_ACCEPTED)`). `if (result)` / `while (!result)` are forbidden: with `ACCEPTED == 0`, old boolean-style code inverts success and can spin on an accepted submission.
-
-Mitigations: `[[nodiscard]]` on every result-returning API; update every in-tree call in the same commit as the public signature; exhaustive switches without `default` under enum-switch diagnostics; search the tree for every affected function after conversion; regression tests on caller policy, not only raw enum values; clean rebuild (`_Bool` and enum return conventions need not be binary-compatible across stale objects). No compatibility wrapper and no transitional boolean alias.
-
-#### Test consequences
-
-Behavior belongs in the existing render-bridge suite (`tests/anotest_render_bridge.c`), not new per-bug executables. Cover: accepted text SET; text count-zero CLEAR; text invalid pair; text OOM; text ring-full after allocation proving the block is released; accepted UI SET; empty UI CLEAR; NULL/invalid UI; UI OOM; UI ring-full with no owned-block leak; accepted bulk update/destroy; bulk zero-count no-op; missing required bulk arrays; bulk OOM; bulk ring-full cleanup; bridge destruction with accepted text/UI/bulk blocks still queued. OOM needs a deterministic allocator-refusal seam via test linkage or an existing allocator fault mechanism, not a production-visible debugging API.
-
-Engine-level or black-box coverage should additionally prove: startup continues after text OOM; startup backpressure exits on shutdown; notice clear retries only on backpressure; menu/music/bar dirty flags clear only on `ACCEPTED`; invalid UI does not retry forever; OOM does not produce a 2 ms allocation storm; render-thread shutdown joins cleanly from every retry state.
-
-#### Documentation consequences (when implemented)
-
-Together: define `AnoRenderSubmitResult` and change the six owned-payload/clear declarations in `include/anoptic_render.h`; update `src/render_bridge/ano_render_bridge.c` and `src/vulkan_backend/bridge/producer.c`; revise `docs/text/font-render.md` and `docs/ui/ui-render.md`; on landing, close `main.c:691` in `docs/BUGS.md`, move the fix record to `docs/BUGS_DONE.md`, and note that the audit expanded the repair to the sibling UI and bulk-copy endpoints while preserving the distinction between the source defect and consequential API cleanup.
-
-#### Non-consequences
-
-Unchanged: `RenderCommand` layout; ring storage or synchronization; `bulk_owned`; render-thread command decoding; text/UI registry adoption; GPU ABI; bare CREATE/UPDATE/DESTROY command behavior; light or stream submission semantics; back-channel polling and snapshots. The change is producer-side: allocation, validation, and queue pressure become different observable outcomes, and each caller adopts the correct policy.
+Allocation-failure sort fallbacks must remain stable. Not `qsort`. Prefer an in-place stable hybrid (insertion on small runs, stable merge). Equal keys keep input order; symbol numeric value is not a tie-break.
 
 
 ## Deferred surface notes
 
-These do not block any open entry. Recorded so a later layout pass does not rediscover them.
+Non-blocking. For a later layout pass.
 
-- Monitors ledger: `enumerateMonitors` is hardened but unread; `initWindow` re-queries GLFW. Keep as a future config surface, or delete the ledger and let `initWindow` own the only query.
-- Bindless capacity predicate: consumers latch the registrar's refusal word locally. A checked face that answers slot and closure together is cleaner than a stale second reader; interacts with whether slots are ever released.
-- `PipelinePrototype` inline array: counts are 1–3; an inline `PipelineImplementation[3]` would delete the `(implementationCount, implementations)` pair and the unchecked-calloc family by construction. Touches `components.h`.
+- Monitors ledger: hardened but unread; `initWindow` re-queries GLFW. Keep for a future config surface, or delete and let `initWindow` own the only query.
+- Bindless capacity: consumers latch the registrar’s refusal word. Prefer a checked face that answers slot and closure together over a stale second reader.
+- `PipelinePrototype` inline `PipelineImplementation[3]`: would delete the count/pointer pair and the unchecked-calloc family. Touches `components.h`.
 
-
-## Recommended order
-
-1. Platform one-offs 〜 ≤1 ms yield, NULL heap release, extension-name leak, game-path trim, stable sort fallback.
-2. Music ingress trio 〜 reject bad overrides; cadence `NONE` is fallback not an index; shared domain constants.
-3. Decision 3 〜 `AnoRenderSubmitResult` on owned-payload endpoints; HUD/UI/bulk callers; shutdown-aware `submit_blocking`.
-4. GPOS filter-before-budget; glTF primitives default to `ANO_RENDER_NO_MESH`.
-5. Decision 1 〜 mutable-format dual views and per-domain bindless indices.
-6. Decision 2 〜 texture custody state machine (flip the three fenced guards together; arena spans retire at teardown).
-7. `createShadowResources` labelled unwind using the same cleanup idiom.
-
-Campaign history (the 27 of 2026-07-25, rounds 1–6, trivial-fix wave, adjudicated contracts, platform checklists) is in `docs/BUGS_DONE.md`.
+Campaign history is in `docs/BUGS_DONE.md`.

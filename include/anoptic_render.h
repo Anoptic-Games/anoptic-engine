@@ -31,6 +31,7 @@ It is the bridge betwixt engine <===> renderer.
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <anoptic_results.h> // ANO_RESULT_TYPE / ANO_RESULT
 #include <anoptic_math.h> // mat4, Vector4
 #include <anoptic_text.h> // AnoFontBake, AnoGlyphInstance (logic-side text shaping)
 #include <anoptic_ui.h>   // AnoUiPrim/Clip/Paint/Stop + builder (logic-side UI layout)
@@ -440,14 +441,37 @@ typedef struct RenderCommand
 // single tick is O(1) ring messages and never approaches the ceiling in the first place.
 bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd);
 
+// Outcome of the six owned-payload producer endpoints below. Four codes because the caller's
+// correct reaction differs at each: retry, shed, retire, or proceed 〜 a bool collapses "the ring
+// is momentarily full" and "the allocator refused" into one answer a retry loop cannot tell apart,
+// which is how a retry becomes an unbounded spin. Inspect result.code only; `if (result)` and
+// `while (!result)` are wrong by construction, because ACCEPTED is 0. Switch without a `default`
+// so a fifth code is a compile-time diagnostic at every policy site instead of a silent fallthrough.
+//   ACCEPTED     the payload was allocated, packed and enqueued, or the documented no-op applied
+//                (a zero-count bulk; a count-0 text or empty UI delegated to its CLEAR). Ownership
+//                has crossed into the bridge; the caller relinquishes a packed block on this code
+//                only, and commands still enqueued at teardown are discharged by the bridge.
+//   BACKPRESSURE the command ring refused the push. Any block already packed was released, nothing
+//                is enqueued, the caller's source arrays are untouched, and retrying is safe.
+//                Ordinary backpressure carries no warning.
+//   OOM          the render-owned block could not be allocated. Nothing enqueued, no ownership
+//                transfer, caller arrays untouched. Never spelled as backpressure.
+//   INVALID      the call violates the endpoint's contract. Deterministic: the same call cannot
+//                succeed later, so a retry loop must retire the block rather than spin on it.
+ANO_RESULT_TYPE(AnoRenderSubmitResult,
+    ANO_RENDER_SUBMIT_ACCEPTED = 0,
+    ANO_RENDER_SUBMIT_BACKPRESSURE,
+    ANO_RENDER_SUBMIT_OOM,
+    ANO_RENDER_SUBMIT_INVALID
+);
+
 // Bulk producer endpoints. Each copies the batch into one render-owned block (released
 // render-side after the change has reached every frame in flight), so the caller's arrays
-// need only live until the call returns. Same backpressure contract as ano_render_submit:
-// false == ring full, retry (the copy is released and nothing is enqueued); never drops.
-// A zero count is a no-op (returns true). Commands still enqueued when the bridge is torn
-// down are discharged by the bridge, so an accepted block is never leaked on any path.
-bool ano_render_submit_bulk_update(AnoRenderBridge *bridge, const RenderUpdateBatch *batch);
-bool ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, const uint32_t *render_ids, uint32_t count);
+// need only live until the call returns. A zero count is an ACCEPTED no-op with nothing
+// enqueued. INVALID covers a NULL batch, a NULL render_ids with a nonzero count, a NULL array
+// for a field the mask names, and a packed size that would not fit size_t.
+AnoRenderSubmitResult ano_render_submit_bulk_update(AnoRenderBridge *bridge, const RenderUpdateBatch *batch);
+AnoRenderSubmitResult ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, const uint32_t *render_ids, uint32_t count);
 
 // Streamed-transform lane (ANO_MOTION_STREAMED), zero-copy producer endpoint. `begin`
 // reserves the next free ring slice and points `out` at its mapped id/transform arrays,
@@ -483,30 +507,35 @@ bool ano_render_light_update_fields(AnoRenderBridge *bridge, uint32_t light_id,
 bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id);
 
 // Screen-text blocks (the v0 logic->render text path). `set` copies the
-// shaped instances into one render-owned block (count truncated to ANO_RENDER_TEXT_MAX)
-// and REPLACES block text_id's contents 〜 the caller's array need only live until the
-// call returns. `clear` removes the block (idempotent; unknown text_id is a no-op).
-// Backpressure: false == ring full. Unlike CREATE/DESTROY, a dropped SET is harmless to
-// skip 〜 it is a full replace, so the block is merely stale until the producer's next
-// set 〜 but a producer that must not miss a one-shot set (or a clear) should retry.
-// A set with count 0 clears the block. All blocks die with the renderer at shutdown.
-bool ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
-                         const AnoGlyphInstance *instances, uint32_t count);
-bool ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id);
+// shaped instances into one render-owned block (count truncated to ANO_RENDER_TEXT_MAX, which
+// still ACCEPTS) and REPLACES block text_id's contents 〜 the caller's array need only live
+// until the call returns. `clear` removes the block (idempotent; unknown text_id is a no-op).
+// A set with count 0 tail-forwards to clear and answers whatever that clear answered.
+// INVALID means count > 0 with a NULL instances pointer. `clear` allocates nothing and
+// validates nothing, so it answers only ACCEPTED or BACKPRESSURE: an exhaustive switch over a
+// clear may treat OOM and INVALID as unreachable. Unlike CREATE/DESTROY, a dropped SET is
+// harmless to skip 〜 it is a full replace, so the block is merely stale until the producer's
+// next set 〜 but a producer that must not miss a one-shot set (or a clear) retries on
+// BACKPRESSURE. All blocks die with the renderer at shutdown.
+AnoRenderSubmitResult ano_render_text_set(AnoRenderBridge *bridge, uint32_t text_id,
+                                          const AnoGlyphInstance *instances, uint32_t count);
+AnoRenderSubmitResult ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id);
 
 // UI blocks (the v0 logic->render UI path; docs/ui/ui-render.md §3.9). `set` packs the
 // builder's tables plus the shaped glyph labels into one render-owned block and REPLACES
-// block ui_id's contents; caller arrays need only live until the call returns. Text
-// semantics carry over: `clear` is idempotent, count-0 (empty builder) clears, false ==
-// ring full (retry), a dropped SET is merely stale. An INVALID block 〜 per-block caps
-// exceeded, out-of-range clip/paint/glyph references, or a UI_PATH whose curve walk
-// (ANO_UI_CURVE_SENTINEL grammar) would read past the stream 〜 is dropped with a warning
-// and returns true, so backpressure retry loops never spin on bad input. UI_GLYPHS prims
-// index glyphs[] block-locally.
-bool ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
-                       const AnoUiBuilder *ui,
-                       const AnoGlyphInstance *glyphs, uint32_t glyphCount);
-bool ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_id);
+// block ui_id's contents; caller arrays need only live until the call returns. Text semantics
+// carry over: `clear` is idempotent and, like text's, answers only ACCEPTED or BACKPRESSURE;
+// a non-NULL builder holding no prims tail-forwards to clear; a dropped SET is merely stale.
+// A NULL builder is INVALID, not a silent clear 〜 an absent block is spelled by calling clear.
+// INVALID also covers the per-block caps being exceeded, a glyphCount > 0 with NULL glyphs,
+// out-of-range clip/paint/glyph references, and a UI_PATH whose curve walk
+// (ANO_UI_CURVE_SENTINEL grammar) would read past the stream; the bridge warns once per drop.
+// A backpressure retry loop still never spins on bad input, because INVALID is a distinct code
+// the loop retires the block on. UI_GLYPHS prims index glyphs[] block-locally.
+AnoRenderSubmitResult ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id, uint32_t layer,
+                                        const AnoUiBuilder *ui,
+                                        const AnoGlyphInstance *glyphs, uint32_t glyphCount);
+AnoRenderSubmitResult ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_id);
 
 // ---------------------------------------------------------------------------
 // Back-channel: render -> logic
