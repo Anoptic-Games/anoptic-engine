@@ -107,14 +107,38 @@ static inline bool ano_spsc_pop(AnoSpscRing *ring, void *out)
 }
 
 
+/* Checked Sizing */
+
+// in:  *bytes (running total), count, stride (> 0)
+// out: true with *bytes += count*stride; false leaves *bytes untouched
+// inv: overflow-checked; neither product nor sum formed out of range
+static inline bool ano_size_add_array(size_t *bytes, uint32_t count, size_t stride)
+{
+    if ((size_t)count > SIZE_MAX / stride) return false;
+    size_t add = (size_t)count * stride;
+    if (add > SIZE_MAX - *bytes) return false;
+    *bytes += add;
+    return true;
+}
+
+// in:  *bytes (running offset), align (power of two)
+// out: true with *bytes rounded up to align; false leaves *bytes untouched
+// inv: packer must align SIZE and CURSOR with the same call
+static inline bool ano_size_align_up(size_t *bytes, size_t align)
+{
+    size_t pad = (align - (*bytes & (align - 1u))) & (align - 1u);
+    if (pad > SIZE_MAX - *bytes) return false;
+    *bytes += pad;
+    return true;
+}
+
+
 /* Seqlock */
 
 // Latest-wins epoch. Even version == stable, odd == mid-write; version 0 == unpublished.
-// One producer per version; readers retry if version moved across the copy —
-// never a torn value, at any payload size or scheduling.
+// One producer per version; readers retry if version moved across the copy.
 // value: _Atomic word lane, sizeof(payload)/8 entries (asserted at the bridge).
-// Relaxed word copies keep concurrent store/load defined; torn loads are
-// discarded by the version recheck, exactly as before.
+// Relaxed word copies; torn loads discarded by version recheck.
 static inline void ano_seqpub_store(_Atomic uint64_t *value, _Atomic uint64_t *version, const void *v, size_t stride)
 {
     uint64_t s = atomic_load_explicit(version, memory_order_relaxed); // producer-owned version
@@ -158,16 +182,14 @@ struct AnoRenderBridge
     AnoSpscRing commands; // logic -> render (RenderCommand)
     AnoSpscRing events;   // render -> logic (RenderEvent)
 
-    // Published latest-wins lanes. snapshot: render publishes, logic acquires.
-    // viewState: logic publishes, render acquires. Lanes store object
-    // representation as atomic words; typed access only ever happens through
-    // the publish/acquire copies.
-    // One ANO_THREAD_LINE region per direction, version leading its words:
-    // publish and acquire each move one line, and the two directions never share one.
+    // Latest-wins lanes. snapshot: render->logic. viewState: logic->render.
+    // Atomic word lanes; typed access only via publish/acquire copies.
+    // One ANO_THREAD_LINE per direction; version leads its words.
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t snapshotVersion; // render publishes
     _Atomic uint64_t snapshot[sizeof(RenderSnapshot) / sizeof(uint64_t)];
     _Alignas(ANO_THREAD_LINE) _Atomic uint64_t viewStateVersion; // logic publishes
     _Atomic uint64_t viewState[sizeof(AnoViewState) / sizeof(uint64_t)];
+    bool viewRejectWarned; // publisher-private: degenerate-pose warning once (never read by render)
 };
 
 // in:  bridge, heap, cmd_capacity_pow2, evt_capacity_pow2
@@ -176,7 +198,13 @@ struct AnoRenderBridge
 bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
                             uint32_t cmd_capacity_pow2, uint32_t evt_capacity_pow2);
 
+// Drains and discharges any command still enqueued, then releases both ring buffers.
 void ano_render_bridge_destroy(AnoRenderBridge *bridge);
+
+// in:  cmd, a command being DROPPED before any consumer adopts its payload
+// out: nothing; releases the render-owned block if any
+// inv: sole decode of RenderCommand ownership. Drop paths only (not after registry handoff). Honors bulk_owned.
+void ano_render_command_release(const RenderCommand *cmd);
 
 // Non-inline logic endpoints (submit/lights/text/ui + poll/snapshot/view): ano_render_bridge.c.
 

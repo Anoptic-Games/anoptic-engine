@@ -24,7 +24,21 @@ const char *const ANO_MODE_NAMES[ANO_MODE_COUNT] = {
     "ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian", "locrian",
 };
 
-static const uint8_t IONIAN[7] = { 0, 2, 4, 5, 7, 9, 11 };
+// Row k is ionian rotated k degrees, each offset folded so the row starts at pitch class 0.
+static const uint8_t MODE_INTERVALS[ANO_MODE_COUNT][7] = {
+    { 0, 2, 4, 5, 7, 9, 11 }, // ionian
+    { 0, 2, 3, 5, 7, 9, 10 }, // dorian
+    { 0, 1, 3, 5, 7, 8, 10 }, // phrygian
+    { 0, 2, 4, 6, 7, 9, 11 }, // lydian
+    { 0, 2, 4, 5, 7, 9, 10 }, // mixolydian
+    { 0, 2, 3, 5, 7, 8, 10 }, // aeolian
+    { 0, 1, 3, 5, 6, 8, 10 }, // locrian
+};
+
+_Static_assert(sizeof MODE_INTERVALS / sizeof MODE_INTERVALS[0] == (size_t)ANO_MODE_COUNT,
+               "one row per AnoMode: ano_mode_intervals subscripts this table by mode");
+_Static_assert(sizeof MODE_INTERVALS[0] == 7,
+               "7 offsets per row: ano_scale_pcs fills out[7] from the returned row");
 
 static const char *const TONIC_NAMES[12] = {
     "C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
@@ -43,19 +57,11 @@ int ano_mode_brightness(AnoMode mode)
     }
 }
 
+// Input: mode in [0, ANO_MODE_COUNT). Output: 7 read-only ascending semitone offsets.
+// Invariant: immutable constant data.
 const uint8_t *ano_mode_intervals(AnoMode mode)
 {
-    static uint8_t table[ANO_MODE_COUNT][7];
-    static bool baked = false;
-    if (!baked) {
-        for (int k = 0; k < ANO_MODE_COUNT; ++k) {
-            int root = IONIAN[k];
-            for (int i = 0; i < 7; ++i)
-                table[k][i] = (uint8_t)pymod(IONIAN[(k + i) % 7] - root, 12);
-        }
-        baked = true;
-    }
-    return table[mode];
+    return MODE_INTERVALS[mode];
 }
 
 void ano_scale_pcs(AnoScale s, uint8_t out[7])
@@ -184,7 +190,7 @@ static AnoScale chord_scale_for(AnoChord c, AnoScale context)
 uint32_t ano_chord_pitch_classes(AnoChord c, AnoScale context, uint8_t out[5])
 {
     if (c.applied) {
-        // dominant quality by pc offsets — the applied chord leaves the collection
+        // dominant quality by pc offsets
         int rootPc = (ano_scale_pitch_at(context, c.applied, 4) + 7) % 12;
         static const int seven[4] = { 0, 4, 7, 10 };
         uint32_t n = (c.extensions & ANO_EXT_7) ? 4u : 3u;
@@ -369,7 +375,7 @@ bool ano_forbidden_direct(int prevLower, int prevUpper, int lower, int upper, in
 
 /* Pivot modulation */
 
-// pivot preference by NEW-key degree; old-dominant chords pull backward
+// NEW-key degree preference ranks
 static const int NEW_DEGREE_RANK[8] = { 0, 3, 0, 4, 1, 8, 2, 9 }; // index by degree
 #define OLD_DOMINANT_PENALTY 6
 
@@ -418,7 +424,7 @@ uint32_t ano_find_pivots(AnoScale oldKey, AnoScale newKey, AnoPivot out[7])
             }
         }
     }
-    // ascending by the packed score (unique per pivot: no stable-sort concern)
+    // ascending by packed score
     for (uint32_t i = 1; i < count; ++i) {
         AnoPivot key = out[i];
         int ks = pivot_score(&key);

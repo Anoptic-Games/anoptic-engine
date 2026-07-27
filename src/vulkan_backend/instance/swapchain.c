@@ -7,8 +7,6 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <string.h>
-#include <ctype.h>
-#include <math.h>
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
 
@@ -22,27 +20,21 @@
 #include "vulkan_backend/text_raster.h"
 
 
-struct SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR *surface) // Available swap chains and capabilities
+// Surface enumeration caps. Real surfaces report far fewer; a longer list is clamped, never overrun.
+enum { MAX_SURFACE_FORMATS = 64, MAX_PRESENT_MODES = 16 };
+
+// Everything a swapchain needs from its surface. Values only, no owned storage.
+typedef struct SwapChainSupport
 {
-	struct SwapChainSupportDetails details;
-
-	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, *surface, &details.capabilities);
-
-	vkGetPhysicalDeviceSurfaceFormatsKHR(device, *surface, &details.formatCount, NULL);
-
-	details.formats = (VkSurfaceFormatKHR*) calloc(1, details.formatCount * sizeof(VkSurfaceFormatKHR));
-	vkGetPhysicalDeviceSurfaceFormatsKHR(device, *surface, &details.formatCount, details.formats);
-
-	vkGetPhysicalDeviceSurfacePresentModesKHR(device, *surface, &details.presentModesCount, NULL);
-
-	details.presentModes = (VkPresentModeKHR*) calloc(1, details.presentModesCount * sizeof(VkPresentModeKHR));
-	vkGetPhysicalDeviceSurfacePresentModesKHR(device, *surface, &details.presentModesCount, details.presentModes);
-		
-	return details;
-}
+	VkSurfaceCapabilitiesKHR capabilities;
+	VkSurfaceFormatKHR       format;
+	VkPresentModeKHR         presentMode;
+} SwapChainSupport;
 
 
-VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableFormats, uint32_t formatCount) 
+// Preferred format if the surface offers it, else the first one reported.
+// availableFormats holds formatCount entries; formatCount is non-zero.
+static VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableFormats, uint32_t formatCount)
 {
     for (uint32_t i = 0; i < formatCount; i++) 
     {
@@ -54,7 +46,9 @@ VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableFormats,
     return availableFormats[0];
 }
 
-VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, uint32_t presentModesCount, uint32_t preferredMode) 
+// preferredMode if the surface offers it, else FIFO, which the spec always guarantees.
+// availablePresentModes holds presentModesCount entries.
+static VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, uint32_t presentModesCount, uint32_t preferredMode)
 {
     for (uint32_t i = 0; i < presentModesCount; i++) 
     {
@@ -66,7 +60,7 @@ VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, 
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window) 
+static VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwindow* window)
 { // Central init component, also used during resizes
 		if (capabilities.currentExtent.width != UINT32_MAX)
 		{
@@ -105,26 +99,66 @@ VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, GLFWwin
 		}
 }
 
+// Surface capabilities + chosen format and present mode.
+// Inputs: device, surface, preferredMode. Output: bool; *out total out-param, zeroed on false.
+static bool querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface, uint32_t preferredMode, SwapChainSupport* out)
+{
+    *out = (SwapChainSupport){0};
+    SwapChainSupport support = {0};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &support.capabilities) != VK_SUCCESS)
+        return false;
+
+    VkSurfaceFormatKHR formats[MAX_SURFACE_FORMATS];
+    uint32_t formatCount = 0;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, NULL) != VK_SUCCESS || formatCount == 0)
+        return false;
+    if (formatCount > MAX_SURFACE_FORMATS)
+        formatCount = MAX_SURFACE_FORMATS; // VK_INCOMPLETE, not an error
+
+    VkResult formatResult = vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, formats);
+    if ((formatResult != VK_SUCCESS && formatResult != VK_INCOMPLETE) || formatCount == 0)
+        return false;
+    support.format = chooseSwapSurfaceFormat(formats, formatCount);
+
+    VkPresentModeKHR modes[MAX_PRESENT_MODES];
+    uint32_t modeCount = 0;
+    support.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    if (vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, NULL) == VK_SUCCESS && modeCount > 0)
+    {
+        if (modeCount > MAX_PRESENT_MODES)
+            modeCount = MAX_PRESENT_MODES;
+        VkResult modeResult = vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &modeCount, modes);
+        if ((modeResult == VK_SUCCESS || modeResult == VK_INCOMPLETE) && modeCount > 0)
+            support.presentMode = chooseSwapPresentMode(modes, modeCount, preferredMode);
+    }
+
+    *out = support;
+    return true;
+}
+
 bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain, RendererState* state) // Selects and initializes a swap chain
 {
-    struct SwapChainSupportDetails details = querySwapChainSupport(ctx->physicalDevice, &(ctx->surface));
+    SwapChainSupport support;
+    if (!querySwapChainSupport(ctx->physicalDevice, ctx->surface, preferredMode, &support))
+    {
+        ano_log(ANO_ERROR, "Failed to query swap chain support!");
+        return false;
+    }
 
-    VkSurfaceFormatKHR chosenFormat = chooseSwapSurfaceFormat(details.formats, details.formatCount);
-    VkPresentModeKHR chosenPresentMode = chooseSwapPresentMode(details.presentModes, details.presentModesCount, preferredMode);
-    VkExtent2D chosenExtent = chooseSwapExtent(details.capabilities, window);
+    VkExtent2D chosenExtent = chooseSwapExtent(support.capabilities, window);
 
-    uint32_t imageCount = details.capabilities.minImageCount + 1; // Request one more than minimum
-    if (details.capabilities.maxImageCount > 0 && imageCount > details.capabilities.maxImageCount) 
+    uint32_t imageCount = support.capabilities.minImageCount + 1; // Request one more than minimum
+    if (support.capabilities.maxImageCount > 0 && imageCount > support.capabilities.maxImageCount)
     { // maxImageCount 0 means no upper limit
-        imageCount = details.capabilities.maxImageCount;
+        imageCount = support.capabilities.maxImageCount;
     }
 
     VkSwapchainCreateInfoKHR createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     createInfo.surface = ctx->surface;
     createInfo.minImageCount = imageCount;
-    createInfo.imageFormat = chosenFormat.format;
-    createInfo.imageColorSpace = chosenFormat.colorSpace;
+    createInfo.imageFormat = support.format.format;
+    createInfo.imageColorSpace = support.format.colorSpace;
     createInfo.imageExtent = chosenExtent;
     createInfo.imageArrayLayers = 1; // Always 1 unless developing stereoscopic 3D
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -145,14 +179,14 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
         createInfo.pQueueFamilyIndices = NULL; // Optional
     }
 
-    createInfo.preTransform = details.capabilities.currentTransform; // No pre-transform
+    createInfo.preTransform = support.capabilities.currentTransform; // No pre-transform
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; // Ignore alpha channel
-    createInfo.presentMode = chosenPresentMode;
+    createInfo.presentMode = support.presentMode;
     createInfo.clipped = VK_TRUE; // Discard obscured pixels
     createInfo.oldSwapchain = oldSwapChain; // Old swapchain aids resource transfer on recreate
 
     VkSwapchainKHR swapChain;
-    if (vkCreateSwapchainKHR(ctx->device, &createInfo, NULL, &swapChain) != VK_SUCCESS) 
+    if (vkCreateSwapchainKHR(ctx->device, &createInfo, NULL, &swapChain) != VK_SUCCESS)
     {
         return false;
     }
@@ -163,7 +197,7 @@ bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMod
     vkGetSwapchainImagesKHR(ctx->device, swapChain, &imageCount, swapChainImages);
 
     state->swapChain = swapChain;
-    state->imageFormat = chosenFormat.format;
+    state->imageFormat = support.format.format;
     state->imageExtent = chosenExtent;
     // Per-view render extents: view 0 fills swapchain, aux views inset at W/3 x H/3
     state->viewExtent[0] = chosenExtent;
@@ -317,6 +351,11 @@ void cleanupSwapChain(VulkanContext* ctx, RendererState* state)
     gpu_alloc_reset(&swapchainAllocator);
 }
 
+// in:  live ctx; zero framebuffer waits on events until non-zero
+// out: remint nine swapchain-derived families; rebind named descriptors; reset pools/fences
+// Rebind: depth/depth-resolve -> HiZ; Hi-Z -> HiZ/cull/global; HDR -> tonemap; text -> text sets
+// Attachment-only (views, MSAA colour/pick-id, pick-id resolve): no rebind
+// Obligation: new descriptor-named resource gets its rebind beside its creator here
 void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 {
 	// Wait for device idle
@@ -361,18 +400,23 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 		cleanupVulkan(ctx);
 		exit(1);
 	}
-	createImageViews(ctx, &rendererState);
-	if (rendererState.views == NULL)
+	if (!createImageViews(ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "View group re-creation error, exiting!");
 		cleanupVulkan(ctx);
 		exit(1);
 	}
 
-	createColorResources(ctx);
+	if (!createColorResourcesChecked(ctx))
+	{
+		ano_log(ANO_FATAL, "Colour target re-creation error, exiting!");
+		cleanupVulkan(ctx);
+		exit(1);
+	}
 
-	createDepthResources(ctx, &rendererState);
-	if (rendererState.frames[0].views[0].depthView == NULL)
+	// Status, not a sniff: the builder fills frame 0 / view 0 first, so a later frame's refusal
+	// leaves that field live.
+	if (!createDepthResources(ctx, &rendererState))
 	{
 		ano_log(ANO_FATAL, "Depth resources re-creation error, exiting!");
 		cleanupVulkan(ctx);
@@ -406,8 +450,9 @@ void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window)
 	rendererState.framebufferResized = false;
 }
 
+// Central init component. VK_NULL_HANDLE on failure (driver out-param never forwarded).
 VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels)
-{ // Central init component
+{
 	VkImageViewCreateInfo viewInfo = {};
 	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	viewInfo.image = image;
@@ -419,25 +464,45 @@ VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkI
 	viewInfo.subresourceRange.baseArrayLayer = 0;
 	viewInfo.subresourceRange.layerCount = 1;
 
-	VkImageView imageView;
+	VkImageView imageView = VK_NULL_HANDLE;
 	if (vkCreateImageView(device, &viewInfo, NULL, &imageView) != VK_SUCCESS)
 	{
 		ano_log(ANO_ERROR, "Failed to create image view!");
+		return VK_NULL_HANDLE;
 	}
 
 	return imageView;
 }
 
 
+// Swapchain colour views, one per presentable image. false leaves views NULL and viewCount 0.
+// Published only once every slot holds a live view.
 bool createImageViews(VulkanContext* ctx, RendererState* state)
 {
-    state->views = (VkImageView*)malloc(state->imageCount * sizeof(VkImageView));
-    state->viewCount = state->imageCount;
+    state->views = NULL;
+    state->viewCount = 0;
 
-    for (uint32_t i = 0; i < state->imageCount; i++) 
+    VkImageView* views = (VkImageView*)malloc(state->imageCount * sizeof(VkImageView));
+    if (views == NULL)
     {
-        state->views[i] = createImageView(ctx->device, state->images[i], state->imageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+        ano_log(ANO_ERROR, "Failed to allocate %u swapchain image views!", state->imageCount);
+        return false;
     }
+
+    for (uint32_t i = 0; i < state->imageCount; i++)
+    {
+        views[i] = createImageView(ctx->device, state->images[i], state->imageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+        if (views[i] == VK_NULL_HANDLE)
+        { // Unwind the prefix: teardown never walks a partial set
+            for (uint32_t j = 0; j < i; j++)
+                vkDestroyImageView(ctx->device, views[j], NULL);
+            free(views);
+            return false;
+        }
+    }
+
+    state->views = views;
+    state->viewCount = state->imageCount;
     return true;
 }
 

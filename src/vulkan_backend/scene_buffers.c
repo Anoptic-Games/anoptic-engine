@@ -18,6 +18,38 @@
 
 //Init and cleanup functions
 
+// Sole mint for this file's scene buffers. in: create info, memory props; out: handle, allocation.
+// Failures leave VK_NULL_HANDLE + zeroed allocation.
+[[nodiscard]] static bool mintSceneBuffer(VulkanContext* ctx, const VkBufferCreateInfo* info,
+                                          VkMemoryPropertyFlags props,
+                                          VkBuffer* buffer, GpuAllocation* allocation) {
+    *buffer = VK_NULL_HANDLE;
+    *allocation = (GpuAllocation){0};
+
+    // Minted into a local: a failed create leaves that undefined, never the slot.
+    VkBuffer minted = VK_NULL_HANDLE;
+    if (vkCreateBuffer(ctx->device, info, NULL, &minted) != VK_SUCCESS)
+        return false;
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(ctx->device, minted, &memRequirements);
+
+    GpuAllocation alloc = gpu_alloc(&gpuAllocator, memRequirements, props);
+    if (alloc.memory == VK_NULL_HANDLE) {
+        vkDestroyBuffer(ctx->device, minted, NULL);
+        return false;
+    }
+    // Bind failed: destroy unbacked buffer; arena span unreclaimed.
+    if (vkBindBufferMemory(ctx->device, minted, alloc.memory, alloc.offset) != VK_SUCCESS) {
+        vkDestroyBuffer(ctx->device, minted, NULL);
+        return false;
+    }
+
+    *buffer = minted;
+    *allocation = alloc;
+    return true;
+}
+
 bool createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t maxEntities) {
     state->materialBuffer.capacity = maxEntities;
     state->materialBuffer.count = 0;
@@ -31,20 +63,12 @@ bool createMaterialBuffer(VulkanContext* ctx, RendererState* state, uint32_t max
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         
-        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->materialBuffer.buffer[i]) != VK_SUCCESS) {
+        if (!mintSceneBuffer(ctx, &bufferInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             &state->materialBuffer.buffer[i], &state->materialBuffer.allocs[i])) {
             ano_log(ANO_FATAL, "Failed to create material buffer!");
-        }
-        
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(ctx->device, state->materialBuffer.buffer[i], &memRequirements);
-        
-        state->materialBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (state->materialBuffer.allocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, state->materialBuffer.buffer[i], NULL);
             return false;
         }
-        vkBindBufferMemory(ctx->device, state->materialBuffer.buffer[i], state->materialBuffer.allocs[i].memory, state->materialBuffer.allocs[i].offset);
-        
+
         state->materialBuffer.mapped[i] = (MaterialData*)state->materialBuffer.allocs[i].mapped;
     }
     return true;
@@ -94,12 +118,8 @@ static bool createMappedSsboSet(VulkanContext* ctx, VkDeviceSize bytes,
             .size = bytes, .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         };
-        if (vkCreateBuffer(ctx->device, &bi, NULL, &outBufs[i]) != VK_SUCCESS) return false;
-        VkMemoryRequirements mr;
-        vkGetBufferMemoryRequirements(ctx->device, outBufs[i], &mr);
-        outAllocs[i] = gpu_alloc(&gpuAllocator, mr, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (outAllocs[i].memory == VK_NULL_HANDLE) { vkDestroyBuffer(ctx->device, outBufs[i], NULL); return false; }
-        vkBindBufferMemory(ctx->device, outBufs[i], outAllocs[i].memory, outAllocs[i].offset);
+        if (!mintSceneBuffer(ctx, &bi, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             &outBufs[i], &outAllocs[i])) return false;
         outMapped[i] = outAllocs[i].mapped;
     }
     return true;
@@ -138,21 +158,11 @@ bool createStreamBuffers(VulkanContext* ctx, RendererState* state, uint32_t capa
         .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
-    if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &ts->xformRing) != VK_SUCCESS) {
+    if (!mintSceneBuffer(ctx, &bufferInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         &ts->xformRing, &ts->xformRingAlloc)) {
         ano_log(ANO_FATAL, "Failed to create stream transform ring!");
         return false;
     }
-    VkMemoryRequirements memReq;
-    vkGetBufferMemoryRequirements(ctx->device, ts->xformRing, &memReq);
-    ts->xformRingAlloc = gpu_alloc(&gpuAllocator, memReq,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (ts->xformRingAlloc.memory == VK_NULL_HANDLE) {
-        vkDestroyBuffer(ctx->device, ts->xformRing, NULL);
-        ts->xformRing = VK_NULL_HANDLE;
-        ano_log(ANO_FATAL, "Failed to allocate stream transform ring!");
-        return false;
-    }
-    vkBindBufferMemory(ctx->device, ts->xformRing, ts->xformRingAlloc.memory, ts->xformRingAlloc.offset);
     ts->xformRingMapped = (mat4*)ts->xformRingAlloc.mapped;
     return true;
 }
@@ -171,20 +181,11 @@ bool createTransformBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t ma
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &buf->buffer[i]) != VK_SUCCESS) {
+        if (!mintSceneBuffer(ctx, &bufferInfo, props, &buf->buffer[i], &buf->allocs[i])) {
             ano_log(ANO_FATAL, "Failed to create transform buffer!");
-        }
-
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(ctx->device, buf->buffer[i], &memRequirements);
-
-        buf->allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, props);
-        if (buf->allocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, buf->buffer[i], NULL);
             return false;
         }
-        vkBindBufferMemory(ctx->device, buf->buffer[i], buf->allocs[i].memory, buf->allocs[i].offset);
-        
+
         buf->mapped[i] = (mat4*)buf->allocs[i].mapped;
     }
     return true;
@@ -207,20 +208,10 @@ bool createLightRuntimeBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t
         uint32_t fams[2];
         if (rendererState.asyncLc) buffer_share_async_compute(&bufferInfo, fams);
 
-        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &buf->buffer[i]) != VK_SUCCESS) {
+        if (!mintSceneBuffer(ctx, &bufferInfo, props, &buf->buffer[i], &buf->allocs[i])) {
             ano_log(ANO_FATAL, "Failed to create light pose buffer!");
             return false;
         }
-
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(ctx->device, buf->buffer[i], &memRequirements);
-
-        buf->allocs[i] = gpu_alloc(&gpuAllocator, memRequirements, props);
-        if (buf->allocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, buf->buffer[i], NULL);
-            return false;
-        }
-        vkBindBufferMemory(ctx->device, buf->buffer[i], buf->allocs[i].memory, buf->allocs[i].offset);
 
         buf->mapped[i] = (mat4*)buf->allocs[i].mapped;
     }
@@ -244,22 +235,13 @@ bool createIndirectDrawBuffer(VulkanContext* ctx, RendererState* state, uint32_t
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE
         };
 
-        if (vkCreateBuffer(ctx->device, &bufferInfo, NULL, &state->indirectBuffer.buffer[i]) != VK_SUCCESS) {
+        // GPU-private, written by vkCmdFillBuffer + cull.comp, read by draw-indirect.
+        if (!mintSceneBuffer(ctx, &bufferInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             &state->indirectBuffer.buffer[i], &state->indirectBuffer.allocs[i])) {
             ano_log(ANO_FATAL, "Failed to create indirect draw buffer!");
             return false;
         }
 
-        VkMemoryRequirements memReqs;
-        vkGetBufferMemoryRequirements(ctx->device, state->indirectBuffer.buffer[i], &memReqs);
-
-        // GPU-private, written by vkCmdFillBuffer + cull.comp, read by draw-indirect.
-        state->indirectBuffer.allocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (state->indirectBuffer.allocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, state->indirectBuffer.buffer[i], NULL);
-            return false;
-        }
-
-        vkBindBufferMemory(ctx->device, state->indirectBuffer.buffer[i], state->indirectBuffer.allocs[i].memory, state->indirectBuffer.allocs[i].offset);
         state->indirectBuffer.mapped[i] = (VkDrawMeshTasksIndirectCommandEXT*)state->indirectBuffer.allocs[i].mapped;
     }
 
@@ -282,21 +264,14 @@ bool createClusterBuffers(VulkanContext* ctx, RendererState* state) {
             // Async light-cull writes on compute family, fragment passes read on graphics.
             uint32_t fams[2];
             if (rendererState.asyncLc) buffer_share_async_compute(&info, fams);
-            VkMemoryRequirements memReqs;
 
             info.size = countSize;
-            if (vkCreateBuffer(ctx->device, &info, NULL, &vr->clusterLightCountBuffer) != VK_SUCCESS) return false;
-            vkGetBufferMemoryRequirements(ctx->device, vr->clusterLightCountBuffer, &memReqs);
-            vr->clusterLightCountAlloc = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            if (vr->clusterLightCountAlloc.memory == VK_NULL_HANDLE) return false;
-            vkBindBufferMemory(ctx->device, vr->clusterLightCountBuffer, vr->clusterLightCountAlloc.memory, vr->clusterLightCountAlloc.offset);
+            if (!mintSceneBuffer(ctx, &info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                 &vr->clusterLightCountBuffer, &vr->clusterLightCountAlloc)) return false;
 
             info.size = indexSize;
-            if (vkCreateBuffer(ctx->device, &info, NULL, &vr->clusterLightIndexBuffer) != VK_SUCCESS) return false;
-            vkGetBufferMemoryRequirements(ctx->device, vr->clusterLightIndexBuffer, &memReqs);
-            vr->clusterLightIndexAlloc = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            if (vr->clusterLightIndexAlloc.memory == VK_NULL_HANDLE) return false;
-            vkBindBufferMemory(ctx->device, vr->clusterLightIndexBuffer, vr->clusterLightIndexAlloc.memory, vr->clusterLightIndexAlloc.offset);
+            if (!mintSceneBuffer(ctx, &info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                 &vr->clusterLightIndexBuffer, &vr->clusterLightIndexAlloc)) return false;
         }
     }
     return true;
@@ -332,22 +307,17 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         return false;
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        VkMemoryRequirements memReqs;
-
         // Mesh Data Buffer
         VkBufferCreateInfo meshInfo = {};
         meshInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         meshInfo.size = meshDataSize;
         meshInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         meshInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(ctx->device, &meshInfo, NULL, &state->culling.meshDataBuffer[i]);
-        vkGetBufferMemoryRequirements(ctx->device, state->culling.meshDataBuffer[i], &memReqs);
-        state->culling.meshDataAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (state->culling.meshDataAllocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, state->culling.meshDataBuffer[i], NULL);
+        if (!mintSceneBuffer(ctx, &meshInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             &state->culling.meshDataBuffer[i], &state->culling.meshDataAllocs[i])) {
+            ano_log(ANO_FATAL, "Failed to create mesh data buffer!");
             return false;
         }
-        vkBindBufferMemory(ctx->device, state->culling.meshDataBuffer[i], state->culling.meshDataAllocs[i].memory, state->culling.meshDataAllocs[i].offset);
         state->culling.meshDataMapped[i] = state->culling.meshDataAllocs[i].mapped;
 
         // Mesh Bounds Buffer
@@ -356,14 +326,11 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         boundsInfo.size = meshBoundsSize;
         boundsInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         boundsInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(ctx->device, &boundsInfo, NULL, &state->culling.meshBoundsBuffer[i]);
-        vkGetBufferMemoryRequirements(ctx->device, state->culling.meshBoundsBuffer[i], &memReqs);
-        state->culling.meshBoundsAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (state->culling.meshBoundsAllocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, state->culling.meshBoundsBuffer[i], NULL);
+        if (!mintSceneBuffer(ctx, &boundsInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             &state->culling.meshBoundsBuffer[i], &state->culling.meshBoundsAllocs[i])) {
+            ano_log(ANO_FATAL, "Failed to create mesh bounds buffer!");
             return false;
         }
-        vkBindBufferMemory(ctx->device, state->culling.meshBoundsBuffer[i], state->culling.meshBoundsAllocs[i].memory, state->culling.meshBoundsAllocs[i].offset);
         state->culling.meshBoundsMapped[i] = state->culling.meshBoundsAllocs[i].mapped;
 
         // Draw Count Buffer
@@ -372,15 +339,12 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         countInfo.size = drawCountSize;
         countInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         countInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(ctx->device, &countInfo, NULL, &state->culling.drawCountBuffer[i]);
-        vkGetBufferMemoryRequirements(ctx->device, state->culling.drawCountBuffer[i], &memReqs);
         // GPU-private, zeroed by vkCmdFillBuffer, incremented by cull.comp, read by draw-indirect-count.
-        state->culling.drawCountAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (state->culling.drawCountAllocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, state->culling.drawCountBuffer[i], NULL);
+        if (!mintSceneBuffer(ctx, &countInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             &state->culling.drawCountBuffer[i], &state->culling.drawCountAllocs[i])) {
+            ano_log(ANO_FATAL, "Failed to create draw count buffer!");
             return false;
         }
-        vkBindBufferMemory(ctx->device, state->culling.drawCountBuffer[i], state->culling.drawCountAllocs[i].memory, state->culling.drawCountAllocs[i].offset);
         state->culling.drawCountMapped[i] = (uint32_t*)state->culling.drawCountAllocs[i].mapped;
 
         // Compacted Entity Indices Buffer
@@ -389,15 +353,12 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         compactedInfo.size = compactedEntityIndicesSize;
         compactedInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         compactedInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(ctx->device, &compactedInfo, NULL, &state->culling.compactedEntityIndicesBuffer[i]);
-        vkGetBufferMemoryRequirements(ctx->device, state->culling.compactedEntityIndicesBuffer[i], &memReqs);
         // GPU-private, written by cull.comp, read by the geometry stage.
-        state->culling.compactedEntityIndicesAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (state->culling.compactedEntityIndicesAllocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, state->culling.compactedEntityIndicesBuffer[i], NULL);
+        if (!mintSceneBuffer(ctx, &compactedInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             &state->culling.compactedEntityIndicesBuffer[i], &state->culling.compactedEntityIndicesAllocs[i])) {
+            ano_log(ANO_FATAL, "Failed to create compacted entity index buffer!");
             return false;
         }
-        vkBindBufferMemory(ctx->device, state->culling.compactedEntityIndicesBuffer[i], state->culling.compactedEntityIndicesAllocs[i].memory, state->culling.compactedEntityIndicesAllocs[i].offset);
         state->culling.compactedEntityIndicesMapped[i] = (uint32_t*)state->culling.compactedEntityIndicesAllocs[i].mapped;
 
         // Sort Keys Buffer, GPU-private, written by cull.comp, read by tpsort.comp.
@@ -406,14 +367,11 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         sortKeysInfo.size = sortKeysSize;
         sortKeysInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         sortKeysInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(ctx->device, &sortKeysInfo, NULL, &state->culling.sortKeysBuffer[i]);
-        vkGetBufferMemoryRequirements(ctx->device, state->culling.sortKeysBuffer[i], &memReqs);
-        state->culling.sortKeysAllocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (state->culling.sortKeysAllocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, state->culling.sortKeysBuffer[i], NULL);
+        if (!mintSceneBuffer(ctx, &sortKeysInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             &state->culling.sortKeysBuffer[i], &state->culling.sortKeysAllocs[i])) {
+            ano_log(ANO_FATAL, "Failed to create sort keys buffer!");
             return false;
         }
-        vkBindBufferMemory(ctx->device, state->culling.sortKeysBuffer[i], state->culling.sortKeysAllocs[i].memory, state->culling.sortKeysAllocs[i].offset);
 
         // Cull UBO
         VkBufferCreateInfo uboInfo = {};
@@ -421,18 +379,19 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
         uboInfo.size = uboSize;
         uboInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         uboInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(ctx->device, &uboInfo, NULL, &state->culling.ubo.buffer[i]);
-        vkGetBufferMemoryRequirements(ctx->device, state->culling.ubo.buffer[i], &memReqs);
-        state->culling.ubo.allocs[i] = gpu_alloc(&gpuAllocator, memReqs, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (state->culling.ubo.allocs[i].memory == VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, state->culling.ubo.buffer[i], NULL);
+        if (!mintSceneBuffer(ctx, &uboInfo, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             &state->culling.ubo.buffer[i], &state->culling.ubo.allocs[i])) {
+            ano_log(ANO_FATAL, "Failed to create cull UBO buffer!");
             return false;
         }
-        vkBindBufferMemory(ctx->device, state->culling.ubo.buffer[i], state->culling.ubo.allocs[i].memory, state->culling.ubo.allocs[i].offset);
         state->culling.ubo.mapped[i] = (CullUBO*)state->culling.ubo.allocs[i].mapped;
     }
     return true;
 }
+
+// ANO_MESH_NONE / NO_MESH_INDEX / ANO_RENDER_NO_MESH must be one absent-mesh word.
+_Static_assert(ANO_MESH_NONE == NO_MESH_INDEX && ANO_MESH_NONE == ANO_RENDER_NO_MESH,
+               "mesh refusal must spell the absent-mesh word its consuming lanes read");
 
 bool createFallbackResources(VulkanContext* ctx, RendererState* state)
 {
@@ -464,8 +423,10 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
                                                     ctx->transferQueue,
                                                     cubeVertices, 8, cubeIndices, 36);
 
+    // Fallback must land at FALLBACK_MESH_INDEX; else unwind.
     if (fallbackMeshIdx != FALLBACK_MESH_INDEX) {
-        ano_log(ANO_WARN, "Warning: Fallback mesh was assigned index %u instead of %u!", fallbackMeshIdx, FALLBACK_MESH_INDEX);
+        ano_log(ANO_ERROR, "Fallback mesh was assigned index %u instead of %u!", fallbackMeshIdx, FALLBACK_MESH_INDEX);
+        return false;
     }
 
     // 2. Fallback Texture (2x2 Magenta/Black Checkerboard)
@@ -474,18 +435,24 @@ bool createFallbackResources(VulkanContext* ctx, RendererState* state)
         0, 0, 0, 255,       255, 0, 255, 255
     };
 
-    GpuAllocation fallbackImageAlloc; // Memory managed by gpu_allocator
+    TexturePackage fallbackPkg; // gpu_allocator
 
-    if (!createTextureImageFromPixels(ctx, VK_NULL_HANDLE, &state->fallbackImage, &fallbackImageAlloc, &state->fallbackImageView, fallbackPixels, 2, 2, NULL)) {
+    // Colour role, no borrowed batch.
+    if (createTextureImageFromPixels(ctx, VK_NULL_HANDLE, &fallbackPkg, fallbackPixels, 2, 2,
+                                     TEXTURE_USE_COLOR, false).code != ANO_TEXTURE_BUILT) {
         ano_log(ANO_WARN, "Warning: Failed to create fallback texture!");
         return false;
     }
+    state->fallbackImage = fallbackPkg.image;
+    state->fallbackImageView = fallbackPkg.srgbView;
 
     // 3. Register Fallback Texture
     uint32_t fallbackTexIdx = bindless_register_texture(ctx, &state->bindlessTextures, state->fallbackImageView, state->textureSampler);
     
+    // Every unaddressable texture degrades to this slot, so init without it is a lie: unwind.
     if (fallbackTexIdx != FALLBACK_TEXTURE_INDEX) {
-        ano_log(ANO_WARN, "Warning: Fallback texture was assigned index %u instead of %u!", fallbackTexIdx, FALLBACK_TEXTURE_INDEX);
+        ano_log(ANO_ERROR, "Fallback texture was assigned index %u instead of %u!", fallbackTexIdx, FALLBACK_TEXTURE_INDEX);
+        return false;
     }
 
     return true;

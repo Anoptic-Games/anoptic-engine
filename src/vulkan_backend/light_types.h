@@ -26,6 +26,11 @@ typedef enum LightType
     LIGHT_TYPE_SPOT        = 2, // position + direction + range + cones
 } LightType;
 
+// LightType count: RendererState.shadowTypeUsed + bridge/apply.c seam gate. Widen both on add.
+enum { LIGHT_TYPE_COUNT = 3u };
+_Static_assert(LIGHT_TYPE_SPOT + 1 == LIGHT_TYPE_COUNT,
+               "LightType grew: widen shadowTypeUsed and shadow_static_budget()");
+
 typedef struct LightData
 {
     // row 0

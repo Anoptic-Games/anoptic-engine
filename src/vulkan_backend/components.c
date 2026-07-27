@@ -10,30 +10,30 @@
 #include <stdio.h>
 #include <string.h>
 
-// Pipeline types that emit draws, in partition (draw-slot) order.
+// Drawing pipeline types in draw-slot order.
 const PipelineType ano_draw_pipelines[] = {
-    PIPELINE_FLAT,          // slot 0: opaque flat-shaded geometry
-    PIPELINE_TRANSMISSION,  // slot 1: refraction / transmission
-    PIPELINE_ADDITIVE,      // slot 2: additive glows
-    PIPELINE_FLAT_TWOSIDED, // slot 3: opaque doubleSided materials
-    PIPELINE_FLAT_MASKED,   // slot 4: alpha-tested cutout
+    PIPELINE_FLAT,          // opaque
+    PIPELINE_TRANSMISSION,  // transmission
+    PIPELINE_ADDITIVE,      // additive
+    PIPELINE_FLAT_TWOSIDED, // doubleSided
+    PIPELINE_FLAT_MASKED,   // MASK cutout
 };
 
-// Material-carried pipeline types must sit below 16 (drawSlotOf is uvec4[4] in cull.comp).
+// drawSlotOf map: 16 entries (cull.comp uvec4[4]).
 _Static_assert(PIPELINE_FLAT_MASKED < 16, "material-carried pipeline types must fit the 16-entry drawSlotOf map (CullUBO/cull.comp)");
 
-// out: number of drawing pipeline types == per-camera-view draw-slot stride.
+// out: draw-pipeline count (== per-view draw-slot stride)
 uint32_t ano_draw_pipeline_count(void) {
     return (uint32_t)(sizeof(ano_draw_pipelines) / sizeof(ano_draw_pipelines[0]));
 }
 
-// out: total compacted-draw partitions.
+// out: compacted-draw partition count
 uint32_t ano_draw_partition_count(void) {
     return ANO_VIEW_COUNT * ano_draw_pipeline_count() + 2u * ANO_SHADOW_FRUSTUM_COUNT;
 }
 
-// in:  type — any PipelineType
-// out: its compacted draw-partition index, or ANO_NO_DRAW_SLOT if the type never draws
+// in:  type (any PipelineType)
+// out: draw-partition index, or ANO_NO_DRAW_SLOT if never draws
 uint32_t ano_draw_slot_of(PipelineType type) {
     for (uint32_t i = 0; i < ano_draw_pipeline_count(); ++i) {
         if (ano_draw_pipelines[i] == type) return i;
@@ -52,7 +52,7 @@ void ano_vk_register_mesh(RenderPrimitives* primitives, MeshData data) {
         primitives->meshes = temp;
         primitives->meshCapacity = newCapacity;
     }
-    
+
     data.usageCount = 0;
     primitives->meshes[primitives->meshCount++] = data;
 }
@@ -69,20 +69,23 @@ void ano_vk_decrement_mesh_usage(RenderPrimitives* primitives, uint32_t index) {
     }
 }
 
-void ano_vk_register_texture(RenderPrimitives* primitives, TextureData data) {
+// in:  primitives, data
+// out: true on append; false on realloc failure (primitives unchanged)
+bool ano_vk_register_texture(RenderPrimitives* primitives, TextureData data) {
     if (primitives->textureCount >= primitives->textureCapacity) {
         uint32_t newCapacity = primitives->textureCapacity == 0 ? 8 : primitives->textureCapacity * 2;
         void* temp = realloc(primitives->textureBuffers, sizeof(TextureData) * newCapacity);
         if (!temp) {
             ano_log(ANO_ERROR, "Error: Failed to reallocate memory for textures!");
-            return;
+            return false;
         }
         primitives->textureBuffers = temp;
         primitives->textureCapacity = newCapacity;
     }
-    
+
     data.usageCount = 0;
     primitives->textureBuffers[primitives->textureCount++] = data;
+    return true;
 }
 
 void ano_vk_increment_texture_usage(RenderPrimitives* primitives, uint32_t index) {
@@ -136,7 +139,7 @@ PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct Rend
 void ano_vk_init_default_material_data(struct MaterialData* mat) {
     memset(mat, 0, sizeof(struct MaterialData));
 
-    // Texture indices: 0xFFFFFFFF no-texture sentinel.
+    // Texture indices: 0xFFFFFFFF = no texture.
     mat->baseColorTexture = 0xFFFFFFFF;
     mat->metallicRoughnessTexture = 0xFFFFFFFF;
     mat->normalTexture = 0xFFFFFFFF;
@@ -158,42 +161,39 @@ void ano_vk_init_default_material_data(struct MaterialData* mat) {
     mat->diffuseTransmissionColorTexture = 0xFFFFFFFF;
 
     mat->features = PBR_FEATURE_NONE;
-    
+
     mat->baseColorFactor[0] = 1.0f;
     mat->baseColorFactor[1] = 1.0f;
     mat->baseColorFactor[2] = 1.0f;
     mat->baseColorFactor[3] = 1.0f;
-    
+
     mat->metallicFactor = 1.0f;
     mat->roughnessFactor = 1.0f;
-    
     mat->normalScale = 1.0f;
-    
     mat->occlusionStrength = 1.0f;
-    
     mat->emissiveStrength = 1.0f;
-    
+
     mat->alphaCutoff = 0.5f;
     mat->alphaMode = 0; // OPAQUE
-    
+
     mat->ior = 1.5f;
-    
+
     mat->specularFactor = 1.0f;
     mat->specularColorFactor[0] = 1.0f;
     mat->specularColorFactor[1] = 1.0f;
     mat->specularColorFactor[2] = 1.0f;
     mat->specularColorFactor[3] = 1.0f;
-    
+
     mat->attenuationDistance = 1e30f;
     mat->attenuationColor[0] = 1.0f;
     mat->attenuationColor[1] = 1.0f;
     mat->attenuationColor[2] = 1.0f;
     mat->attenuationColor[3] = 1.0f;
-    
+
     mat->iridescenceIor = 1.3f;
     mat->iridescenceThicknessMinimum = 100.0f;
     mat->iridescenceThicknessMaximum = 400.0f;
-    
+
     mat->diffuseTransmissionColorFactor[0] = 1.0f;
     mat->diffuseTransmissionColorFactor[1] = 1.0f;
     mat->diffuseTransmissionColorFactor[2] = 1.0f;

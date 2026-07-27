@@ -95,9 +95,10 @@ bool ano_audio_fx_init(AnoAudioFx *fx, uint32_t kind, mi_heap_t *heap,
         l->gain = 1.0f;
         l->lookahead = (uint32_t)(fs * 0.005f); // 5 ms window
         if (l->lookahead < 8u) l->lookahead = 8u;
+        // winmax window = lookahead + 1 (stamp survives emit)
         if (!ano_dsp_delay_init(&l->dl[0], heap, l->lookahead)
             || !ano_dsp_delay_init(&l->dl[1], heap, l->lookahead)
-            || !ano_dsp_winmax_init(&l->wm, heap, l->lookahead))
+            || !ano_dsp_winmax_init(&l->wm, heap, l->lookahead + 1u))
             return false;
         return true;
     }

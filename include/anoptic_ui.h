@@ -44,10 +44,8 @@ typedef enum AnoUiPrimKind {
 
 // One std430 SSBO element per prim (offsets 0/16/24/28/32/40/48/64/80/84/88/92,
 // stride 96, GLSL twin in resources/shaders/uicoverage.glsl).
-//   inv    : 2x2 pixel->prim inverse as rows, applied to (pixel - origin). Builders
-//            emit identity; rotation folds here later without an ABI change.
-//   origin : prim center, y-down — logical units at build, device pixels after the
-//            compose fold (the GPU always sees pixels).
+//   inv    : 2x2 pixel->prim inverse as rows, applied to (pixel - origin). Builders emit identity.
+//   origin : prim center, y-down. Logical at build, device pixels after compose fold.
 //   half   : half extents in prim space. SHADOW culls with +3*sigma + 1px AA.
 //   param  : kind-specific ([0]: border width | sigma | lod).
 //   radii  : per-corner (tl, tr, br, bl), pre-clamped by builder (CSS adjacent-side rule).
@@ -172,18 +170,16 @@ uint32_t ano_ui_path(AnoUiBuilder *b, const float bboxMin[2], const float bboxMa
 #define ANO_UI_SEG_LINE 1u // straight edge to (p[0], p[1])
 #define ANO_UI_SEG_QUAD 2u // quadratic to (p[2], p[3]) via control (p[0], p[1])
 
-// Contour separator in the packed curve stream (both binary16 halves +inf), the text
-// sweeper's grammar. Part of the ABI: bridge validation and the evaluators walk it.
+// Contour separator in packed curve stream (both binary16 halves +inf). Text sweeper grammar. ABI.
 #define ANO_UI_CURVE_SENTINEL 0x7C007C00u
 typedef struct AnoUiPathSeg {
     uint32_t kind;
     float    p[4];
 } AnoUiPathSeg;
 
-// Fills a path (contours of lines/quads, auto-closed) into the curve buffer as monotone
-// quads. Nonzero-winding, winding-independent; opposite-wound inners punch holes.
-// Bbox + prim-local frame derived from the points. Returns prim index, or ANO_UI_REF_NONE
-// if a table/curve buffer is full or the path is empty.
+// Path fill: lines/quads, auto-closed, into curve buffer as monotone quads.
+// Nonzero winding; opposite-wound inners punch holes. Bbox + frame from points.
+// Returns prim index, or ANO_UI_REF_NONE if table/curve full or path empty.
 uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t segCount,
                           const float color[4], uint32_t paintRef, uint32_t clipRef,
                           uint32_t flags);
@@ -286,10 +282,8 @@ void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4]);
 
 /* Tile Lists */
 
-// Per-tile prim lists (ui-render.md §3.7): CPU-coarse stage of the scaling ladder,
-// built at compose cadence so the GPU walks only the prims that touch each 8x8 tile.
-// A tile entry is a prim index with a "solid" high bit — set when the prim fully covers
-// the tile (coverage provably 1), so the GPU skips the SDF and takes the flat fill.
+// Per-tile prim lists (ui-render.md §3.7): CPU-coarse at compose, one list per 8x8 tile.
+// Entry = prim index | solid high bit (coverage==1 -> flat fill, skip SDF).
 // Glyphs are NOT tiled here.
 
 #define ANO_UI_TILE_PX          8u          // tile edge, matches the 8x8 compute workgroup
@@ -301,18 +295,16 @@ void ano_ui_ref_eval(const AnoUiScene *s, float px, float py, float out[4]);
 void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2]);
 
 // Dense tile grid (tilesX*tilesY of 8px, top-left at ox,oy). offsets[t]..offsets[t+1]
-// owns tile t; cursor is tilesX*tilesY scratch. Returns entry count. *ok false (and bails)
-// if offsetsCap (needs tilesX*tilesY+1) or entryCap is too small — caller falls back to
-// the brute scan.
+// owns tile t; cursor is tilesX*tilesY scratch. Returns entry count.
+// *ok false if offsetsCap (needs tilesX*tilesY+1) or entryCap too small. Caller falls back to brute scan.
 uint32_t ano_ui_tile_build(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY,
                            uint32_t *offsets, uint32_t offsetsCap,
                            uint32_t *entries, uint32_t entryCap,
                            uint32_t *cursor, bool *ok);
 
-// Painter's-order eval through the tile grid for pixel (px,py). Matches ano_ui_ref_eval
-// inside the grid (shadow tails outside the AABB cull differ); the GPU tiled path
-// mirrors THIS. Glyphs not included.
+// Painter's-order tiled eval at (px,py). Matches ano_ui_ref_eval inside grid; GPU mirrors this.
+// Glyphs not included. Out-of-range entry index fails CLOSED (zero, OVER).
 void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY, const uint32_t *offsets,
                            const uint32_t *entries, int32_t px, int32_t py, float out[4]);

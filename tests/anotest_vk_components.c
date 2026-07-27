@@ -37,11 +37,19 @@ int main() {
     assert(primitives.meshes[0].usageCount == 1);
     assert(primitives.meshes[1].usageCount == 0);
 
+    // Register a mock texture (sRGB view only)
     TextureData td1 = {0};
     td1.textureImage = (VkImage)0x4;
-    ano_vk_register_texture(&primitives, td1);
+    td1.srgbView = (VkImageView)0x8;
+    if (!ano_vk_register_texture(&primitives, td1)) {
+        printf("Texture registration refused!\n");
+        return 1;
+    }
 
     assert(primitives.textureCount == 1);
+    assert(primitives.textureBuffers[0].srgbView == (VkImageView)0x8);
+    assert(primitives.textureBuffers[0].unormView == VK_NULL_HANDLE);
+
     ano_vk_increment_texture_usage(&primitives, 0);
     assert(primitives.textureBuffers[0].usageCount == 1);
 

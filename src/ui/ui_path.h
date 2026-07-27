@@ -15,8 +15,7 @@
 
 /* Curve Stream */
 
-// ANO_UI_CURVE_SENTINEL is public ABI (anoptic_ui.h) — bridge validation replays the
-// walk. Identical to ANO_TEXT_POINT_SENTINEL; one grammar.
+// Public ABI sentinel (anoptic_ui.h). Identical to ANO_TEXT_POINT_SENTINEL.
 
 // One quadratic Bezier in bake space (double): p0, p1 (control), p2.
 typedef struct AnoQuad {

@@ -6,6 +6,8 @@
 // Hits sort by (slot, drum NAME, velocity); equal-slot tie-break is strcmp on drum name.
 // ohat draw: only at slot slots-2, and only after drop draw passed (and short-circuit).
 // Fill velocities: 84 + 7i before dyn scale, then banker's round.
+// Slot counts are clamped to ANO_METER_MAX_SLOTS: the kick set is that wide and AnoGroove.hatDrops
+// is a u32 slot mask. Hits and emitted events are capped at their buffers.
 
 #include <stdio.h>
 #include <string.h>
@@ -68,6 +70,8 @@ AnoGroove ano_make_groove(AnoMusicRng *rng, AnoMeter meter, double density,
     int cand[8];
     uint32_t cn = ghost_slots(meter, cand);
     int slots = ano_meter_slots(meter);
+    if (slots > ANO_METER_MAX_SLOTS)
+        slots = ANO_METER_MAX_SLOTS;
     for (uint32_t i = 0; i < cn; ++i)
         if (cand[i] < slots && ano_music_random(rng) < ghostProb)
             g.ghosts[g.ghostCount++] = (uint8_t)cand[i];
@@ -81,6 +85,8 @@ AnoGroove ano_make_groove(AnoMusicRng *rng, AnoMeter meter, double density,
     return g;
 }
 
+#define ANO_PERC_MAX_HITS 64 // the scratch set a bar is built in
+
 typedef struct Hit
 {
     int     slot;
@@ -88,9 +94,11 @@ typedef struct Hit
     int     velocity;
 } Hit;
 
+// Drops the hit once the scratch set is full: the widest legal bars out-hit the buffer.
 static void hit_push(Hit *hits, uint32_t *n, int slot, AnoDrum drum, int vel)
 {
-    hits[(*n)++] = (Hit){ slot, drum, vel };
+    if (*n < ANO_PERC_MAX_HITS)
+        hits[(*n)++] = (Hit){ slot, drum, vel };
 }
 
 void ano_generate_perc(const AnoHarmonicContext *ctx, AnoMeter meter,
@@ -101,23 +109,27 @@ void ano_generate_perc(const AnoHarmonicContext *ctx, AnoMeter meter,
 {
     *out = (AnoPercResult){ 0 };
     int slots = ano_meter_slots(meter);
+    if (slots > ANO_METER_MAX_SLOTS)
+        slots = ANO_METER_MAX_SLOTS;
     double density = params->noteDensity, roughness = params->roughness;
     double dyn = params->velocityCenter / 80.0;
     int ps = ano_meter_pulse_slots(meter);
     int pulses = ano_meter_pulses(meter);
 
-    Hit hits[64];
+    Hit hits[ANO_PERC_MAX_HITS];
     uint32_t hn = 0;
 
     if (ano_meter_is_compound(meter)) {
         // grouped kicks as a slot set: even pulses (+ shuffle 8th, + pickup)
         bool kick[ANO_METER_MAX_SLOTS] = { false };
         for (int p = 0; p < pulses; p += 2)
-            kick[p * ps] = true;
+            if (p * ps < slots)
+                kick[p * ps] = true;
         if (density > 0.55)
             for (int p = 0; p < pulses; p += 2)
-                kick[p * ps + 4] = true;
-        if (density > 0.75)
+                if (p * ps + 4 < slots)
+                    kick[p * ps + 4] = true;
+        if (density > 0.75 && slots >= 2)
             kick[slots - 2] = true;
         for (int s = 0; s < slots; ++s) // sorted(set)
             if (kick[s])
@@ -131,10 +143,12 @@ void ano_generate_perc(const AnoHarmonicContext *ctx, AnoMeter meter,
     }
 
     for (int p = 1; p < pulses; p += 2) // the generalized backbeat
-        hit_push(hits, &hn, p * ps, ANO_DRUM_SNARE, cfg->snareVel);
+        if (p * ps < slots)
+            hit_push(hits, &hn, p * ps, ANO_DRUM_SNARE, cfg->snareVel);
     if (groove) {
         for (uint32_t i = 0; i < groove->ghostCount; ++i)
-            hit_push(hits, &hn, groove->ghosts[i], ANO_DRUM_SNARE, cfg->ghostVelocity);
+            if (groove->ghosts[i] < slots)
+                hit_push(hits, &hn, groove->ghosts[i], ANO_DRUM_SNARE, cfg->ghostVelocity);
     } else {
         double gp = roughness - 0.25;
         double ghostProb = (gp > 0.0 ? gp : 0.0) * 0.6;
@@ -211,7 +225,8 @@ void ano_generate_perc(const AnoHarmonicContext *ctx, AnoMeter meter,
     }
 
     double barStart = ctx->bar * ano_meter_bar_quarters(meter);
-    for (uint32_t i = 0; i < hn; ++i) {
+    const uint32_t cap = (uint32_t)(sizeof out->events / sizeof out->events[0]);
+    for (uint32_t i = 0; i < hn && out->eventCount < cap; ++i) {
         int vel = (int)ano_music_round_int(hits[i].velocity * dyn);
         vel = vel < 1 ? 1 : vel > 127 ? 127 : vel;
         AnoMusicEvent *e = &out->events[out->eventCount++];

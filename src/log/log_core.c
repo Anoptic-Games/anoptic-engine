@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 // Terminal detection + Windows VT enable.
 #if defined(_WIN32)
@@ -82,8 +83,7 @@ static uint64_t     g_anchorUnixNs;
 
 // Drainer-private under g_drainMtx. g_scratch = wrap gather, g_batch = one pass, g_drainHMS = per-sec cache.
 static char         g_scratch[ANO_LOG_MSG_MAX];
-static char        *g_batch;
-static size_t       g_batchCap;
+static char        *g_batch;    // ANO_LOG_BATCH_CAP bytes
 static uint64_t     g_drainSec;
 static char         g_drainHMS[8];
 static bool         g_drainHMSValid;
@@ -197,13 +197,26 @@ static int format_line(char *out, int cap, ano_loglevel_t level,
 
 /* Deferred formatting: capture at call site, render at drain. */
 
-// Capture blob: [file*][line?][fmt*][args...]. Literals as pointers. '*' width/prec as int, then value.
-// Returns blob length, or -1 -> eager (%n, long-double L, wide %lc/%ls).
+// Capture blob: [u16 fileLen][fileBytes+NUL][line] or [u16 FILE_NONE], then [fmt*][args...].
+// printFormat is a literal by contract (anoptic_log.h:53); sourceFile carries no such
+// requirement, so it is deep-copied at capture like every %s argument below.
+// Returns blob length, or -1 -> eager (%n, long-double L, wide %lc/%ls, no room for the file).
+#define FILE_NONE 0xFFFFu   // out of range of the 256-byte cap, so never a real length
 static int capture_deferred(char *out, int cap, const char *file, int line, const char *fmt, va_list ap)
 {
     char *p = out, *end = out + cap;
-    memcpy(p, &file, sizeof file); p += sizeof file;
-    if (file != NULL) { memcpy(p, &line, sizeof line); p += sizeof line; }
+    if (file != NULL) {
+        size_t fl = strnlen(file, 256);
+        if (p + 2 + (ptrdiff_t)fl + 1 + (ptrdiff_t)sizeof line > end) return -1;
+        uint16_t fl16 = (uint16_t)fl; memcpy(p, &fl16, 2); p += 2;
+        memcpy(p, file, fl); p += fl; *p++ = '\0';
+        memcpy(p, &line, sizeof line); p += sizeof line;
+    } else {
+        uint16_t none = FILE_NONE;
+        if (p + 2 > end) return -1;
+        memcpy(p, &none, 2); p += 2;
+    }
+    if (p + (ptrdiff_t)sizeof fmt > end) return -1;
     memcpy(p, &fmt,  sizeof fmt);  p += sizeof fmt;
     for (const char *f = fmt; *f; ++f) {
         if (*f != '%') continue;
@@ -265,9 +278,13 @@ static int capture_deferred(char *out, int cap, const char *file, int line, cons
 static int format_deferred(char *out, int cap, ano_loglevel_t level, const char *blob)
 {
     const char *b = blob;
-    const char *file; memcpy(&file, b, sizeof file); b += sizeof file;
+    uint16_t fl16; memcpy(&fl16, b, 2); b += 2;
+    const char *file = NULL;
     int line = 0;
-    if (file != NULL) { memcpy(&line, b, sizeof line); b += sizeof line; }
+    if (fl16 != FILE_NONE) {                       // captured copy, NUL-terminated in the blob
+        file = b; b += (size_t)fl16 + 1u;
+        memcpy(&line, b, sizeof line); b += sizeof line;
+    }
     const char *fmt;  memcpy(&fmt,  b, sizeof fmt);  b += sizeof fmt;
 
     char *p = out, *end = out + cap;
@@ -519,7 +536,9 @@ static void emit_one(ano_loglevel_t level, uint64_t raw_ts, const char *text, ui
 
 /* The consumer: one single-active drain pass */
 
-// Drain committed records up to tail into one batch write. Returns lines reclaimed.
+// Drain committed records up to tail into batched writes. Returns lines reclaimed.
+// Invariant: >= ANO_LOG_BATCH_RESV free at each record start (mid-pass flush restores).
+// Flush touches g_batch only; ring lines ours until head store.
 static uint64_t drain_and_emit(void)
 {
     // head drainer-private; tail = relaxed count bound. Linearize at tag acquire; reclaim at head release.
@@ -545,12 +564,17 @@ static uint64_t drain_and_emit(void)
             g_drainSec = sec;
             g_drainHMSValid = true;
         }
+        // < one worst-case record left: flush, then append with full room
+        if (ANO_LOG_BATCH_CAP - blen < ANO_LOG_BATCH_RESV) {
+            write_batch(g_batch, blen);
+            blen = 0;
+        }
         size_t recStart = blen;
         memcpy(g_batch + blen, g_drainHMS, 8); blen += 8;
         g_batch[blen++] = ' ';
         size_t bodyStart = blen;
         if (v.flags & ANO_LOG_DEFERRED) {
-            size_t room = g_batchCap - blen;
+            size_t room = ANO_LOG_BATCH_CAP - blen;
             int dcap = room > ANO_LOG_MSG_MAX ? (int)ANO_LOG_MSG_MAX : (int)room;
             blen += (size_t)format_deferred(g_batch + blen, dcap, (ano_loglevel_t)v.level, body);
         }
@@ -813,9 +837,7 @@ int ano_log_init(void)
     atomic_store(&g_ring.tail, 0);
     atomic_store(&g_ring.head, 0);
 
-    // Batch upper bound: drained text + <=16B prefix per record.
-    g_batchCap = (size_t)ANO_LOG_RING_LINES * ANO_CL + (size_t)ANO_LOG_RING_LINES * 16 + 256;
-    g_batch = mi_malloc(g_batchCap);
+    g_batch = mi_malloc(ANO_LOG_BATCH_CAP);
     if (g_batch == NULL) {
         ano_aligned_free(g_ring.buf);
         ano_thread_cond_destroy(&g_wakeCv); ano_mutex_destroy(&g_wakeMtx);

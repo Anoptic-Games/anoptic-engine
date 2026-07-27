@@ -233,7 +233,8 @@ uint32_t ano_ui_glyphs(AnoUiBuilder *b, const float bboxMin[2], const float bbox
 static uint32_t paint_push(AnoUiBuilder *b, uint32_t kind, const float xform[6],
                            const AnoUiStop *stops, uint32_t stopCount)
 {
-    if (stopCount == 0 || b->paintCount >= b->paintCap || b->stopCount + stopCount > b->stopCap)
+    // Free-slot subtraction, never a sum: b->stopCount + stopCount wraps for huge stopCount.
+    if (stopCount == 0 || b->paintCount >= b->paintCap || stopCount > b->stopCap - b->stopCount)
         return ANO_UI_REF_NONE;
     uint32_t stopFirst = b->stopCount;
     for (uint32_t i = 0; i < stopCount; i++)

@@ -33,8 +33,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
 		return;
 	}
 
-	// Init can fail before the logical device exists; the loader crashes on a
-	// VK_NULL_HANDLE device, and the guarded destroys below all no-op then anyway.
+	// Skip waitIdle when device never created
 	if (ctx->device != VK_NULL_HANDLE)
 	{
 		vkDeviceWaitIdle(ctx->device);
@@ -61,13 +60,16 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
         rendererState.entities = NULL;
 	}
 
+    // Dual-view texture: srgbView, unormView, shared image
     for (uint32_t i = 0; i < rendererState.primitives.textureCount; i++)
     {
-        if (rendererState.primitives.textureBuffers[i].textureImageView)
-            vkDestroyImageView(ctx->device, rendererState.primitives.textureBuffers[i].textureImageView, NULL);
-        if (rendererState.primitives.textureBuffers[i].textureImage)
-            vkDestroyImage(ctx->device, rendererState.primitives.textureBuffers[i].textureImage, NULL);
-
+        TextureData* record = &rendererState.primitives.textureBuffers[i];
+        if (record->srgbView)
+            vkDestroyImageView(ctx->device, record->srgbView, NULL);
+        if (record->unormView)
+            vkDestroyImageView(ctx->device, record->unormView, NULL);
+        if (record->textureImage)
+            vkDestroyImage(ctx->device, record->textureImage, NULL);
     }
     ano_vk_cleanup_primitives(&rendererState.primitives);
 
@@ -235,7 +237,7 @@ void cleanupVulkan(VulkanContext* ctx) // Frees the initialized Vulkan parameter
 	{
 		vkDestroySampler(ctx->device, rendererState.textureSampler, NULL);
 	}
-	
+
 	if (ctx->device != VK_NULL_HANDLE) 
 	{
 		vkDeviceWaitIdle(ctx->device);

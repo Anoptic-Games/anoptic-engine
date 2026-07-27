@@ -14,7 +14,9 @@
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/frame/frame.h"
 
-void recordCommandBuffer(uint32_t imageIndex)
+// Record this frame slot's command buffer(s). imageIndex = acquired swapchain image.
+// False on begin/end refusal. No vkCmd* without a begun buffer.
+bool recordCommandBuffer(uint32_t imageIndex)
 {
 	VkCommandBufferBeginInfo beginInfo = {};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -29,6 +31,7 @@ void recordCommandBuffer(uint32_t imageIndex)
 	if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
 	{
 		ano_olog(ANO_ERROR, "Failed to begin recording command buffer!");
+		return false;
 	}
 
 	// Profiling reset of this frame's query pool plus the frame-begin timestamp.
@@ -73,7 +76,7 @@ void recordCommandBuffer(uint32_t imageIndex)
     uint32_t entityCount = rendererState.entityCount;
 
     // === Shared (view-independent) compute: update, scatter, cull ===
-    // Cull is single-pass multi-frustum, testing each entity against every view, so it runs here not per view.
+    // Cull: single-pass multi-frustum across all views.
     if (entityCount > 0) {
         uint32_t streamCount = rendererState.transformStream.count[rendererState.frameIndex];
         uint32_t lightCount = rendererState.lightBuffer.count; // active light rows
@@ -101,7 +104,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     0, 1, &fillBarrier, 0, NULL, 0, NULL);
 
-                // Hi-Z occlusion cull reads the previous frame slot's pyramids, so order that build's writes before these reads.
+                // Prev-slot Hi-Z writes -> this cull's reads.
                 if (!rendererState.asyncHiz) {
                     uint32_t hizPrevSlot = (rendererState.frameIndex + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
                     VkImageMemoryBarrier hizRead[ANO_VIEW_COUNT] = {};
@@ -181,7 +184,7 @@ void recordCommandBuffer(uint32_t imageIndex)
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     0, 1, &memoryBarrier, 0, NULL, 0, NULL);
             } else {
-                // Cull feeds indirect + entity/compacted SSBOs for geom and tpsort; dst reaches DRAW_INDIRECT, geom, COMPUTE.
+                // Cull -> DRAW_INDIRECT + geom + COMPUTE (indirect + entity/compacted SSBOs).
                 VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
                     ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
                     | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
@@ -197,13 +200,17 @@ void recordCommandBuffer(uint32_t imageIndex)
 
     ano_ts(cmd, ANO_TS_AFTER_COMPUTE);
 
-    // Async light-cull ends the prelude CB here, everything below records into the main CB.
+    // End prelude CB. Rest records into the main CB.
     if (rendererState.asyncLc) {
-        if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+        if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
             ano_log(ANO_ERROR, "Failed to record prelude command buffer!");
+            return false;
+        }
         cmd = rendererState.frames[rendererState.frameIndex].commandBuffer;
-        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
+        if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
             ano_olog(ANO_ERROR, "Failed to begin recording command buffer!");
+            return false;
+        }
     }
 
     // Transition swapchain image to color attachment optimal.
@@ -232,7 +239,7 @@ void recordCommandBuffer(uint32_t imageIndex)
     ano_ts(cmd, ANO_TS_AFTER_SHADOW);
 
     // === Transparency sort: reorder each camera view's transmission partition back-to-front ===
-    // tpsort rewrites the transmission partition back-to-front from cull's compacted draws + depth keys, one workgroup per view.
+    // tpsort: compacted draws + depth keys, one workgroup per view.
     if (entityCount > 0 && ano_draw_slot_of(PIPELINE_TRANSMISSION) != ANO_NO_DRAW_SLOT) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
             rendererState.prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].pipeline);
@@ -297,5 +304,8 @@ void recordCommandBuffer(uint32_t imageIndex)
 	if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
 	{
 		ano_log(ANO_ERROR, "Failed to record command buffer!");
+		return false;
 	}
+
+	return true;
 }

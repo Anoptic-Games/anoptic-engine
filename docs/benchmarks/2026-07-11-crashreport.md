@@ -61,7 +61,7 @@ For textbuffer viewing convenience:
 
 All six rows foreground-verified. wall fps is the median per-window throughput from the [frame] line (ANO_PERF_WINDOW_FRAMES = 128 presented frames per window). 1% low and 0.1% low are 1000/p99 and 1000/p999 from the [frametime] line, each percentile the median across windows; max ms is the run's worst single frame. GPU ms is the median GPU-pass total (upload + compute + shadow + lighting + composite); GPU cap = 1000 / GPU ms; wall/cap at or above 0.9 is GPU-bound, below is CPU/present-bound; swap MiB is the swapchain allocator's resident VRAM.
 
-Resolution check: swap VRAM tracks pixel count linearly, ~170-188 MiB per megapixel across the sweep. The 4K row's swap is 3.9x the 1080p row against a 4.0x pixel ratio — every row rendered at its true labeled resolution. Swap, not the window label, is the authority; that rules out a DPI-scaled mislabel.
+Resolution check: swap VRAM tracks pixel count linearly, ~170-188 MiB per megapixel across the sweep. The 4K row's swap is 3.9x the 1080p row against a 4.0x pixel ratio. Every row rendered at its true labeled resolution. Swap (not the window label) is the authority. No DPI-scaled mislabel.
 
 ## vs feature-profiling baseline (2026-07-11-bench2.md)
 
@@ -95,8 +95,8 @@ For textbuffer viewing convenience:
 └───────────┴─────────────────────────────────────┴───────────────────────────────────┘
 ```
 
-The 1% / 0.1% lows are also markedly worse (e.g. 4K 553.7 -> 216.3 fps 1% low). Both GPU-pass time and frametime consistency regressed, so this is not purely a CPU/present-side cost. Investigate before merge. Candidates in order of suspicion: the logging refactor (b85e213) adding drain/IO contention on the render thread, unaccounted background load during this run, or GPU thermal/clock state. The two runs are not perfectly controlled (this run used the default 45 s/point vs bench2's 15 s/point, and machine state differed), so re-run both back-to-back on this branch and its merge-base before treating the delta as a hard regression.
+1% / 0.1% lows also worse (4K 553.7 -> 216.3 fps 1% low). GPU-pass time and frametime consistency both regressed (not CPU/present-only). Investigate before merge. Suspect: logging refactor b85e213 (drain/IO on render thread), background load, or GPU thermal/clock. Control gap: 45 s/point here vs 15 s/point in bench2; machine state differed. Re-run both back-to-back on this branch and its merge-base before calling it a hard regression.
 
 ## Harness note
 
-This run required a driver fix. The logging refactor (b85e213) moved the release log from a fixed `anoptic.log` next to the exe to `logs/<session-stamp>_ano.log`, so `bench_fps_win64.py` (which deletes and tails `anoptic.log`) parsed nothing and printed an all-zero sweep. The driver now snapshots `build/Release/logs/` before launch and tails whichever `*_ano.log` the fresh process creates. That change is local and uncommitted; the engine-side contract in `tools/perf/bench_fps.md` still documents `anoptic.log` and should be reconciled (either an env knob to force a fixed log path, or update the doc + Linux driver to match).
+Driver fix: b85e213 moved the release log to `logs/<session-stamp>_ano.log`. `bench_fps_win64.py` still deleted/tailed `anoptic.log` and printed an all-zero sweep. Local uncommitted driver now snapshots `build/Release/logs/` and tails the fresh `*_ano.log`. `tools/perf/bench_fps.md` still documents `anoptic.log`. Reconcile: env knob for a fixed path, or update the doc + Linux driver.

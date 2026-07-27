@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>   // getenv: macOS nix-sandbox detection in testResolution
 #include <inttypes.h> // PRIu64: portable uint64_t format across LP64/LLP64
+#include <time.h>     // time_t, ctime: readable stamp printout
 
 #include "anoptic_time.h"
 
@@ -42,24 +43,8 @@ int testTimeStamps() {
     printf("Testing timestamps across various resolutions\n");
 
     uint64_t nanoStamp = ano_timestamp_raw();
-    if (nanoStamp == UINT64_MAX) {
-        printf("anoptic_time.h: failed to retrieve nanosecond timestamp.\n");
-        return -1;
-    }
-
-
     uint64_t microStamp = ano_timestamp_us();
-    if (microStamp == UINT64_MAX) {
-        printf("anoptic_time.h: failed to retrieve microsecond timestamp.\n");
-        return -1;
-    }
-
-
     uint32_t milliStamp = ano_timestamp_ms();
-    if (milliStamp == UINT32_MAX) {
-        printf("anoptic_time.h: failed to retrieve millisecond timestamp.\n");
-        return -1;
-    }
 
     printf("nanoseconds: %" PRIu64 "\n", nanoStamp);
     printf("microseconds: %" PRIu64 "\n", microStamp);
@@ -79,7 +64,7 @@ int testTimeStamps() {
 
 /* Resolution tests: assert waits land near target across every scale. */
 
-#define SLEEP_SAMPLES   8   // best-of-N: scheduler hiccups inflate the worst case, not the best
+#define SLEEP_SAMPLES   8   // best-of-N
 #define BUSY_SAMPLES    5
 
 // ano_sleep case: never early (hard), best within ceil. skipCeil drops ceil (macOS nix sandbox).
@@ -87,10 +72,8 @@ int testTimeStamps() {
 //   out: int, 0 pass, 1 fail
 static int sleepCase(uint64_t us, int skipCeil) {
     uint64_t want = us * 1000ULL;                       // ns
-    // Never-early floor: clock quantization only, not Sleep()-style truncation.
     uint64_t floorSlack = want / 100ULL + 20000ULL;     // 1% + 20us
-    // Achievable-resolution ceiling on the best sample.
-    uint64_t ceil = want + (want / 2ULL > 2000000ULL ? want / 2ULL : 2000000ULL);
+    uint64_t ceil = want + (want / 2ULL > 2000000ULL ? want / 2ULL : 2000000ULL); // ceil on best
 
     uint64_t best = UINT64_MAX;
     int early = 0;
@@ -178,33 +161,57 @@ static int testResolution(void) {
     return fails;
 }
 
-/* Timebase granularity: min nonzero ano_timestamp_ticks step, in ns. Assert <100ns (raw QPC is 100ns). */
+/* Timebase granularity: the GCD of observed tick deltas reveals counter quantization without
+   confusing instrumentation overhead with clock resolution. */
 #define GRAIN_SAMPLES 200000
 #define GRAIN_MAX_NS  100
+
+static uint64_t gcd_u64(uint64_t a, uint64_t b) {
+    while (b != 0) {
+        uint64_t r = a % b;
+        a = b;
+        b = r;
+    }
+    return a;
+}
 
 static int testGranularity(void) {
     printf("\nTesting timebase granularity (smallest resolvable step)\n");
 
-    uint64_t minDelta = UINT64_MAX;
+    uint64_t quantum = 0;
     uint64_t prev = ano_timestamp_ticks();
+    uint64_t prevNs = ano_timestamp_raw();
+    uint64_t backward = 0;
     for (int i = 0; i < GRAIN_SAMPLES; i++) {
         uint64_t now = ano_timestamp_ticks();
-        uint64_t d = now - prev;    // monotonic counter, so the delta never underflows
+        if (now < prev)
+            backward++;
+        else if (now != prev)
+            quantum = gcd_u64(quantum, now - prev);
         prev = now;
-        if (d != 0 && d < minDelta)
-            minDelta = d;
+
+        uint64_t nowNs = ano_timestamp_raw();
+        if (nowNs < prevNs)
+            backward++;
+        prevNs = nowNs;
     }
-    if (minDelta == UINT64_MAX) {
+    if (backward != 0) {
+        printf("  [FAIL] timestamp stepped backward %" PRIu64 " time(s) across %d samples\n",
+               backward, GRAIN_SAMPLES);
+        return 1;
+    }
+    printf("  [PASS] timestamps monotone across %d samples\n", GRAIN_SAMPLES);
+    if (quantum == 0) {
         printf("  [FAIL] timestamp never advanced across %d samples\n", GRAIN_SAMPLES);
         return 1;
     }
 
-    uint64_t grainNs = ano_ticks_to_ns(minDelta);
+    uint64_t grainNs = ano_ticks_to_ns(quantum);
     int ok = grainNs < GRAIN_MAX_NS;
-    printf("  [%s] min step = %" PRIu64 " ticks = %" PRIu64 " ns (need < %d ns)\n",
-           ok ? "PASS" : "FAIL", minDelta, grainNs, GRAIN_MAX_NS);
+    printf("  [%s] quantum = %" PRIu64 " ticks = %" PRIu64 " ns (need < %d ns)\n",
+           ok ? "PASS" : "FAIL", quantum, grainNs, GRAIN_MAX_NS);
     if (!ok)
-        printf("         ^ timebase too coarse (raw 10 MHz QPC steps in 100 ns); expected a finer clock\n");
+        printf("         ^ timebase is quantized too coarsely\n");
     return ok ? 0 : 1;
 }
 

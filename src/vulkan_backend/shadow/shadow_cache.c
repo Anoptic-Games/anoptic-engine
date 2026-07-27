@@ -73,7 +73,7 @@ static bool mover_swept_bound(const mat4 base, const float cm[3], float rm,
 
 // Mover sphere vs caster volume. Unbounded volume (r<0) exposed by any mover.
 static bool mover_exposes(const ShadowCasterVolume* v, const float c[3], float r) {
-    if (v->radius < 0.0f) return true;
+    if (!(v->radius >= 0.0f)) return true; // accept form: a non-finite radius takes the safe arm
     float dx = c[0] - v->center[0], dy = c[1] - v->center[1], dz = c[2] - v->center[2];
     float rr = r + v->radius;
     return dx*dx + dy*dy + dz*dz <= rr*rr;
@@ -147,7 +147,7 @@ static void mover_remove(RendererState* st, uint32_t slot) {
     MoverBound* mb = &st->movers[idx];
     for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++)
         if (mb->exposeMask & (1ull << s)) st->shadowExposed[s]--;
-    if (mb->unbounded && st->moverUnboundedCount) st->moverUnboundedCount--;
+    if (mb->unbounded) st->moverUnboundedCount--;
     uint32_t last = --st->moverCount;
     if (idx != last) {
         st->movers[idx] = st->movers[last];
@@ -177,12 +177,13 @@ static void shadow_expose_rebuild_frustum(RendererState* st, uint32_t s) {
 }
 
 // Refresh frustum influence sphere from parent base pose + offset.
-// A parent WITH motion gets a stale-by-design sphere, never consulted.
+// Parent WITH motion: stale-by-design sphere, never consulted.
+// Accept form: non-positive range (incl. NaN) -> unbounded.
 static void shadow_volume_recompute(RendererState* st, uint32_t s) {
     ShadowCasterVolume* v = &st->shadowVolume[s];
     uint32_t p = v->parentSlot;
     if (p == ANO_RENDER_SLOT_UNMAPPED) return;
-    if (st->shadowCfgMirror[s].lightType == LIGHT_TYPE_DIRECTIONAL || v->range <= 0.0f
+    if (st->shadowCfgMirror[s].lightType == LIGHT_TYPE_DIRECTIONAL || !(v->range > 0.0f)
         || p >= st->slotMotionCap) {
         v->radius = -1.0f; // unbounded, any mover exposes
         return;
@@ -236,7 +237,7 @@ void shadow_track_motion(RendererState* st, uint32_t slot, const AnoMotionDescri
     if (st->slotMotion[slot] != on) {
         st->slotMotion[slot] = on;
         if (on) st->motionActiveCount++;
-        else if (st->motionActiveCount) st->motionActiveCount--;
+        else    st->motionActiveCount--;
     }
     if (on) mover_set(st, slot, m);
     else    mover_remove(st, slot);

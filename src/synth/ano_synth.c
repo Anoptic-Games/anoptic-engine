@@ -78,8 +78,7 @@ AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
     mi_heap_t *heap = mi_heap_new();
     if (!heap)
         return NULL;
-    // zalloc_aligned: the struct carries _Alignas(ANO_THREAD_LINE) members; a
-    // plain calloc's 16-byte alignment would not honor them.
+    // zalloc_aligned: honors _Alignas(ANO_THREAD_LINE) members
     AnoSynth *s = mi_heap_zalloc_aligned(heap, sizeof *s, _Alignof(AnoSynth));
     if (!s) {
         mi_heap_destroy(heap);
@@ -144,7 +143,7 @@ static AnoSynthNote *note_at(const AnoSynth *s, uint32_t i)
     return &s->notes[i & s->noteMask];
 }
 
-// Oldest retained anchor index. Live drops off the back; absolute time keeps truncated clock exact for playhead-or-ahead.
+// Oldest retained anchor index. Live drops off the back.
 static uint32_t anchor_floor(const AnoSynth *s)
 {
     return s->live && s->anchorCount > s->anchorCap ? s->anchorCount - s->anchorCap
@@ -189,8 +188,8 @@ static double clock_time_at(const AnoSynth *s, double beat)
 bool ano_synth_score_begin(AnoSynth *s, double barQuarters, uint32_t barCount,
                            uint32_t tempoCount, uint32_t eventCount)
 {
-    if (barQuarters <= 0.0 || barCount == 0u)
-        return false;
+    if (barQuarters <= 0.0 || barCount == 0u || tempoCount == UINT32_MAX)
+        return false; // UINT32_MAX: the +1 seed anchor would wrap anchorCap to 0
     if (atomic_load_explicit(&s->startFrame, memory_order_acquire) != ANO_SYNTH_IDLE)
         return false; // must be idle
     mi_free(s->anchors);
@@ -222,8 +221,8 @@ bool ano_synth_score_begin(AnoSynth *s, double barQuarters, uint32_t barCount,
 
 bool ano_synth_score_tempo(AnoSynth *s, double beat, double bpm)
 {
-    if (bpm <= 0.0)
-        return false;
+    if (bpm <= 0.0 || !s->anchors || s->scoreReady)
+        return false; // no clock, or map closed
     return clock_add(s, beat, bpm);
 }
 
@@ -243,8 +242,9 @@ bool ano_synth_score_bar(AnoSynth *s, uint32_t bar, const AnoMusicalParams *p,
 bool ano_synth_score_event(AnoSynth *s, const AnoNoteEvent *ev)
 {
     if (!ev || s->rawCount >= s->rawCap || ev->dur <= 0.0
-        || ev->layer >= ANO_MUSIC_LAYER_COUNT || ev->velocity == 0u)
-        return false;
+        || ev->layer >= ANO_MUSIC_LAYER_COUNT
+        || ev->velocity == 0u || ev->velocity > 127u || ev->pitch > 127u)
+        return false; // AnoNoteEvent: pitch 0..127, velocity 1..127
     s->raw[s->rawCount++] = *ev;
     return true;
 }
@@ -385,7 +385,7 @@ static void live_stamp(AnoSynth *s, AnoSynthNote *n)
     n->durS  = 0.0f;
 }
 
-// Insertion-sort run [from, noteCount) into schedule ahead of cursor (never behind — already sounded). Equal frames keep append order (= batch seq).
+// Insertion-sort run [from, noteCount) into schedule ahead of cursor (already sounded stays). Equal frames keep append order (= batch seq).
 static void live_order(AnoSynth *s, uint32_t from)
 {
     for (uint32_t i = from; i < s->noteCount; ++i) {
@@ -426,8 +426,9 @@ bool ano_synth_live_bar(AnoSynth *s, uint32_t bar,
     uint32_t from = s->noteCount;
     for (uint32_t i = 0; i < eventCount; ++i) {
         const AnoNoteEvent *ev = &events[i];
-        if (ev->dur <= 0.0 || ev->layer >= ANO_MUSIC_LAYER_COUNT || ev->velocity == 0u)
-            continue;
+        if (ev->dur <= 0.0 || ev->layer >= ANO_MUSIC_LAYER_COUNT
+            || ev->velocity == 0u || ev->velocity > 127u || ev->pitch > 127u)
+            continue; // AnoNoteEvent: pitch 0..127, velocity 1..127
         int32_t *slot = &s->openChain[ev->layer][ev->pitch & 0x7F];
         if (ev->tie == ANO_MUSIC_TIE_IN || ev->tie == ANO_MUSIC_TIE_BOTH) {
             if (*slot >= 0 && (uint32_t)*slot >= s->noteCursor) {
@@ -509,7 +510,7 @@ static bool music_pump(AnoSynth *s)
     if (us > s->musicBarUsMax)
         s->musicBarUsMax = us;
 
-    // Rebase engine beats onto schedule via musicBeatOffset (keeps engine bar numbering / RNG tags).
+    // Rebase engine beats onto schedule via musicBeatOffset.
     AnoMusicBar *mb = &s->musicBar;
     if (s->musicBeatOffset != 0.0) {
         for (uint32_t i = 0; i < mb->tempoCount; ++i)
@@ -552,8 +553,7 @@ bool ano_synth_attach_music(AnoSynth *s, AnoMusicEngine *music)
         return false; // not idle, or bad meter
 
     s->music = music;
-    // musicBarUs/evt queue resets belong to the staged transport reset (mixer-side);
-    // touching them here would race the always-running poll/stats hooks.
+    // musicBarUs/evt queue: mixer-side transport reset only
     s->musicBeatOffset = music_rebase(s); // 0 fresh; jump if restored mid-piece
     while (s->barCount < ANO_SYNTH_LIVE_LOOKAHEAD)
         if (!music_pump(s)) {
@@ -638,8 +638,7 @@ static AnoSynth *synth_of(void *user, const char *hook)
     return NULL;
 }
 
-// Everything the render path owns once transport runs. Mixer thread
-// (or the idle-offline caller driving the hooks directly).
+// Render-path state once transport runs. Mixer thread or idle-offline hooks.
 static void synth_runtime_reset(AnoSynth *s)
 {
     memset(s->voices, 0, (size_t)s->maxVoices * sizeof *s->voices);
@@ -664,9 +663,8 @@ static void synth_runtime_reset(AnoSynth *s)
                        0.2f, 2.0f, 0.12f, 2.0f, 0x5EEDu);
 }
 
-// Consume a staged transport start exactly once; every hook calls this first.
-// IDLE consumes nothing (logic owns the synth while idle). Multiple bumps
-// collapse into one reset.
+// Consume staged transport start once. Every hook calls first.
+// IDLE: no-op. Multiple bumps -> one reset.
 static void synth_transport_sync(AnoSynth *s)
 {
     if (atomic_load_explicit(&s->startFrame, memory_order_acquire) == ANO_SYNTH_IDLE)
@@ -760,10 +758,8 @@ void ano_synth_stats(void *user, AnoAudioTelemetry *t)
 
 void ano_synth_transport_start(AnoSynth *s, uint64_t worldFrame)
 {
-    // Stage only. The reset runs mixer-side at the next hook (synth_transport_sync),
-    // exactly once per epoch; the epoch bump is sequenced before the release store,
-    // so a hook that sees the new startFrame sees the bump. Restarts converge
-    // within one block.
+    // Stage only. Reset at next mixer hook (synth_transport_sync), once per epoch.
+    // Epoch bump before startFrame release. Restarts converge in one block.
     atomic_fetch_add_explicit(&s->transportEpoch, 1u, memory_order_relaxed);
     atomic_store_explicit(&s->startFrame, worldFrame, memory_order_release);
 }
@@ -840,7 +836,7 @@ static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
 static void synth_spawn_note(AnoSynth *s, AnoSynthNote *n)
 {
     if (s->live) {
-        // Duration now knowable (LOOKAHEAD covers end tempo). Matches batch complete-map.
+        // Finalize duration (LOOKAHEAD covers end tempo). Matches batch.
         double on  = clock_time_at(s, n->ev.start);
         double off = clock_time_at(s, n->ev.start + n->ev.dur);
         n->durS = (float)(off - on);

@@ -264,6 +264,7 @@ void ano_vk_text_frame_refresh(RendererState* state, uint32_t frameIndex)
 }
 
 // createDataBuffer with optional CONCURRENT graphics+compute sharing.
+// Failure: *buffer == VK_NULL_HANDLE (incl. refused bind).
 bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUsageFlags usage,
                                VkMemoryPropertyFlags props, bool shared,
                                VkBuffer* buffer, GpuAllocation* alloc)
@@ -278,7 +279,10 @@ bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
         bi.pQueueFamilyIndices = fams;
     }
     if (vkCreateBuffer(ctx->device, &bi, NULL, buffer) != VK_SUCCESS)
+    {
+        *buffer = VK_NULL_HANDLE; // out-param indeterminate on failure
         return false;
+    }
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(ctx->device, *buffer, &req);
     *alloc = gpu_alloc(&gpuAllocator, req, props);
@@ -288,12 +292,19 @@ bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
         *buffer = VK_NULL_HANDLE;
         return false;
     }
-    vkBindBufferMemory(ctx->device, *buffer, alloc->memory, alloc->offset);
+    if (vkBindBufferMemory(ctx->device, *buffer, alloc->memory, alloc->offset) != VK_SUCCESS)
+    {
+        vkDestroyBuffer(ctx->device, *buffer, NULL);
+        *buffer = VK_NULL_HANDLE;
+        return false;
+    }
     return true;
 }
 
 // Builds the compute raster prototype: 3 glyph SSBOs + 1 storage image + 7 UI-table
 // SSBOs (bindings 4-10 of uiFrameBuffer).
+// Cache idiom: refused mint -> VK_NULL_HANDLE, build continues.
+// Commit-last: implementationCount published after the array exists.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
     VkDescriptorSetLayoutBinding bindings[11] = {};
@@ -332,28 +343,29 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
         return false;
 
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].type = PIPELINE_COMPUTE_TEXTRASTER;
-    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementationCount = 1;
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations = calloc(1, sizeof(PipelineImplementation));
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].supportedFeatures = PBR_FEATURE_NONE;
     if (state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations == NULL)
         return false;
+    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementationCount = 1;
 
-    struct Buffer code;
+    // Unwind idiom: the blob and module are held to the tail discharge, so refusals in between take
+    // `goto fail`; free(NULL) and destroying VK_NULL_HANDLE are both no-ops.
+    struct Buffer code = {0};
     if (!loadFile("resources/shaders/textraster.comp.spv", &code))
         return false;
     VkShaderModule module = createShaderModule(ctx->device, &code);
 
     VkPipelineCacheCreateInfo cacheInfo = {};
     cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache);
+    if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache) != VK_SUCCESS)
+        state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache = VK_NULL_HANDLE;
 
     VkComputePipelineCreateInfo pipelineInfo = {};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout;
-    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    pipelineInfo.stage.module = module;
-    pipelineInfo.stage.pName = "main";
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, module, NULL, &pipelineInfo.stage))
+        goto fail;
 
     VkResult r = vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache,
                                           1, &pipelineInfo, NULL,
@@ -363,31 +375,41 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
     ano_aligned_free(code.data);
     vkDestroyShaderModule(ctx->device, module, NULL);
     return r == VK_SUCCESS;
+
+fail:
+    ano_aligned_free(code.data);
+    vkDestroyShaderModule(ctx->device, module, NULL);
+    return false;
 }
 
-// Composite blend pipeline: tonemap's twin, premultiplied src-over, overlay.frag samples the overlay image.
-static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
+// Blend pipeline shared by both text lanes: premultiplied src-over, bufferless triangles,
+// dynamic viewport/scissor, one color attachment, state->tonemapCache.
+// In: vert/frag .spv, layout, samples, colorFormat; UNDEFINED depthFormat = no depth.
+// Out: *out; untouched if a shader step refuses.
+static bool text_build_blend_pipeline(VulkanContext* ctx, RendererState* state,
+                                      const char* vertPath, const char* fragPath,
+                                      VkPipelineLayout layout, VkSampleCountFlagBits samples,
+                                      VkFormat colorFormat, VkFormat depthFormat, VkPipeline* out)
 {
-    struct Buffer vertCode, fragCode;
-    if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode))
+    // Unwind idiom: blobs and modules are held to the tail discharge, so refusals in between take
+    // `goto fail`; free(NULL) and destroying VK_NULL_HANDLE are both no-ops. A refused load clears
+    // its own buffer first: loadFile leaves data dangling on a short read.
+    struct Buffer vertCode = {0}, fragCode = {0};
+    VkShaderModule vertModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE;
+    if (!loadFile(vertPath, &vertCode))
         return false;
-    if (!loadFile("resources/shaders/overlay.frag.spv", &fragCode))
+    if (!loadFile(fragPath, &fragCode))
     {
-        ano_aligned_free(vertCode.data);
-        return false;
+        fragCode.data = NULL;
+        goto fail;
     }
-    VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
-    VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
+    vertModule = createShaderModule(ctx->device, &vertCode);
+    fragModule = createShaderModule(ctx->device, &fragCode);
 
-    VkPipelineShaderStageCreateInfo stages[2] = {};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertModule;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragModule;
-    stages[1].pName = "main";
+    VkPipelineShaderStageCreateInfo stages[2];
+    if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
+        || !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
+        goto fail;
 
     VkPipelineVertexInputStateCreateInfo vertexInput = {};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -401,14 +423,14 @@ static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
     VkPipelineRasterizationStateCreateInfo rasterizer = {};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.cullMode = VK_CULL_MODE_NONE; // world sign readable from both sides
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo multisampling = {};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisampling.rasterizationSamples = samples;
 
-    // Premultiplied src-over: out = overlay.rgb + (1 - overlay.a) * dst.rgb.
+    // Premultiplied src-over: out = src.rgb + (1 - src.a) * dst.rgb.
     VkPipelineColorBlendAttachmentState blendAttachment = {};
     blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
                                    | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -424,19 +446,28 @@ static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &blendAttachment;
+
+    // Depth-tested against the scene, no write. No depth format, no depth state.
     VkPipelineDepthStencilStateCreateInfo depthStencil = {};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    if (depthFormat != VK_FORMAT_UNDEFINED)
+    {
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_FALSE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    }
+
     VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
     VkPipelineDynamicStateCreateInfo dynamicState = {};
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     dynamicState.dynamicStateCount = 2;
     dynamicState.pDynamicStates = dynamicStates;
 
-    VkFormat colorFormat = state->imageFormat;
     VkPipelineRenderingCreateInfo renderingInfo = {};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachmentFormats = &colorFormat;
+    renderingInfo.depthAttachmentFormat = depthFormat;
 
     VkGraphicsPipelineCreateInfo pipelineInfo = {};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -451,15 +482,31 @@ static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = state->tonemapLayout;
+    pipelineInfo.layout = layout;
 
     VkResult r = vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo,
-                                           NULL, &state->textOverlayPipeline);
+                                           NULL, out);
     ano_aligned_free(vertCode.data);
     ano_aligned_free(fragCode.data);
     vkDestroyShaderModule(ctx->device, vertModule, NULL);
     vkDestroyShaderModule(ctx->device, fragModule, NULL);
     return r == VK_SUCCESS;
+
+fail:
+    ano_aligned_free(vertCode.data);
+    ano_aligned_free(fragCode.data);
+    vkDestroyShaderModule(ctx->device, vertModule, NULL);
+    vkDestroyShaderModule(ctx->device, fragModule, NULL);
+    return false;
+}
+
+// Composite blend pipeline: tonemap's twin, premultiplied src-over, overlay.frag samples the overlay image.
+static bool text_init_overlay_pipeline(VulkanContext* ctx, RendererState* state)
+{
+    return text_build_blend_pipeline(ctx, state, "resources/shaders/tonemap.vert.spv",
+                                     "resources/shaders/overlay.frag.spv", state->tonemapLayout,
+                                     VK_SAMPLE_COUNT_1_BIT, state->imageFormat, VK_FORMAT_UNDEFINED,
+                                     &state->textOverlayPipeline);
 }
 
 // Builds the world-space text pipeline: premultiplied src-over blending, bufferless
@@ -478,104 +525,10 @@ static bool text_init_world_pipeline(VulkanContext* ctx, RendererState* state)
     if (vkCreatePipelineLayout(ctx->device, &layoutInfo, NULL, &state->textWorldLayout) != VK_SUCCESS)
         return false;
 
-    struct Buffer vertCode, fragCode;
-    if (!loadFile("resources/shaders/textworld.vert.spv", &vertCode))
-        return false;
-    if (!loadFile("resources/shaders/textworld.frag.spv", &fragCode))
-    {
-        ano_aligned_free(vertCode.data);
-        return false;
-    }
-    VkShaderModule vertModule = createShaderModule(ctx->device, &vertCode);
-    VkShaderModule fragModule = createShaderModule(ctx->device, &fragCode);
-
-    VkPipelineShaderStageCreateInfo stages[2] = {};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertModule;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragModule;
-    stages[1].pName = "main";
-
-    VkPipelineVertexInputStateCreateInfo vertexInput = {};
-    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkPipelineViewportStateCreateInfo viewportState = {};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-    VkPipelineRasterizationStateCreateInfo rasterizer = {};
-    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.cullMode = VK_CULL_MODE_NONE; // sign readable from both sides
-    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterizer.lineWidth = 1.0f;
-    VkPipelineMultisampleStateCreateInfo multisampling = {};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.rasterizationSamples = ctx->msaaSamples;
-
-    // Premultiplied src-over onto the lit HDR scene.
-    VkPipelineColorBlendAttachmentState blendAttachment = {};
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-                                   | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    blendAttachment.blendEnable = VK_TRUE;
-    blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-    blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-    VkPipelineColorBlendStateCreateInfo colorBlending = {};
-    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &blendAttachment;
-
-    // Depth-tested against the scene, no write.
-    VkPipelineDepthStencilStateCreateInfo depthStencil = {};
-    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_TRUE;
-    depthStencil.depthWriteEnable = VK_FALSE;
-    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-
-    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dynamicState = {};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = dynamicStates;
-
-    VkFormat colorFormat = ANO_HDR_COLOR_FORMAT;
-    VkPipelineRenderingCreateInfo renderingInfo = {};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &colorFormat;
-    renderingInfo.depthAttachmentFormat = state->depthFormat;
-
-    VkGraphicsPipelineCreateInfo pipelineInfo = {};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.pNext = &renderingInfo;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = stages;
-    pipelineInfo.pVertexInputState = &vertexInput;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = state->textWorldLayout;
-
-    VkResult r = vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo,
-                                           NULL, &state->textWorldPipeline);
-    ano_aligned_free(vertCode.data);
-    ano_aligned_free(fragCode.data);
-    vkDestroyShaderModule(ctx->device, vertModule, NULL);
-    vkDestroyShaderModule(ctx->device, fragModule, NULL);
-    return r == VK_SUCCESS;
+    return text_build_blend_pipeline(ctx, state, "resources/shaders/textworld.vert.spv",
+                                     "resources/shaders/textworld.frag.spv", state->textWorldLayout,
+                                     ctx->msaaSamples, ANO_HDR_COLOR_FORMAT, state->depthFormat,
+                                     &state->textWorldPipeline);
 }
 
 bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
@@ -798,13 +751,34 @@ void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state)
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         PerFrameResources* fr = &state->frames[i];
-        createImageShared(ctx, &swapchainAllocator, state->imageExtent.width, state->imageExtent.height,
-                    1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
-                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &fr->textOverlayImage, &fr->textOverlayAlloc, false,
-                    shareFamilies, state->asyncText ? 2u : 0u);
+        if (!createImageShared(ctx, &swapchainAllocator,
+                               state->imageExtent.width, state->imageExtent.height,
+                               1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_UNORM,
+                               VK_IMAGE_TILING_OPTIMAL,
+                               VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                                   | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                               &fr->textOverlayImage, &fr->textOverlayAlloc, false,
+                               shareFamilies, state->asyncText ? 2u : 0u, NULL, 0))
+        {
+            // Partial overlays are handle-guarded in destroy_overlay.
+            ano_log(ANO_WARN, "Text overlay disabled: overlay image creation failed.");
+            state->textOverlay = false;
+            state->asyncText = false;
+            state->textWorld = false;
+            return;
+        }
         fr->textOverlayView = createImageView(ctx->device, fr->textOverlayImage,
                                               VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+        if (fr->textOverlayView == VK_NULL_HANDLE)
+        {
+            // Partial overlays are handle-guarded in destroy_overlay.
+            ano_log(ANO_WARN, "Text overlay disabled: overlay image view creation failed.");
+            state->textOverlay = false;
+            state->asyncText = false;
+            state->textWorld = false;
+            return;
+        }
         // Seed the composite's resting layout.
         if (!transitionImageLayout(ctx, VK_NULL_HANDLE, fr->textOverlayImage, VK_FORMAT_R8G8B8A8_UNORM,
                                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))
@@ -917,9 +891,8 @@ void ano_vk_text_update_sets(VulkanContext* ctx, RendererState* state)
     ano_vk_ui_write_sets(ctx, state);
 }
 
-// The raster pass body, queue-agnostic: clear, dispatch, hand off to the composite's
-// sampled read. Graphics final barrier targets FRAGMENT_SHADER, compute-only transitions
-// the layout, textTimeline carries the cross-queue dependency.
+// Raster pass body, queue-agnostic: clear, dispatch, hand off to composite sample.
+// Graphics barrier: FRAGMENT_SHADER. Async: layout-only; textTimeline for cross-queue.
 static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32_t frameIndex,
                                bool asyncQueue)
 {

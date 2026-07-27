@@ -36,7 +36,7 @@
 //   I2  len <= 12 <=> inline (canonical form).
 //   I3  Bytes past len are 0x00 (bit-identical eq; truthful bswapped-prefix order).
 //   I4  Long bytes live as long as their backing (heap or external borrow). Inline forever.
-//       anostr_bytes(&inline) points into *s -- valid only while that object lives at that address.
+//       anostr_bytes(&inline) points into *s (valid while that object lives at that address).
 //   I5  Frozen values are immutable.
 
 #define ANOSTR_INLINE_CAP 12u
@@ -93,7 +93,7 @@ static inline const char *anostr_bytes(const anostr_t *s)
     return s->len <= ANOSTR_INLINE_CAP ? s->prefix : s->ptr;
 }
 
-// printf "%.*s" adapter -- no anostr_to_cstr copy:
+// printf "%.*s" adapter (no anostr_to_cstr copy):
 //     ano_log(ANO_INFO, "loading %.*s", anostr_fmt(path));
 #define anostr_fmt(s) (int)anostr_len((s)), anostr_bytes((const anostr_t[]){ (s) })
 
@@ -153,7 +153,7 @@ uint32_t anostr_hash32(anostr_t s);
 
 /* Slicing and Promotion */
 
-// Sub-string [start, end) -- clamped, total, allocation-free. <= 12: fresh inline; longer borrows s's backing (same lifetime as s).
+// Sub-string [start, end). Clamped, total, allocation-free. <= 12: fresh inline; longer borrows s's backing (same lifetime as s).
 anostr_t anostr_slice(anostr_t s, size_t start, size_t end);
 
 // Promote s to live as long as heap. Inline: identity. Long: copy into heap. heap is calling-thread owned (mimalloc single-writer). Empty on alloc fail.
@@ -200,7 +200,7 @@ bool anostr_split_next(anostr_split_t *it, anostr_t *piece);
 
 /* Interning */
 
-// Dedupe + dense u32 identity. One owner thread mutates. No destroy -- dies with heap.
+// Dedupe + dense u32 identity. One owner thread mutates. Dies with heap (no destroy).
 // Runtime identity table; ANOSTR_SID is the compile-time sibling.
 typedef uint32_t anostr_sym;
 #define ANOSTR_SYM_NONE UINT32_MAX

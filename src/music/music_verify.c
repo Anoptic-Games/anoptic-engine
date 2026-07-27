@@ -283,8 +283,7 @@ static void lint_events(const AnoMusicEvent *ev, uint32_t n,
                     lname(e), pname(e->core.pitch, nb));
             continue;
         }
-        // Chord members are licensed by the chord itself (chordPcs reflect
-        // borrowing); anything else chromatic needs a licensing role.
+        // Chord tones licensed; else need chromatic role.
         bool member = c->chordPcCount && pc_in(c->chordPcs, c->chordPcCount, e->core.pitch);
         if (!ano_scale_contains(c->scale, e->core.pitch) && !member
             && !is_chromatic_role(e->role))
@@ -293,8 +292,7 @@ static void lint_events(const AnoMusicEvent *ev, uint32_t n,
                 "license chromaticism",
                 pname(e->core.pitch, nb), lname(e), sname(c->scale, (char[24]){ 0 }),
                 csym(c), e->role);
-        // an echo keeps its source bar's annotations; the harmony (and even
-        // the mode) may have moved on underneath it
+        // Echo keeps source-bar degree.
         if (e->degree != 0 && ano_scale_degree_of(c->scale, e->core.pitch) != e->degree
             && !role_is(e, "echo"))
             vio(out, "degree", bar, "%s annotated ^%d but is ^%d in %s",
@@ -315,8 +313,7 @@ static void lint_pad(const AnoMusicEvent *ev, uint32_t n,
     sort_evp(pads, np, by_start_pitch);
 
     char a[8], b[8];
-    // A C3 entry hosted by the pad rides ABOVE the voicing: the range still
-    // applies, the voicing rules do not — it is a figure, not a voice.
+    // C3 pad imitation: range yes, voicing no (figure, not voice).
     const AnoMusicEvent *grp[LINT_MAX_LINE];
     uint32_t ng = 0;
     for (uint32_t i = 0; i < np; ++i) {
@@ -331,8 +328,7 @@ static void lint_pad(const AnoMusicEvent *ev, uint32_t n,
         grp[ng++] = pads[i];
     }
 
-    // Voicing analysis (unison doubling, voice movement) needs simultaneous
-    // chords — Strum staggers starts, so these rules are pre-modifier only.
+    // Voicing (unison/voice-move) needs simultaneous starts; PRE only (strum staggers).
     bool voicing = stage == ANO_LINT_PRE;
     int prev[LINT_MAX_GROUP];
     uint32_t prevN = 0;
@@ -374,8 +370,7 @@ static void lint_pad(const AnoMusicEvent *ev, uint32_t n,
                     vio(out, "chord-tone", bar, "pad %s is not a member of %s",
                         pname(grp[k]->core.pitch, a), csym(c));
         }
-        // a lone pitch is a figure note (a C2 comping strike, an ornament's
-        // resolution), not a voicing — voice-leading is judged between chords
+        // Lone pitch = figure; voice-lead between chords only.
         if (voicing && hasPrev && prevN == cnt && cnt >= 2) {
             for (uint32_t k = 0; k < cnt; ++k)
                 if (abs(pitches[k] - prev[k]) > L->maxVoiceMove)
@@ -411,8 +406,7 @@ static void lint_bass(const AnoMusicEvent *ev, uint32_t n,
         if (!c || !c->chordPcCount)
             continue;
         if (offset == 0.0) { // the downbeat, as WRITTEN (a humanized onset still is one)
-            // a pedal (held bass under shifting harmony) is a licensed non-root
-            // beat-1 bass; it carries a termination obligation instead
+            // Pedal: licensed non-root beat-1; terminates via obligation.
             if (p % 12 != c->chordPcs[0] && !is_licensed_nonchord(e->role))
                 vio(out, "bass-root", bar,
                     "beat-1 bass %s is not the bass pc of %s (pc %d)", pname(p, a),
@@ -432,8 +426,7 @@ static void lint_melody(const AnoMusicEvent *ev, uint32_t n,
                         const AnoHarmonicContext *cx, uint32_t ncx, AnoMeter meter,
                         const AnoLintLimits *L, AnoLintReport *out)
 {
-    // merge_ties over the melody alone: chains never cross layers, so this is
-    // melody projection of whole-stream merge
+    // Merge melody ties only (no cross-layer chains).
     AnoMusicEvent line[LINT_MAX_LINE];
     uint32_t nl = 0;
     for (uint32_t i = 0; i < n && nl < LINT_MAX_LINE; ++i)
@@ -450,8 +443,7 @@ static void lint_melody(const AnoMusicEvent *ev, uint32_t n,
 
     char a[8], b[8];
     for (uint32_t i = 0; i < nl; ++i) {
-        // the doubled line (C1) sits up to a 6th under the surface, so its
-        // floor extends by that interval; the surface note itself is bounded
+        // Doubling floor = melodyLo - 9 (6th under surface).
         int floor_ = role_is(mel[i], "doubling") ? L->melodyLo - 9 : L->melodyLo;
         int p = mel[i]->core.pitch;
         if (!(floor_ <= p && p <= L->melodyHi))
@@ -476,8 +468,7 @@ static void lint_melody(const AnoMusicEvent *ev, uint32_t n,
             continue;
         const AnoHarmonicContext *c =
             ctx_of(cx, ncx, ano_meter_bar_of(meter, tune[i]->core.start));
-        // the cadence bar is a deliberate embellished approach (appoggiatura ->
-        // run -> resolution), not chord-tone outlining
+        // Cadence bar: skip chord-tone outlining.
         if (!c || !c->chordPcCount || c->cadenceSlot == ANO_CTX_SLOT_CADENCE)
             continue;
         onStrong++;
@@ -533,7 +524,7 @@ static void lint_ties(const AnoMusicEvent *ev, uint32_t n, AnoMeter meter,
         }
         if (!hosted)
             vio(out, "tie", ano_meter_bar_of(meter, e->core.start),
-                "%s (%s) ties in from nothing — no same-pitch note ties out into "
+                "%s (%s) ties in from nothing 〜 no same-pitch note ties out into "
                 "its start",
                 pname(e->core.pitch, a), lname(e));
     }
@@ -709,7 +700,7 @@ static void lint_counter(const AnoMusicEvent *ev, uint32_t n,
     if (weak >= 10 && (double)overlap / weak > L->counterOverlapRatio)
         vio(out, "counter-overlap", -1,
             "%u/%u off-downbeat counter onsets coincide with melody onsets "
-            "(%.2f > %.2f) — the counter should move in the melody's holes",
+            "(%.2f > %.2f) 〜 the counter should move in the melody's holes",
             overlap, weak, (double)overlap / weak, L->counterOverlapRatio);
 }
 
@@ -746,13 +737,11 @@ static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, int horizo
             || c->cadencePolicy == ANO_CADENCE_NONE)
             continue;
         if (c->chord.applied)
-            continue; // a secondary dominant is a valid (chromatic) pre-cadence;
-                      // the tonicize obligation checks its resolution instead
+            continue; // Secondary dominant: tonicize obligation owns resolution.
         const int8_t *allowed = c->cadenceSlot == ANO_CTX_SLOT_CADENCE
                                     ? ARRIVE[c->cadencePolicy]
                                     : APPROACH[c->cadencePolicy];
-        // a D3 split bar is judged by the segment APPROACHING the cadence —
-        // the harmony in force when the barline arrives
+        // D3 split: last segment approaching cadence.
         AnoChord judged = c->chordSpanCount ? c->chords[c->chordSpanCount - 1].chord
                                             : c->chord;
         if (judged.degree != allowed[0] && (allowed[1] < 0 || judged.degree != allowed[1]))
@@ -774,9 +763,7 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
     for (uint32_t i = 0; i < n; ++i) {
         const AnoMusicEvent *e = &ev[i];
         bool susp = role_is(e, "suspension");
-        // an appoggiatura carries the same resolution obligation, unprepared —
-        // but only in the pad: the melody's own leap / strong-beat rules govern
-        // its melodic appoggiaturas, which pass through non-chord tones mid-run
+        // Pad appoggiatura: same resolve obligation, unprepared.
         bool appog = role_is(e, "appoggiatura") && e->core.layer == ANO_MUSIC_PAD;
         if (!susp && !appog)
             continue;
@@ -820,8 +807,7 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
                 ano_meter_beat_in_bar(meter, end));
     }
 
-    // a pedal run (contiguous same-pitch bass) terminates at a cadence: its
-    // last held bar is the cadence, or the cadence chord arrives right after
+    // Pedal run ends at cadence (last bar or next).
     const AnoMusicEvent *ped[LINT_MAX_LINE];
     uint32_t npe = 0;
     for (uint32_t i = 0; i < n && npe < LINT_MAX_LINE; ++i)
@@ -850,8 +836,7 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
         i = j + 1;
     }
 
-    // obligations are PLANTED inside the window; ctx_of reaches past it, so a
-    // promise made in the last rendered bar can still be kept by a lookahead
+    // Obligations planted in window; discharge may use lookahead.
     for (uint32_t i = 0; i < ncx; ++i) {
         const AnoHarmonicContext *c = &cx[i];
         if (!judged(c->bar, horizon))
@@ -863,8 +848,7 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
                     "secondary dominant %s does not resolve to degree %d",
                     c->chordSym[0] ? c->chordSym : "(?)", c->obligationTarget);
         } else if (c->obligation == ANO_OBL_CADENTIAL64) {
-            // B1: the 6/4 is a promise — a root-position dominant must follow;
-            // a D3 split bar may discharge it WITHIN the bar (the mid-pulse V)
+            // B1: 6/4 needs root-pos V next (or mid-bar D3).
             bool inBar = false;
             for (uint32_t k = 0; k < c->chordSpanCount; ++k)
                 if (c->chords[k].off > 0 && c->chords[k].chord.degree == 5
@@ -879,9 +863,7 @@ static void lint_obligations(const AnoMusicEvent *ev, uint32_t n,
         }
     }
 
-    // B4: a lament ground (contiguous "lament" bars) must reach the dominant —
-    // its own last chord is degree 5, or the bar after it is. The bass must
-    // ARRIVE on 5: root position only.
+    // B4: lament ground reaches root-pos V (last or next bar).
     int lam[LINT_MAX_BARS];
     uint32_t nlam = 0;
     for (uint32_t i = 0; i < ncx && nlam < LINT_MAX_BARS; ++i)
@@ -921,7 +903,7 @@ static void lint_capacity(const AnoMusicEvent *ev, uint32_t n, AnoLintReport *ou
     for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l)
         if (per[l] > LINT_MAX_LINE)
             vio(out, "capacity", -1,
-                "%u %s events exceed the linter's %d-event line buffer — the "
+                "%u %s events exceed the linter's %d-event line buffer 〜 the "
                 "layer rules would silently see a truncated line",
                 per[l], ANO_LAYER_NAMES[l], LINT_MAX_LINE);
 }
@@ -1027,9 +1009,7 @@ void ano_lint_groove(const AnoMusicEvent *events, uint32_t n,
                      const AnoHarmonicContext *contexts, const AnoGenParams *params,
                      uint32_t nctx, int horizon, AnoMeter meter, AnoLintReport *out)
 {
-    // Bars are walked in ascending order and a phrase's start bar is
-    // non-decreasing in bar, so the previous bar of the CURRENT phrase is all
-    // the state the rule needs — a phrase never resumes after another begins.
+    // Prev bar of current phrase only; phrases don't resume.
     for (int rule = 0; rule < 2; ++rule) {
         bool isPerc = rule == 0;
         bool skipCadence = isPerc; // the cadence fill is the licensed variation
@@ -1200,7 +1180,7 @@ void ano_lint_periods(const AnoMusicEvent *events, uint32_t n,
             vio(out, "period", c->bar, "consequent without a recorded antecedent");
             continue;
         }
-        // a dramaturg/landmark payoff overrode the answer — the arrival wins
+        // Motif payoff overrides period answer.
         bool payoff = false;
         for (uint32_t k = 0; k < n && !payoff; ++k) {
             const AnoMusicEvent *e = &events[k];
@@ -1302,7 +1282,7 @@ void ano_lint_texture(const AnoMusicEvent *events, uint32_t n,
             if (contexts[i].bar == bars[0])
                 firstP = &params[i];
         if (!firstC || (int)nbars < firstC->phraseBars)
-            continue; // the render truncated this phrase — its claim never got room
+            continue; // Truncated phrase: no texture claim.
 
         uint32_t nmel = 0, ndbl = 0, nimi = 0, nctr = 0;
         for (uint32_t k = 0; k < n; ++k) {

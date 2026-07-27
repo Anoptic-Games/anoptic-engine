@@ -76,7 +76,7 @@ static inline float ano_dsp_winmax_push(AnoDspWinMax *w, float mag)
     return w->val[w->head & w->mask];
 }
 
-// Linear ramp. Reaches target in exactly `samples` steps (one-pole never converges inside a lookahead window).
+// Linear ramp. Hits target in exactly `samples` steps.
 typedef struct AnoDspRamp
 {
     float    y;

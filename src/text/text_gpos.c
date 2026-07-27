@@ -9,6 +9,7 @@
 #include "anoptic_text.h"
 #include "text/text_internal.h"
 
+#include <anoptic_memory.h>
 #include <errno.h>
 
 typedef struct GposCtx {
@@ -36,6 +37,28 @@ static uint32_t g32(const GposCtx *g, uint32_t off, bool *ok)
     }
     return (uint32_t)g->p[off] << 24 | (uint32_t)g->p[off + 1u] << 16
          | (uint32_t)g->p[off + 2u] << 8 | g->p[off + 3u];
+}
+
+// Checked offset resolution: base + delta must not wrap and must land inside the table. Poison *ok, return 0 on failure.
+static uint32_t gadd(const GposCtx *g, uint32_t base, uint32_t delta, bool *ok)
+{
+    if (delta > g->len || base > g->len - delta)
+    {
+        *ok = false;
+        return 0;
+    }
+    return base + delta;
+}
+
+// Checked uint32 product for record-array indexing. Poison *ok, return 0 on wrap.
+static uint32_t gmul(uint32_t a, uint32_t b, bool *ok)
+{
+    if (a != 0u && b > 0xFFFFFFFFu / a)
+    {
+        *ok = false;
+        return 0;
+    }
+    return a * b;
 }
 
 // Coverage index of gid, or -1. Unknown formats poison *ok.
@@ -143,7 +166,7 @@ static bool pairpos_apply(const GposCtx *g, uint32_t off, uint32_t gid1, uint32_
     uint32_t vf1 = g16(g, off + 4u, ok), vf2 = g16(g, off + 6u, ok);
     if (!*ok)
         return false;
-    int32_t ci = cov_index(g, off + covOff, gid1, ok);
+    int32_t ci = cov_index(g, gadd(g, off, covOff, ok), gid1, ok);
     if (!*ok || ci < 0)
         return false;
     uint32_t sz1 = vr_size(vf1), sz2 = vr_size(vf2);
@@ -153,14 +176,14 @@ static bool pairpos_apply(const GposCtx *g, uint32_t off, uint32_t gid1, uint32_
         uint32_t psCount = g16(g, off + 8u, ok);
         if (!*ok || (uint32_t)ci >= psCount)
             return false;
-        uint32_t psOff = off + g16(g, off + 10u + 2u * (uint32_t)ci, ok);
+        uint32_t psOff = gadd(g, off, g16(g, off + 10u + 2u * (uint32_t)ci, ok), ok);
         uint32_t pvCount = g16(g, psOff, ok);
         if (!*ok)
             return false;
         uint32_t rec = 2u + sz1 + sz2;
         for (uint32_t k = 0; k < pvCount; k++)
         {
-            uint32_t ro = psOff + 2u + k * rec;
+            uint32_t ro = gadd(g, gadd(g, psOff, 2u, ok), gmul(k, rec, ok), ok);
             uint32_t sg = g16(g, ro, ok);
             if (!*ok)
                 return false;
@@ -178,12 +201,16 @@ static bool pairpos_apply(const GposCtx *g, uint32_t off, uint32_t gid1, uint32_
         uint32_t c1n = g16(g, off + 12u, ok), c2n = g16(g, off + 14u, ok);
         if (!*ok)
             return false;
-        uint32_t c1 = class_of(g, cd1 ? off + cd1 : 0u, gid1, ok);
-        uint32_t c2 = class_of(g, cd2 ? off + cd2 : 0u, gid2, ok);
+        uint32_t c1 = class_of(g, cd1 ? gadd(g, off, cd1, ok) : 0u, gid1, ok);
+        uint32_t c2 = class_of(g, cd2 ? gadd(g, off, cd2, ok) : 0u, gid2, ok);
         if (!*ok || c1 >= c1n || c2 >= c2n)
             return false;
         uint32_t rec = sz1 + sz2;
-        *kernOut = vr_xadvance(g, off + 16u + (c1 * c2n + c2) * rec, vf1, ok);
+        uint32_t idx = c1 * c2n + c2; // c1,c2n,c2 <= 0xFFFF: cannot wrap
+        uint32_t vo = gadd(g, gadd(g, off, 16u, ok), gmul(idx, rec, ok), ok);
+        if (!*ok)
+            return false;
+        *kernOut = vr_xadvance(g, vo, vf1, ok);
         return *ok;
     }
     *ok = false;
@@ -204,20 +231,20 @@ static uint32_t find_langsys(const GposCtx *g, uint32_t slOff, bool *ok)
             return 0;
         if (tag != 0x6C61746Eu && tag != 0x44464C54u) // 'latn' / 'DFLT'
             continue;
-        uint32_t dls = g16(g, slOff + scriptOff, ok);
+        uint32_t sOff = gadd(g, slOff, scriptOff, ok);
+        uint32_t dls = g16(g, sOff, ok);
         if (!*ok)
             return 0;
         if (dls == 0)
             continue;
-        best = slOff + scriptOff + dls;
+        best = gadd(g, sOff, dls, ok);
+        if (!*ok)
+            return 0;
         if (tag == 0x6C61746Eu)
             break; // 'latn' wins over 'DFLT'
     }
     return best;
 }
-
-#define GPOS_MAX_LOOKUPS 16u
-#define GPOS_MAX_SUBS    32u
 
 int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *slotGids,
                            uint32_t slotCount, int32_t *dense)
@@ -239,29 +266,43 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
     if (lsOff == 0)
         return 0; // no latn/DFLT default LangSys
 
+    uint32_t lookupListCount = g16(&g, llOff, &ok);
+    if (!ok)
+        return EIO;
+    mi_heap_t *scratch LOCALHEAPATTR = mi_heap_new();
+    if (scratch == NULL)
+        return ENOMEM;
+
     // LangSys feature indices -> 'kern' lookups, deduped, sorted ascending.
-    uint32_t kernLookups[GPOS_MAX_LOOKUPS];
+    uint32_t *kernLookups = lookupListCount
+                          ? mi_heap_malloc(scratch, (size_t)lookupListCount * sizeof *kernLookups)
+                          : NULL;
+    if (lookupListCount && kernLookups == NULL)
+        return ENOMEM;
     uint32_t kernLookupCount = 0;
     uint32_t featCount = g16(&g, lsOff + 4u, &ok);
     for (uint32_t f = 0; ok && f < featCount; f++)
     {
         uint32_t fi = g16(&g, lsOff + 6u + 2u * f, &ok);
-        uint32_t fro = flOff + 2u + 6u * fi;
+        uint32_t fro = gadd(&g, flOff, 2u + 6u * fi, &ok);
         uint32_t tag = g32(&g, fro, &ok);
         uint32_t featOff = g16(&g, fro + 4u, &ok);
         if (!ok)
             return EIO;
         if (tag != 0x6B65726Eu) // 'kern'
             continue;
-        uint32_t lookupCount = g16(&g, flOff + featOff + 2u, &ok);
+        uint32_t fo = gadd(&g, flOff, featOff, &ok);
+        uint32_t lookupCount = g16(&g, fo + 2u, &ok);
         for (uint32_t l = 0; ok && l < lookupCount; l++)
         {
-            uint32_t li = g16(&g, flOff + featOff + 4u + 2u * l, &ok);
+            uint32_t li = g16(&g, fo + 4u + 2u * l, &ok);
+            if (!ok || li >= lookupListCount)
+                return EIO;
             bool seen = false;
             for (uint32_t k = 0; k < kernLookupCount; k++)
                 if (kernLookups[k] == li)
                     seen = true;
-            if (!seen && kernLookupCount < GPOS_MAX_LOOKUPS)
+            if (!seen)
                 kernLookups[kernLookupCount++] = li;
         }
     }
@@ -275,24 +316,31 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
             kernLookups[b - 1u] = t;
         }
 
+    uint32_t *subs = NULL;
+    uint32_t subCap = 0;
     for (uint32_t k = 0; k < kernLookupCount; k++)
     {
-        uint32_t lo = llOff + g16(&g, llOff + 2u + 2u * kernLookups[k], &ok);
+        uint32_t lo = gadd(&g, llOff, g16(&g, llOff + 2u + 2u * kernLookups[k], &ok), &ok);
         uint32_t type = g16(&g, lo, &ok);
         uint32_t subCount = g16(&g, lo + 4u, &ok);
         if (!ok)
             return EIO;
         if (type != 2u && type != 9u)
             continue; // not PairPos
-        if (subCount > GPOS_MAX_SUBS)
-            subCount = GPOS_MAX_SUBS;
+        if (subCount > subCap)
+        {
+            uint32_t *grown = mi_heap_realloc(scratch, subs, (size_t)subCount * sizeof *subs);
+            if (grown == NULL)
+                return ENOMEM;
+            subs = grown;
+            subCap = subCount;
+        }
 
         // Resolve subtable offsets (unwrap type 9 Extension).
-        uint32_t subs[GPOS_MAX_SUBS];
         uint32_t nsubs = 0;
         for (uint32_t s = 0; ok && s < subCount; s++)
         {
-            uint32_t so = lo + g16(&g, lo + 6u + 2u * s, &ok);
+            uint32_t so = gadd(&g, lo, g16(&g, lo + 6u + 2u * s, &ok), &ok);
             if (type == 9u)
             {
                 uint32_t innerType = g16(&g, so + 2u, &ok);
@@ -301,8 +349,10 @@ int ano_gpos_extract_kerns(const uint8_t *gpos, uint32_t len, const uint32_t *sl
                     return EIO;
                 if (innerType != 2u)
                     continue;
-                so += innerOff;
+                so = gadd(&g, so, innerOff, &ok); // raw 32-bit offset: wrap is malformed
             }
+            if (!ok)
+                return EIO;
             subs[nsubs++] = so;
         }
         if (!ok)

@@ -177,7 +177,7 @@ int main(int argc, char **argv)
     s = bench_lat_stats(&lat);
     bench_lat_row("anostr_sort (presorted)", s);
 
-    // Permutation only: inventory structs would never move.
+    // Permutation only (sort_idx).
     bench_lat_init(&lat, ticks, REPS);
     for (int r = 0; r < REPS; r++) {
         memcpy(work, items, count * sizeof *work);
@@ -194,8 +194,7 @@ int main(int argc, char **argv)
     s = bench_lat_stats(&lat);
     bench_lat_row("anostr_sort_idx", s);
 
-    // Interned symbols: cold call builds the per-symbol key cache, warm calls sort
-    // integers without ever touching string bytes.
+    // Interned symbols: cold builds key cache; warm sorts ints.
     anostr_intern_t *tbl = anostr_intern_make(heap);
     anostr_sym *syms = mi_heap_malloc(heap, count * sizeof *syms);
     if (tbl == NULL || syms == NULL) { printf("FAIL: intern alloc\n"); return 1; }
@@ -221,7 +220,7 @@ int main(int argc, char **argv)
     s = bench_lat_stats(&lat);
     bench_lat_row("anostr_sym_sort (warm)", s);
 
-    // Byte-order floor: what a sort costs when the order means nothing to a human.
+    // Byte-order floor.
     bench_lat_init(&lat, ticks, REPS);
     for (int r = 0; r < REPS; r++) {
         memcpy(work, items, count * sizeof *work);

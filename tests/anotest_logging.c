@@ -63,7 +63,7 @@ static _Atomic bool g_stop;
 /* Helpers */
 
 // Slurp whole file into NUL-terminated heap buffer. Caller frees. NULL if unreadable.
-// Grow-until-EOF (not size-then-read): avoids stale short size on attribute-caching FS.
+// Grow-until-EOF, not size-then-read.
 static char *slurp(const char *path, size_t *out_len)
 {
     FILE *f = fopen(path, "rb");
@@ -496,7 +496,7 @@ static void *c1_flusher(void *arg)
     (void)arg;
     while (!atomic_load(&g_stop)) {
         ano_log_flush();
-        ano_sleep(100);   // 0.1 ms: hammer the drain path without a pathological tight spin
+        ano_sleep(100);   // 0.1 ms between flushes
     }
     return NULL;
 }
@@ -656,7 +656,7 @@ static int test_abuse_inputs(void)
         free(c);
     }
 
-    // Embedded NUL last: stored byte-for-byte; only assert file grew.
+    // Embedded NUL last: stored byte-for-byte. Only assert file grew.
     ano_log(ANO_INFO, "a%cb", 0);
     ano_log_flush();
     size_t len2 = 0;
@@ -731,6 +731,88 @@ static int test_lifecycle_guard(const char *when)
 }
 
 
+/* Source-file capture */
+
+// sourceFile captured at call time. Drained prefix must match call-time content, not drain-time.
+
+#define SRCFILE_BACKLOG 2000
+#define SRCFILE_TRIGGERS 16
+
+// Control: literal sourceFile round-trips with file:line prefix.
+static int test_srcfile_literal(void)
+{
+    g_fail = 0;
+    reset_output();
+    ano_log_write(ANO_INFO, 0, "ctrl_lit.c", 42, "control literal %d", 1);
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "srcfile-literal: file readable");
+    if (c) {
+        CHECK(strstr(c, "ctrl_lit.c:42") != NULL, "srcfile-literal: literal sourceFile prefix drained intact");
+        CHECK(strstr(c, "control literal 1") != NULL, "srcfile-literal: body drained intact");
+        free(c);
+    }
+    return g_fail;
+}
+
+// Control: intact mutable sourceFile buffer round-trips.
+static int test_srcfile_mutable_buffer(void)
+{
+    g_fail = 0;
+    reset_output();
+    char keep[32];
+    strcpy(keep, "ctrl_keep.c");
+    ano_log_write(ANO_INFO, 0, keep, 77, "control intact %d", 2);
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "srcfile-intact: file readable");
+    if (c) {
+        CHECK(strstr(c, "ctrl_keep.c:77") != NULL, "srcfile-intact: intact caller buffer drained with call-time content");
+        free(c);
+    }
+    return g_fail;
+}
+
+// Backlog pins the drainer. Each trigger passes a live buffer, scribbles after return.
+// Drained prefixes must still name the call-time files.
+static int test_srcfile_calltime_capture(void)
+{
+    g_fail = 0;
+    reset_output();
+
+    for (int i = 0; i < SRCFILE_BACKLOG; i++)
+        ano_log(ANO_INFO, "srcfile filler %d", i);
+
+    static char buf[SRCFILE_TRIGGERS][24];
+    for (unsigned k = 0; k < SRCFILE_TRIGGERS; k++) {
+        snprintf(buf[k], sizeof buf[k], "live_%02u.c", k);
+        ano_log_write(ANO_INFO, 0, buf[k], (int)(4200u + k), "trig %u", k);
+        memcpy(buf[k], "gone", 4);   // scribble: same length, call-time name destroyed
+    }
+    ano_log_flush();
+
+    char *c = slurp(LOG_PATH, NULL);
+    CHECK(c != NULL, "srcfile-calltime: file readable");
+    if (c == NULL) return g_fail;
+
+    int scribbled = 0;
+    for (unsigned k = 0; k < SRCFILE_TRIGGERS; k++) {
+        char want[32], got[32];
+        snprintf(want, sizeof want, "live_%02u.c:%u", k, 4200u + k);
+        snprintf(got,  sizeof got,  "gone_%02u.c:%u", k, 4200u + k);
+        if (strstr(c, got) != NULL) scribbled++;
+        CHECK(strstr(c, want) != NULL, "srcfile-calltime: sourceFile drained with call-time content, not drain-time");
+    }
+    if (scribbled > 0)
+        printf("  evidence: %d of %d drained records carry the post-call scribble\n",
+               scribbled, SRCFILE_TRIGGERS);
+    free(c);
+    return g_fail;
+}
+
+
 /* Visible */
 
 // Human-readable log left on disk (not removed).
@@ -755,7 +837,7 @@ static int test_visible_output(void)
         ano_log(ANO_INFO, "counted line %d of 5", i);
     ano_log_flush();
 
-    ano_log_output_dir(LOG_DIR);   // move the output off the showcase file so nothing else touches it
+    ano_log_output_dir(LOG_DIR);   // rebind off showcase file
 
     char *c = slurp(VIS_PATH, NULL);
     CHECK(c != NULL && strstr(c, "showcase"), "visible: showcase file written");
@@ -819,7 +901,7 @@ static int test_edge_ring_seam(void)
     for (int b = 0; b < SEAM_BATCHES; b++) {
         for (int i = 0; i < SEAM_PER; i++)
             ano_log(ANO_INFO, "seam %d", n++);
-        ano_log_flush();   // drain mid-stream so the write cursor laps the buffer across batches
+        ano_log_flush();   // mid-stream drain: write cursor laps the buffer
     }
 
     char *c = slurp(LOG_PATH, NULL);
@@ -945,7 +1027,7 @@ static void *heavy_flusher(void *arg)
     return NULL;
 }
 
-// 12 producers + 2 flushers. Level DEBUG, no-loss exact total.
+// 12 producers + 2 flushers. Level INFO, no-loss exact total.
 static int test_contention_heavy_mixed(void)
 {
     g_fail = 0;
@@ -1137,6 +1219,9 @@ int main(void)
         { "abuse_inputs",               test_abuse_inputs },
         { "abuse_config",               test_abuse_config },
         { "abuse_output_dir",           test_abuse_output_dir },
+        { "srcfile_literal",            test_srcfile_literal },
+        { "srcfile_mutable_buffer",     test_srcfile_mutable_buffer },
+        { "srcfile_calltime_capture",   test_srcfile_calltime_capture },
         { "visible_output",             test_visible_output },
     };
 

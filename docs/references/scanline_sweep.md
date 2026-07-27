@@ -7,7 +7,7 @@ Notes on the **SCANLINE SWEEPER** glyph renderer: theory, math, and how it actua
 
 
 * 
-**Elimination of Singular Events**: Winding-number methods fight floating-point singularities — curve starts exactly on a sample, tangent to a ray, or through a sample point. Area integration only moves a little when roots jitter, so you don't need fancy singular-event handling.
+**Elimination of Singular Events**: Winding-number methods hit FP singularities at sample-on-curve, ray-tangent, and through-sample cases. Area integration stays stable under root jitter. No singular-event handling.
 
 
 * 
@@ -15,7 +15,7 @@ Notes on the **SCANLINE SWEEPER** glyph renderer: theory, math, and how it actua
 
 
 * 
-**Dynamically Varying Footprints**: Coverage is over an explicit rectangular em-space window matching each pixel. The footprint is computed per pixel at runtime, so AA holds under arbitrary 3D perspective / orientation without grid snap or invalidating precomputed caches.
+**Dynamically Varying Footprints**: Coverage over an explicit rectangular em-space window matching each pixel. Footprint computed per pixel at runtime. AA holds under arbitrary 3D perspective / orientation; no grid snap, no cache invalidate.
 
 
 
@@ -78,11 +78,11 @@ Strictly vertical segments take a fast path as a rectangle: $\text{Area} = \text
 
 
 * 
-**Clamping-Based Integration**: Skip branching on every geometric cut configuration. Compute up to four line intersections with the pixel bounds. Clamp $t$ and intersection points to $[0, \text{size}]$ so out-of-window regions collapse to zero — triangles and edge cases without branches.
+**Clamping-Based Integration**: Skip branching on every geometric cut. Up to four line intersections with pixel bounds. Clamp $t$ and intersection points to $[0, \text{size}]$; out-of-window regions collapse to zero. Triangles and edge cases without branches.
 
 
 * 
-**Memory Optimization**: Curves live in structured storage buffers, not textures. Control points go up as compact `binary16` IEEE floats and unpack to 32-bit in-shader. Bandwidth is the bottleneck, so share vertices: a curve's first control is the previous curve's last; a sentinel resets the chain.
+**Memory Optimization**: Curves in structured storage buffers, not textures. Control points as compact `binary16`, unpack to 32-bit in-shader. Vertex share: curve's first control = previous last; sentinel resets the chain.
 
 
 * **Execution Architecture**:

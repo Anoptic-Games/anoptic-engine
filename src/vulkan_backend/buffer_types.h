@@ -45,10 +45,10 @@ typedef struct InstanceDataBuffer
     uint32_t         count;
 } InstanceDataBuffer;
 
-// Sentinel slot for a streamed entry whose render_id failed to resolve; scatter.comp skips it.
+// Unresolved render_id sentinel. scatter.comp skips.
 #define STREAM_SLOT_SKIP 0xFFFFFFFFu
 
-// Streamed-transform lane: SPSC mapped ring. Producer publishes {seq,count}; scatter reads via dyn offset.
+// Streamed-transform SPSC mapped ring. Producer publishes {seq,count}. Scatter reads via dyn offset.
 // Re-resolve render_id -> slot when resolveGen bumps.
 typedef struct TransformStreamBuffer
 {
@@ -57,12 +57,12 @@ typedef struct TransformStreamBuffer
     GpuAllocation slotAllocs[MAX_FRAMES_IN_FLIGHT];
     uint32_t*     slotMapped[MAX_FRAMES_IN_FLIGHT];   // [capacity] resolved render slots
 
-    // Producer-written transform ring (scatter binding 1, STORAGE_BUFFER_DYNAMIC); ringSlices slices of capacity mat4s.
+    // Producer transform ring (scatter binding 1, STORAGE_BUFFER_DYNAMIC). ringSlices * capacity mat4s.
     VkBuffer      xformRing;
     GpuAllocation xformRingAlloc;
     mat4*         xformRingMapped;                     // [ringSlices * capacity]
 
-    // Producer-written render_id ring, parallel to xformRing (CPU-only, render-heap).
+    // Producer render_id ring, parallel to xformRing (CPU-only, render-heap).
     uint32_t*     idRing;                              // [ringSlices * capacity]
 
     uint32_t      capacity;                            // STREAM_CAPACITY, entries per slice
@@ -72,19 +72,20 @@ typedef struct TransformStreamBuffer
     uint32_t      count[MAX_FRAMES_IN_FLIGHT];         // scatter dispatch count per frame
     uint32_t      dynOffset[MAX_FRAMES_IN_FLIGHT];     // xformRing dynamic offset (bytes) per frame
 
-    // Lock-free SPSC lifetime control. Seqs <= reclaimSeq are GPU-done and reusable.
+    // Lock-free SPSC lifetime. Seqs <= reclaimSeq are GPU-done.
     uint64_t          produceSeq;                      // producer thread only
     _Atomic uint64_t  reclaimSeq;                      // consumer -> producer
     uint64_t          curSeq;                          // render side: latest published seq (0 = none)
     uint32_t          curCount;                        // render side: entries in curSeq's slice
     uint64_t          frameSeq[MAX_FRAMES_IN_FLIGHT];  // seq each in-flight frame submitted
 
-    // Resolve gen-tracking; frame re-resolves idRing -> slotMapped when its stagedGen lags.
+    // Resolve gen. Re-resolve idRing -> slotMapped when stagedGen lags.
     uint32_t      resolveGen;
     uint32_t      stagedGen[MAX_FRAMES_IN_FLIGHT];
 } TransformStreamBuffer;
 
-// Per-slot DEVICE_LOCAL + per-frame host-visible delta staging. render_apply_commands packs staging[f]; recordCommandBuffer uploads staging[f]->device under barrier. Growth copies device-side under idle.
+// Per-slot DEVICE_LOCAL + host-visible delta staging[f].
+// Pack: render_apply_commands. Upload: staging[f]->device under barrier. Grow: device copy under idle.
 typedef struct SlotUpload
 {
     VkBuffer        device;                            // ×1 DEVICE_LOCAL authoritative (GPU reads this)
@@ -103,12 +104,17 @@ typedef struct SlotUpload
 } SlotUpload;
 
 
-// One frustum to cull against. std140: mat4 (64) + vec4[6] (96) = 160, 16-aligned, packs with no padding.
+// One frustum. std140: mat4(64) + vec4[6](96) = 160.
 typedef struct CullView
 {
     mat4    viewProj;
     Vector4 frustumPlanes[6];
 } CullView;
+
+// std140 size/align pin.
+static_assert(sizeof(CullView) == 160 && alignof(CullView) == 16, "CullView is not std140");
+static_assert(offsetof(CullView, viewProj) == 0 && offsetof(CullView, frustumPlanes) == 64,
+              "CullView member offsets drifted from the shader's uniform block");
 
 typedef struct CullUBO
 {
@@ -140,7 +146,7 @@ typedef struct CullUBO
     uint32_t taskParams[4];
 } CullUBO;
 
-// std140 layout guards for the Hi-Z tail; pin C offsets to the SPIR-V offsets.
+// std140 Hi-Z tail: pin C offsets to SPIR-V.
 _Static_assert(offsetof(CullUBO, prevViewProj) == 464, "CullUBO.prevViewProj must be std140 offset 464");
 _Static_assert(offsetof(CullUBO, hizParams)    == 592, "CullUBO.hizParams must be std140 offset 592");
 _Static_assert(offsetof(CullUBO, hizProj)      == 624, "CullUBO.hizProj must be std140 offset 624");

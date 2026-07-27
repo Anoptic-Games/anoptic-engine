@@ -8,8 +8,9 @@
 #include <anoptic_memory.h>
 #include <mimalloc.h>
 
-// Linux ano_aligned_malloc.
+// Linux ano_aligned_malloc. Size or alignment 0 -> NULL.
 inline void* ano_aligned_malloc(size_t size, size_t alignment) {
+    if (size == 0 || alignment == 0) return NULL;
     return mi_malloc_aligned(size, alignment);
 }
 

@@ -3,13 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// UI path baker: contours (lines + quads) -> directed monotone quads in the sweeper
-// stream, exactly the text bake's grammar (p0 (p1 p2)+ per contour, ANO_UI_CURVE_SENTINEL
-// between). Points are packed binary16 in prim-LOCAL space (origin = bbox center), so the
-// evaluator walks them with the same curve_area the glyph lane uses. binary16 gives
-// ~sub-pixel precision up to a few hundred px of half-extent; larger art loses a little.
-// Fill: nonzero-winding, winding-independent. Signed area picks global orientation;
-// opposite-wound inners punch holes.
+// Contours (lines + quads) -> monotone quads: p0 (p1 p2)+ per contour, ANO_UI_CURVE_SENTINEL
+// between. Points binary16 in prim-local (bbox center).
+// Fill: nonzero winding. Signed area sets orientation; opposite inners are holes.
 
 #include <stddef.h>
 
@@ -96,6 +92,8 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
                     return ANO_UI_REF_NONE;
                 q[qn++] = (AnoQuad){ { cx, 0.5 * (cx + sx), sx }, { cy, 0.5 * (cy + sy), sy } };
             }
+            if (cn >= UI_PATH_MAX_QUADS) // leave room for the seal write below
+                return ANO_UI_REF_NONE;
             cstart[cn++] = qn;
             cx = sx = sg->p[0];
             cy = sy = sg->p[1];
@@ -105,6 +103,8 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
         {
             if (!open) // segment before MOVE opens a contour at current origin
             {
+                if (cn >= UI_PATH_MAX_QUADS)
+                    return ANO_UI_REF_NONE;
                 cstart[cn++] = qn;
                 open = true;
             }
@@ -124,7 +124,7 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
             q[qn++] = (AnoQuad){ { cx, ctrlx, nx }, { cy, ctrly, ny } };
             cx = nx; cy = ny;
         }
-        // bbox over endpoints and controls (conservative — curve stays in their hull).
+        // bbox over endpoints + controls (curve in their hull)
         for (uint32_t k = (i == 0 ? 0 : qn - 1); k < qn; k++)
             for (int j = 0; j < 3; j++)
             {
@@ -160,9 +160,7 @@ uint32_t ano_ui_path_fill(AnoUiBuilder *b, const AnoUiPathSeg *segs, uint32_t se
         for (int j = 0; j < 3; j++) { q[k].x[j] -= ccx; q[k].y[j] -= ccy; }
         area += q[k].x[0] * q[k].y[2] - q[k].x[2] * q[k].y[0];
     }
-    // curve_area fills when the outer contour has NON-POSITIVE endpoint shoelace in this
-    // y-down local frame (pinned by anotest_ui's filled-square oracle). Reverse if the
-    // caller wound the other way; holes stay opposite.
+    // Reverse if shoelace > 0 (curve_area wants non-positive outer in y-down local).
     bool reverse = area > 0.0;
 
     // Pass C: emit into curve scratch from curveCount; commit only on success.

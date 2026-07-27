@@ -38,8 +38,10 @@ void ano_record_composite(VkCommandBuffer cmd, uint32_t imageIndex);
 
 /* frame/record.c */
 
-// Record one frame's command buffer. Called by drawFrame.
-void recordCommandBuffer(uint32_t imageIndex);
+// Record one frame's command buffer(s). imageIndex = acquired swapchain image.
+// false on a refused vkBeginCommandBuffer/vkEndCommandBuffer: nothing is recorded past the
+// refusal and no buffer of this frame may be submitted. Called by drawFrame.
+[[nodiscard]] bool recordCommandBuffer(uint32_t imageIndex);
 
 /* frame/submit.c */
 
@@ -65,8 +67,7 @@ void ano_collect_pick(uint32_t frameIndex);
 // Discard the in-progress timing window (lighting-mode change).
 void ano_profile_reset_window(void);
 
-// Frames per profiling flush window, shared by the [frame]/[frametime] pair and the [profile] line.
-// 2^7: exactly 1 s of frames at 128 fps, ~2 s at a 60 fps target, ~1 s at 120.
+// Frames per profiling flush window. Shared by [frame]/[frametime] and [profile].
 #define ANO_PERF_WINDOW_FRAMES 128u
 
 // Wall-clock frame-timing tally for one flush window. Zero-init = unseeded (prevUs == 0).
@@ -91,7 +92,7 @@ static inline void ano_frame_mark(void) {
     if (acc->prevUs == 0) { acc->prevUs = acc->startUs = now; return; }
     uint64_t dt = now - acc->prevUs;
     acc->prevUs = now;
-    acc->dtUs[acc->count++] = (dt > UINT32_MAX) ? UINT32_MAX : (uint32_t)dt;
+    acc->dtUs[acc->count++] = (uint32_t)dt;
     if (acc->count == ANO_PERF_WINDOW_FRAMES) anoperf_flush(acc);
 }
 

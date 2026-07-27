@@ -66,8 +66,7 @@ static void withholding(const AnoDramaturgConfig *cfg, const AnoLedger *l,
     d->intensify = intensify < 1.0 ? intensify : 1.0;
 }
 
-// The buildup's structural anchor: odd buildups ride the lament ground, even
-// ones the dominant pedal; both off below rung 1.
+// Odd buildup: lament. Even: dominant pedal. Off below rung 1.
 static void ground(const AnoDramaturgConfig *cfg, const AnoLedger *l, AnoDirective *d)
 {
     if (d->escalation < 1 || !cfg->earnedDissonance)
@@ -111,7 +110,7 @@ static AnoDirective spend(const AnoDramaturgConfig *cfg, AnoLedger *l, AnoPhrase
     int brighten = magnitude >= cfg->bigSpend ? 2 : 1;
     ano_ledger_set_cadence(l, pos.phrase, ANO_CADENCE_AUTHENTIC);
     l->lastSpend = magnitude;
-    l->barsSinceAuthentic = 0; // cashed — reset the ledger
+    l->barsSinceAuthentic = 0; // cashed: reset ledger
     l->deceptions = 0;
     l->withholdingPhrases = 0;
     l->peakTension = 0.0;
@@ -156,11 +155,10 @@ AnoDirective ano_dramaturg_on_bar(const AnoDramaturgConfig *cfg, AnoLedger *l,
             d = neutral();
         }
     }
-    // persist the walk signals (the walk runs a bar ahead; skew tolerated)
+    // persist walk signals (bar-ahead skew)
     l->suppressTonic = d.withholdRootTonic;
     l->lament = d.lament;
-    // M14: ornament a controlled cadence with a prepared suspension; on the
-    // payoff cadence also permit the unprepared appoggiatura
+    // M14: controlled cadence -> suspension. Authentic -> appoggiatura
     if (cfg->earnedDissonance) {
         int8_t controlled = ano_ledger_cadence(l, pos.phrase);
         AnoCadenceSlot slot = ano_phrase_slot(pos);

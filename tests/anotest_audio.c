@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Coverage: audio ring layout, offline score determinism under heap churn, WAV oracles, null-backend live round-trip.
+// Coverage: audio ring layout, offline score determinism under heap churn, WAV oracles,
+// null-backend live round-trip, byte-size-wrap bad-args boundaries.
 // argv[1] scales churn/render soak rounds. Exit 0 == pass.
 
 #include <stdio.h>
@@ -299,12 +300,14 @@ static bool pred_quiet(const AnoAudioTelemetry *t)     { return t->sourcesActive
 
 static void test_live_world(void)
 {
-    CHECK(ano_audio_init(NULL), "audio world up (defaults, null backend)");
+    // Pin NULL_DEV. AUTO opens the real device.
+    AnoAudioConfig nullCfg = { .backend = ANO_AUDIO_BACKEND_NULL_DEV };
+    CHECK(ano_audio_init(&nullCfg), "audio world up (null backend)");
     AnoAudioBridge *b = anoAudioBridge();
     CHECK(b != NULL, "bridge handle valid after init");
     if (!b) return;
 
-    CHECK(!ano_audio_init(NULL), "double init rejected");
+    CHECK(!ano_audio_init(&nullCfg), "double init rejected");
 
     CHECK(wait_telemetry(b, pred_heartbeat, 2000), "mixer heartbeat (blocks advancing)");
 
@@ -340,7 +343,7 @@ static void test_live_world(void)
 
     AnoAudioTelemetry t;
     if (ano_audio_acquire_telemetry(b, &t))
-        printf("info: live telemetry — blocks %llu, cpu %llu ns/block, underruns %u, clipped %u\n",
+        printf("info: live telemetry 〜 blocks %llu, cpu %llu ns/block, underruns %u, clipped %u\n",
                (unsigned long long)t.blockIndex, (unsigned long long)t.blockCpuNs,
                t.underruns, t.clippedSamples);
 
@@ -349,8 +352,81 @@ static void test_live_world(void)
     CHECK(anoAudioBridge() == NULL, "bridge handle NULL after shutdown");
 
     // Re-init after shutdown.
-    CHECK(ano_audio_init(NULL), "re-init after shutdown");
+    CHECK(ano_audio_init(&nullCfg), "re-init after shutdown");
     CHECK(anoAudioBridge() != NULL, "bridge valid after re-init");
+    ano_audio_shutdown();
+}
+
+/* Bad-args boundaries */
+
+// wav_write: reject uint64 byte-size wrap. Sane write + channels==0 are controls.
+static void test_wav_write_size_wrap(void)
+{
+    scratch_make_dir("anotest_audio_wrap");
+    const char *sanePath   = "anotest_audio_wrap/sane.wav";
+    const char *poisonPath = "anotest_audio_wrap/poison.wav";
+
+    float material[16] = { 0.25f, -0.25f, 0.5f, -0.5f };
+
+    CHECK(ano_audio_wav_write(sanePath, material, 4u, 1u, 48000u), "sane 4-frame write accepted");
+    uint64_t frames = 0; uint32_t channels = 0;
+    float *back = ano_audio_wav_load(sanePath, 0u, &frames, &channels);
+    CHECK(back != NULL, "sane file loads back");
+    if (back) {
+        CHECK(frames == 4u && channels == 1u, "sane file round-trips 4 frames / 1 ch");
+        CHECK(back[0] == material[0] && back[3] == material[3], "sane samples byte-exact");
+        ano_audio_block_free(back);
+    }
+
+    CHECK(!ano_audio_wav_write(sanePath, material, 4u, 0u, 48000u), "channels == 0 rejected");
+
+    // wrap to zero: (1 << 62) frames * 2 ch * 4 bytes == 2^65 == 0 mod 2^64
+    CHECK(!ano_audio_wav_write(poisonPath, material, 1ull << 62, 2u, 48000u),
+          "byte size wrapping to 0 must be rejected as bad args");
+
+    // wrap to small nonzero: ((1 << 62) + 4) frames * 1 ch * 4 bytes == 16 mod 2^64
+    bool lied = ano_audio_wav_write(poisonPath, material, (1ull << 62) + 4u, 1u, 48000u);
+    CHECK(!lied, "byte size wrapping to 16 must be rejected as bad args");
+
+    // a write that reported success must round-trip the frame count it was handed
+    if (lied) {
+        uint64_t pf = 0; uint32_t pc = 0;
+        float *poison = ano_audio_wav_load(poisonPath, 0u, &pf, &pc);
+        CHECK(poison != NULL && pf == (1ull << 62) + 4u,
+              "a write that returned true must round-trip its frame count");
+        if (poison) {
+            printf("  poison.wav claims %llu frames (asked for 2^62 + 4)\n", (unsigned long long)pf);
+            ano_audio_block_free(poison);
+        }
+    }
+
+    remove(sanePath);
+    remove(poisonPath);
+    scratch_remove_dir("anotest_audio_wrap");
+}
+
+// buffer_register: reject uint64 byte-size wrap. Sane 64-frame registration is the control.
+static void test_buffer_register_size_wrap(void)
+{
+    AnoAudioConfig nullCfg = { .backend = ANO_AUDIO_BACKEND_NULL_DEV };
+    CHECK(ano_audio_init(&nullCfg), "audio world up (null backend)");
+    AnoAudioBridge *b = anoAudioBridge();
+    CHECK(b != NULL, "bridge handle valid after init");
+    if (!b) return;
+
+    float material[128] = { 0.25f, -0.25f, 0.5f, -0.5f };
+
+    CHECK(ano_audio_buffer_register(b, 900, material, 64u, 2u),
+          "sane 64-frame registration accepted");
+
+    // wrap to zero: (1 << 62) frames * 2 ch * 4 bytes == 2^65 == 0 mod 2^64
+    CHECK(!ano_audio_buffer_register(b, 901, material, 1ull << 62, 2u),
+          "byte size wrapping to 0 must be rejected as bad args");
+
+    // wrap to small nonzero: ((1 << 62) + 2) frames * 2 ch * 4 bytes == 16 mod 2^64
+    CHECK(!ano_audio_buffer_register(b, 902, material, (1ull << 62) + 2u, 2u),
+          "byte size wrapping to 16 must be rejected as bad args");
+
     ano_audio_shutdown();
 }
 
@@ -366,7 +442,9 @@ int main(int argc, char **argv)
     make_material();
     test_offline_determinism(soak);
     test_wav();
+    test_wav_write_size_wrap();
     test_live_world();
+    test_buffer_register_size_wrap();
 
     if (failures) {
         printf("anotest_audio: %d FAILURE(S)\n", failures);

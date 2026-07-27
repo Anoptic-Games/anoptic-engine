@@ -7,6 +7,7 @@
 // argv[1] scales churned re-render count. Exit 0 == pass.
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -292,13 +293,108 @@ int main(int argc, char **argv)
             const char *wav = ANO_TEST_OUTDIR "/journey_s42_synth.wav";
             CHECK(ano_audio_wav_write(wav, out, frames, ANO_AUDIO_CHANNELS, RATE),
                   "journey WAV written");
-            printf("info: journey — %.1f s, peak %.3f, %s\n",
+            printf("info: journey 〜 %.1f s, peak %.3f, %s\n",
                    (double)frames / RATE, (double)peak, wav);
         }
         free(out);
     }
 
     ano_synth_destroy(syn);
+
+    // --- score_event field ranges: pitch 0..127, velocity 1..127 ---
+    {
+        AnoSynth *g = ano_synth_create(NULL);
+        CHECK(g != NULL, "range-guard synth created");
+        if (g) {
+            CHECK(ano_synth_score_begin(g, 4.0, 1, 1, 8), "score_begin accepted");
+            CHECK(ano_synth_score_tempo(g, 0.0, 120.0), "score_tempo accepted");
+            AnoMusicalParams params = { .tempoBpm = 120.0 };
+            AnoMusicAffect affect = { 0 };
+            CHECK(ano_synth_score_bar(g, 0, &params, &affect), "score_bar accepted");
+
+            // control: contract-clean event passes
+            AnoNoteEvent ok = { .start = 0.0, .dur = 1.0, .pitch = 60, .velocity = 100,
+                                .layer = ANO_MUSIC_MELODY, .tie = ANO_MUSIC_TIE_NONE };
+            CHECK(ano_synth_score_event(g, &ok), "in-range event accepted");
+
+            AnoNoteEvent vel0 = ok;
+            vel0.velocity = 0;
+            CHECK(!ano_synth_score_event(g, &vel0), "velocity 0 rejected");
+            AnoNoteEvent dur0 = ok;
+            dur0.dur = 0.0;
+            CHECK(!ano_synth_score_event(g, &dur0), "dur 0 rejected");
+
+            // velocity above contract ceiling
+            AnoNoteEvent hot = ok;
+            hot.velocity = 200;
+            CHECK(!ano_synth_score_event(g, &hot), "velocity 200 rejected as out of contract");
+
+            // pitch above MIDI 127
+            AnoNoteEvent high = ok;
+            high.pitch = 130;
+            CHECK(!ano_synth_score_event(g, &high), "pitch 130 rejected as out of contract");
+
+            ano_synth_destroy(g);
+        }
+    }
+
+    // --- score_tempo obeys the documented load order like its siblings ---
+    {
+        AnoSynth *a = ano_synth_create(NULL);
+        AnoSynth *b = ano_synth_create(NULL);
+        CHECK(a != NULL && b != NULL, "tempo-order synths created");
+        if (a && b) {
+            // control: the documented order (begin -> tempo -> bars -> events -> end) works
+            CHECK(ano_synth_score_begin(a, 4.0, 1, 2, 4), "score_begin accepted");
+            CHECK(ano_synth_score_tempo(a, 0.0, 120.0), "in-order score_tempo accepted");
+            CHECK(ano_synth_score_tempo(a, 2.0, 90.0), "second monotonic tempo point accepted");
+            CHECK(!ano_synth_score_tempo(a, 1.0, 100.0), "non-monotonic beat rejected");
+            CHECK(!ano_synth_score_tempo(a, 3.0, 0.0), "bpm 0 rejected");
+
+            // control: on a fresh synth every sibling entry point reports the misuse as false
+            AnoMusicalParams params = { .tempoBpm = 120.0 };
+            AnoMusicAffect affect = { 0 };
+            CHECK(!ano_synth_score_bar(b, 0, &params, &affect), "score_bar before begin returns false");
+            AnoNoteEvent ev = { .start = 0.0, .dur = 1.0, .pitch = 60, .velocity = 100,
+                                .layer = ANO_MUSIC_MELODY, .tie = ANO_MUSIC_TIE_NONE };
+            CHECK(!ano_synth_score_event(b, &ev), "score_event before begin returns false");
+            CHECK(!ano_synth_score_end(b), "score_end before begin returns false");
+
+            fflush(stdout);   // flush before misuse CHECK
+            CHECK(!ano_synth_score_tempo(b, 0.0, 120.0), "score_tempo before begin returns false");
+        }
+        ano_synth_destroy(b);
+        ano_synth_destroy(a);
+    }
+
+    // --- score_begin sizes what it promises, tempoCount at the uint32 edge ---
+    {
+        // control: tempoCount 1 holds exactly one added point, tempoCount 0 holds none
+        AnoSynth *a = ano_synth_create(NULL);
+        AnoSynth *b = ano_synth_create(NULL);
+        CHECK(a != NULL && b != NULL, "anchor-cap control synths created");
+        if (a && b) {
+            CHECK(ano_synth_score_begin(a, 4.0, 1, 1, 0), "begin with tempoCount 1 accepted");
+            CHECK(ano_synth_score_tempo(a, 4.0, 90.0), "declared tempo point accepted");
+            CHECK(!ano_synth_score_tempo(a, 8.0, 80.0), "point past declared capacity rejected");
+
+            CHECK(ano_synth_score_begin(b, 4.0, 1, 0, 0), "begin with tempoCount 0 accepted");
+            CHECK(!ano_synth_score_tempo(b, 4.0, 90.0), "added point on zero declared capacity rejected");
+        }
+        ano_synth_destroy(b);
+        ano_synth_destroy(a);
+
+        // UINT32_MAX tempoCount: begin must refuse or honor (tempoCount+1 for beat-0 seed).
+        fflush(stdout);
+        AnoSynth *c = ano_synth_create(NULL);
+        CHECK(c != NULL, "anchor-cap edge synth created");
+        if (c) {
+            if (ano_synth_score_begin(c, 4.0, 1, UINT32_MAX, 0))
+                CHECK(ano_synth_score_tempo(c, 4.0, 90.0),
+                      "a begin that promised UINT32_MAX tempo points takes the first one");
+            ano_synth_destroy(c);
+        }
+    }
 
     if (failures) {
         printf("anotest_synth: %d FAILURE(S)\n", failures);

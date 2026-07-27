@@ -16,10 +16,7 @@
 // Linux CLOCK_MONOTONIC is already nanoseconds: counter IS ns.
 uint64_t ano_timestamp_ticks() {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
-        perror("clock_gettime");
-        return UINT64_MAX; // Indicate an error occurred.
-    }
+    clock_gettime(CLOCK_MONOTONIC, &ts);   // constant clockid + valid pointer: cannot fail
     return (uint64_t)(ts.tv_sec * 1000000000LL) + ts.tv_nsec;
 }
 
@@ -37,10 +34,7 @@ uint64_t ano_timestamp_raw() {
 uint64_t ano_timestamp_us() {
     struct timespec ts;
 
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
-        perror("clock_gettime");
-        return UINT64_MAX; // Indicate an error occurred
-    }
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)(ts.tv_sec * 1000000LL) + (ts.tv_nsec / 1000);
 }
 
@@ -48,10 +42,7 @@ uint64_t ano_timestamp_us() {
 uint32_t ano_timestamp_ms() {
     struct timespec ts;
 
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
-        perror("clock_gettime");
-        return UINT32_MAX; // Indicate an error occurred.
-    }
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000) + (ts.tv_nsec / 1000000LL);
 }
 
@@ -127,9 +118,10 @@ int ano_sleep(uint64_t us) {
             request = remaining;
             printf("Interrupted by signal handler\n");
         } else {
-            perror("clock_nanosleep");
+            // clock_nanosleep reports by return value and does not set errno; perror/errno here
+            // would print and return stale state, possibly 0 (success).
             printf("clock_nanosleep error with status: %d\n", sleepStatus);
-            return errno;
+            return sleepStatus;
         }
     }
 

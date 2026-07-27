@@ -369,7 +369,7 @@ static void test_reference_raster(AnoFontId font, const AnoFontBake *b)
         if (maxd > worstMax)
             worstMax = maxd;
 
-        // FT coverage agreement. Thresholds leave platform margin (worst ~rms 2.71 / max 53).
+        // FT coverage agreement (worst rms ~2.71 / max 53).
         CHECK(rms <= 4.0, "coverage RMS within threshold of FreeType");
         CHECK(maxd <= 64, "per-pixel coverage deviation bounded");
 
@@ -805,6 +805,40 @@ static void test_shaper_runs(const AnoFontBake *b)
     CHECK(w == 0.0f && h == 0.0f, "empty runs measure zero");
 }
 
+// byteCount-0 runs are no-ops (either edge). Empty bake: measure = lineHeight * size only.
+static void test_measure_runs_noop(void)
+{
+    AnoFontBake bake = { 0 };
+    bake.lineHeight = 1.0f;   // em per line
+
+    const anostr_t text = anostr_lit("AA");   // two single-line, out-of-bake codepoints
+
+    AnoTextRun single[1] = { { .byteCount = 2, .sizePx = 32.0f, .color = { 0 } } };
+    float wSingle = -1.0f, hSingle = -1.0f;
+    ano_text_measure_runs(&bake, text, single, 1, &wSingle, &hSingle);
+    CHECK(hSingle == 32.0f, "single run: one line measures lineHeight * sizePx");
+
+    AnoTextRun lead[2] = {
+        { .byteCount = 0, .sizePx = 64.0f, .color = { 0 } },
+        { .byteCount = 2, .sizePx = 32.0f, .color = { 0 } },
+    };
+    float wLead = -1.0f, hLead = -1.0f;
+    ano_text_measure_runs(&bake, text, lead, 2, &wLead, &hLead);
+    CHECK(hLead == hSingle, "leading no-op run does not change measured height");
+    CHECK(wLead == wSingle, "leading no-op run does not change measured width");
+
+    // trailing no-op at runs[runCount-1]
+    AnoTextRun trail[2] = {
+        { .byteCount = 2, .sizePx = 32.0f, .color = { 0 } },
+        { .byteCount = 0, .sizePx = 64.0f, .color = { 0 } },
+    };
+    float wTrail = -1.0f, hTrail = -1.0f;
+    ano_text_measure_runs(&bake, text, trail, 2, &wTrail, &hTrail);
+    CHECK(wTrail == wSingle, "trailing no-op run does not change measured width");
+    CHECK(hTrail == hSingle, "trailing no-op run does not change measured height");
+}
+
+
 /* Multi-face bake */
 
 // Geist ASCII + Noto Runic. Slot bases chain in range order. Kern never crosses faces. Unsorted/overlapping ranges reject.
@@ -901,6 +935,7 @@ int main(void)
     test_ghost_pixels(geist, &bake);
     test_shaper(&bake);
     test_shaper_runs(&bake);
+    test_measure_runs_noop();
     test_runic_bake(geist, runic, heapA);
 
     // Determinism: second bake bit-identical.

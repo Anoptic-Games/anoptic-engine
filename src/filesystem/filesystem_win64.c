@@ -30,7 +30,7 @@ ano_fspath ano_fs_gamepath(void) {
 
     char pathBuffer[MAX_PATH];
     DWORD len = GetModuleFileNameA(NULL, pathBuffer, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH || len >= MAXPATH)
+    if (len == 0 || len >= MAX_PATH)
         return result; // failed or truncated
 
     // Trim file name, leave containing directory.
@@ -40,6 +40,8 @@ ano_fspath ano_fs_gamepath(void) {
     if (len > 3)
         len--;
 
+    if (len >= MAXPATH)
+        return result; // exceeds value type
     memcpy(result.str, pathBuffer, len);
     result.str[len] = '\0';
     result.length = (uint16_t)len;
@@ -58,24 +60,31 @@ ano_fspath ano_fs_userpath(void) {
     if (len < 0 || len >= MAXPATH)
         return (ano_fspath){0};
 
-    if (_mkdir(result.str) != 0 && errno != EEXIST)
-        return (ano_fspath){0};
+    if (fs_mkdir(result.str) != 0)
+        return (ano_fspath){0}; // absent and uncreatable, or squatted by a non-directory
 
     result.length = (uint16_t)len;
     return result;
 }
 
-// Sets CWD to ano_fs_gamepath() so relative asset loads resolve. Output: true on success.
+// Sets CWD to ano_fs_gamepath(). Output: true on success.
 bool ano_fs_chdir_gamepath(void)
 {
     ano_fspath dir = ano_fs_gamepath();
     return dir.length > 0 && _chdir(dir.str) == 0;
 }
 
-// Output: 0 on success or EEXIST, -1 on failure.
+// Output: 0 when path is a directory afterwards, -1 otherwise.
+// EEXIST: success only for a real directory (FILE_ATTRIBUTE_DIRECTORY).
 int fs_mkdir(const char *path)
 {
-    return (_mkdir(path) == 0 || errno == EEXIST) ? 0 : -1;
+    if (_mkdir(path) == 0)
+        return 0;
+    if (errno != EEXIST)
+        return -1;
+
+    DWORD attr = GetFileAttributesA(path);
+    return (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) ? 0 : -1;
 }
 
 
@@ -87,7 +96,7 @@ struct ano_file {
 };
 
 // Output: FILE_APPEND_DATA handle, or NULL. OPEN_ALWAYS creates if absent.
-// FILE_SHARE_DELETE: POSIX unlink parity; another process may remove/replace while open.
+// FILE_SHARE_DELETE: POSIX unlink parity while open.
 ano_file *ano_fs_open_append(const char *path)
 {
     if (path == NULL)
@@ -109,7 +118,7 @@ ano_file *ano_fs_open_append(const char *path)
 }
 
 // Truncate via throwaway CREATE_ALWAYS, reopen FILE_APPEND_DATA. NULL on failure.
-// CREATE_ALWAYS needs GENERIC_WRITE; FILE_WRITE_DATA would break EOF-append atomicity.
+// CREATE_ALWAYS needs GENERIC_WRITE.
 ano_file *ano_fs_open_trunc(const char *path)
 {
     if (path == NULL)
@@ -124,6 +133,8 @@ ano_file *ano_fs_open_trunc(const char *path)
     return ano_fs_open_append(path);
 }
 
+// Output: 0 once all bytes written, -1 on error. Loops past short writes.
+// written == 0 on TRUE is error (not retry).
 int ano_fs_write(ano_file *file, const void *data, size_t length)
 {
     if (file == NULL || (data == NULL && length != 0))
@@ -134,7 +145,7 @@ int ano_fs_write(ano_file *file, const void *data, size_t length)
     while (remaining > 0) {
         DWORD chunk = remaining > 0x7fffffff ? 0x7fffffff : (DWORD)remaining;
         DWORD written = 0;
-        if (!WriteFile(file->handle, cursor, chunk, &written, NULL))
+        if (!WriteFile(file->handle, cursor, chunk, &written, NULL) || written == 0)
             return -1;
         cursor += written;
         remaining -= written;

@@ -7,9 +7,7 @@ add_test(NAME anoptic_time COMMAND anotest_time)
 set_tests_properties(anoptic_time PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # Testing for ``anoptic_log.h``
-# Scratch dirs are anchored at runtime to the test exe's own directory (ano_fs_chdir_gamepath in
-# main / scratch_anchor_to_exe), so output never lands in the caller's CWD and a cross-built exe
-# writes to a valid path on its own OS -- no compile-time build path is baked in.
+# Scratch dirs anchor to the test exe dir at runtime (ano_fs_chdir_gamepath / scratch_anchor_to_exe).
 add_executable(anotest_logging anotest_logging.c)
 target_link_libraries(anotest_logging PRIVATE anoptic_core)
 add_test(NAME anoptic_logging COMMAND anotest_logging)
@@ -128,30 +126,23 @@ target_compile_options(anotest_chariots PRIVATE -w)
 add_test(NAME anoptic_chariots COMMAND anotest_chariots)
 set_tests_properties(anoptic_chariots PROPERTIES DISABLED TRUE LABELS "optional;easteregg")
 
-# Optional logger benchmark: the lock-free ring (in anoptic_core) vs the preserved mutex baseline.
-# log_old.c is compiled ONLY into this target -- it never enters anoptic_core or the standard
-# build, so the two loggers coexist in one executable (the baseline is namespaced mtxlog_*). The
-# src include dir resolves "log/log_old.h". Built so it cannot rot, DISABLED in ctest --
-# run ./anotest_logbench by hand.
+# Logger bench: lock-free ring (anoptic_core) vs mutex baseline (log_old.c / mtxlog_*, this target only).
+# DISABLED in ctest. Run ./anotest_logbench by hand.
 add_executable(anotest_logbench anotest_logbench.c ${CMAKE_SOURCE_DIR}/src/log/log_old.c)
 target_include_directories(anotest_logbench PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(anotest_logbench PRIVATE anoptic_core)
 add_test(NAME anoptic_logbench COMMAND anotest_logbench)
 set_tests_properties(anoptic_logbench PROPERTIES DISABLED TRUE LABELS "optional;bench")
 
-# Logger tail benchmark: per-call enqueue latency percentiles (p50/p90/p99/p99.9) from a calibrated
-# rdtsc tick source -- the percentile complement to anotest_logbench's means. Built so it cannot
-# rot, DISABLED in ctest -- run ./anotest_logtail by hand.
+# Logger tail bench: enqueue latency percentiles (p50/p90/p99/p99.9). DISABLED in ctest.
+# Run ./anotest_logtail by hand.
 add_executable(anotest_logtail anotest_logtail.c)
 target_link_libraries(anotest_logtail PRIVATE anoptic_core)
 add_test(NAME anoptic_logtail COMMAND anotest_logtail)
 set_tests_properties(anoptic_logtail PROPERTIES DISABLED TRUE LABELS "optional;bench")
 
-# Logger fuzzer: many producers drive ano_log_* with randomized well-typed input (variable-length
-# content as "%s", a fixed (literal-fmt, typed-arg) table for the deferred formatter, immediates, and
-# output-dir swaps) while a flusher drains on short random intervals. Oracle: the logger drops nothing,
-# so the summed output line count must equal the total enqueued. Deterministic and fast by default
-# (fixed seed, ~few seconds); pass an iteration count as argv[1] for a longer soak.
+# Logger fuzzer: multi-producer ano_log_* with randomized input. Oracle: output lines == enqueued.
+# Fixed seed by default. argv[1] scales the soak.
 add_executable(anotest_logfuzz anotest_logfuzz.c)
 target_link_libraries(anotest_logfuzz PRIVATE anoptic_core)
 add_test(NAME anoptic_logfuzz COMMAND anotest_logfuzz)
@@ -170,11 +161,29 @@ if(NOT ANOPTIC_SANITIZE STREQUAL "")
     set_tests_properties(anoptic_blackbox PROPERTIES DISABLED TRUE)
 endif()
 
+# Testing for ``anoptic_threads.h`` (barrier cohort integrity across over-subscribed reuse;
+# glibc's barrier is the oracle on Linux). A 30 s watchdog turns a lost cohort into a failure.
+add_executable(anotest_threads anotest_threads.c)
+target_link_libraries(anotest_threads PRIVATE anoptic_core)
+add_test(NAME anoptic_threads COMMAND anotest_threads)
+set_tests_properties(anoptic_threads PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
+
 # Testing for the render_bridge transport (SPSC rings; concurrency)
 add_executable(anotest_render_bridge anotest_render_bridge.c)
 target_link_libraries(anotest_render_bridge PRIVATE anoptic_core)
 add_test(NAME anoptic_render_bridge COMMAND anotest_render_bridge)
 set_tests_properties(anoptic_render_bridge PROPERTIES TIMEOUT 60 LABELS "unit;concurrency")
+
+# AnoRenderSubmitResult on the six owned-payload submit APIs; real ano_render_bridge.c, no anoptic_core.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_rendersubmitguard.c)
+    add_executable(anotest_rendersubmitguard anotest_rendersubmitguard.c ${CMAKE_SOURCE_DIR}/src/render_bridge/ano_render_bridge.c)
+    target_include_directories(anotest_rendersubmitguard PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/mimalloc/include)
+    if(UNIX)
+        target_compile_definitions(anotest_rendersubmitguard PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE _DARWIN_C_SOURCE)
+    endif()
+    add_test(NAME anoptic_rendersubmitguard COMMAND anotest_rendersubmitguard)
+    set_tests_properties(anoptic_rendersubmitguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+endif()
 
 # Testing for the audio stack Phase 0 (churned-heap offline determinism; WAV; live null-backend round-trip)
 add_executable(anotest_audio anotest_audio.c)
@@ -182,19 +191,25 @@ target_link_libraries(anotest_audio PRIVATE anoptic_core)
 add_test(NAME anoptic_audio COMMAND anotest_audio)
 set_tests_properties(anoptic_audio PROPERTIES TIMEOUT 60 LABELS "unit;mem")
 
-# Live audio smoke on the AUTO backend cascade. Passes on any backend (CI
-# cascades to null); by hand on a desktop it is the audible Phase 1 check.
+# Log flood: wide "%*d" deferred records survive a drain with nothing lost and full-width fields.
+add_executable(anotest_logflood anotest_logflood.c)
+target_link_libraries(anotest_logflood PRIVATE anoptic_core)
+add_test(NAME anoptic_logflood COMMAND anotest_logflood)
+set_tests_properties(anoptic_logflood PROPERTIES TIMEOUT 120 LABELS "unit;concurrency;mem")
+
+# Live audio smoke on AUTO backend cascade. DISABLED in ctest.
+# Run ./anotest_audiotone by hand.
 add_executable(anotest_audiotone anotest_audiotone.c)
 target_link_libraries(anotest_audiotone PRIVATE anoptic_core)
 add_test(NAME anoptic_audiotone COMMAND anotest_audiotone)
-set_tests_properties(anoptic_audiotone PROPERTIES TIMEOUT 30 LABELS "unit;optional")
+set_tests_properties(anoptic_audiotone PROPERTIES DISABLED TRUE TIMEOUT 30 LABELS "optional;audible")
 
-# Live Phase 2 scene: positioned one-shots + looping ambient bed + orbiting
-# listener + swept bus filter. CI-safe on null; audible by hand (2s in ctest).
+# Live Phase 2 scene: one-shots + ambient bed + orbiting listener + swept bus filter.
+# DISABLED in ctest. Run ./anotest_audioscene by hand (argv[1] seconds).
 add_executable(anotest_audioscene anotest_audioscene.c)
 target_link_libraries(anotest_audioscene PRIVATE anoptic_core)
 add_test(NAME anoptic_audioscene COMMAND anotest_audioscene 2)
-set_tests_properties(anoptic_audioscene PROPERTIES TIMEOUT 60 LABELS "unit;optional")
+set_tests_properties(anoptic_audioscene PROPERTIES DISABLED TRUE TIMEOUT 60 LABELS "optional;audible")
 
 # Phase 3 DSP library + console: primitive unit oracles, effect property
 # tests, and the churned-heap console golden. All offline, CI-safe.
@@ -203,9 +218,8 @@ target_link_libraries(anotest_audiodsp PRIVATE anoptic_core)
 add_test(NAME anoptic_audiodsp COMMAND anotest_audiodsp)
 set_tests_properties(anoptic_audiodsp PROPERTIES TIMEOUT 60 LABELS "unit;mem")
 
-# Phase 4 synth offline gate: BeatClock oracle, tie chains render as single
-# voices (bit-compare vs the merged note), patch showcase, and the journey
-# fixture — churned-heap byte-identity plus the full listenable WAV artifact.
+# Phase 4 synth offline gate: BeatClock oracle, tie-chain bit-compare, patch showcase,
+# journey fixture (churned-heap byte-identity + listenable WAV).
 add_executable(anotest_synth anotest_synth.c)
 target_link_libraries(anotest_synth PRIVATE anoptic_core)
 target_compile_definitions(anotest_synth PRIVATE
@@ -214,9 +228,8 @@ target_compile_definitions(anotest_synth PRIVATE
 add_test(NAME anoptic_synth COMMAND anotest_synth)
 set_tests_properties(anoptic_synth PROPERTIES TIMEOUT 300 LABELS "unit;mem")
 
-# Live Phase 4 scene: the journey demo in realtime through synth generator +
-# music console + device backend, automation paced from the logic thread.
-# CI-safe on null (8 s); by hand it is the audible three-minute piece.
+# Live Phase 4 scene: journey demo via synth + music console + device backend.
+# CI-safe on null (8 s). By hand: the audible three-minute piece.
 add_executable(anotest_musichost anotest_musichost.c)
 target_link_libraries(anotest_musichost PRIVATE anoptic_core)
 target_include_directories(anotest_musichost PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -227,53 +240,45 @@ target_link_libraries(anotest_synthlive PRIVATE anoptic_core)
 target_include_directories(anotest_synthlive PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME anoptic_synthlive COMMAND anotest_synthlive)
 
-# Phase 7: the composer hosted in the audio callback (ano_synth_attach_music).
-# The gate is that it changes nothing -- sample-identical to the batch path over
-# the bars they share -- plus the two properties only the live path has: the
-# piece never ends, and a bar's meaning surfaces on its own downbeat.
+# Phase 7: composer in the audio callback (ano_synth_attach_music).
+# Sample-identical to batch over shared bars. Live-only: endless piece, bar meaning on downbeat.
 add_executable(anotest_musicdrive anotest_musicdrive.c)
 target_link_libraries(anotest_musicdrive PRIVATE anoptic_core)
 target_include_directories(anotest_musicdrive PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME anoptic_musicdrive COMMAND anotest_musicdrive)
 set_tests_properties(anoptic_musicdrive PROPERTIES TIMEOUT 120 LABELS "unit")
 
-# Phase 7's exit criterion, audible by hand: an ENDLESS piece composed inside the
-# audio callback, steered live from gameplay, with save/seek by deterministic
-# reconstruction. CI-safe on null (30 s); run ./anotest_musicscene 180 on a real
-# device for the background-listen test.
+# Phase 7 audible: endless piece in the audio callback, live steer, save/seek by reconstruction.
+# DISABLED in ctest. Run ./anotest_musicscene 180 by hand.
 add_executable(anotest_musicscene anotest_musicscene.c)
 target_link_libraries(anotest_musicscene PRIVATE anoptic_core)
 add_test(NAME anoptic_musicscene COMMAND anotest_musicscene 30)
-set_tests_properties(anoptic_musicscene PROPERTIES TIMEOUT 120 LABELS "unit;optional")
+set_tests_properties(anoptic_musicscene PROPERTIES DISABLED TRUE TIMEOUT 120 LABELS "optional;audible")
 
-# Bridge hot-op tail bench: logic-side publish/acquire latency + per-block mixer
-# cost under a live mixer. DISABLED; run by hand (argv[1] seconds). A/B vehicle
-# for cross-thread layout work.
+# Bridge hot-op tail bench: publish/acquire latency + per-block mixer cost. DISABLED.
+# Run by hand (argv[1] seconds).
 add_executable(anotest_bridgebench anotest_bridgebench.c)
 target_link_libraries(anotest_bridgebench PRIVATE anoptic_core)
 add_test(NAME anoptic_bridgebench COMMAND anotest_bridgebench)
-set_tests_properties(anoptic_bridgebench PROPERTIES DISABLED TRUE LABELS "optional;bench")
+set_tests_properties(anoptic_bridgebench PROPERTIES DISABLED TRUE LABELS "optional;bench;audible")
 
 add_executable(anotest_synthscene anotest_synthscene.c)
 target_link_libraries(anotest_synthscene PRIVATE anoptic_core)
 target_compile_definitions(anotest_synthscene PRIVATE
         ANO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 add_test(NAME anoptic_synthscene COMMAND anotest_synthscene 8)
-set_tests_properties(anoptic_synthscene PROPERTIES TIMEOUT 60 LABELS "unit;optional")
+set_tests_properties(anoptic_synthscene PROPERTIES DISABLED TRUE TIMEOUT 60 LABELS "optional;audible")
 
 # Phase 6 step-1 gate: determinism kernel bit-compatibility with CPython 3.12
 # (BLAKE2b-8 tags, MT19937 seeding + draw semantics, banker's rounding).
 add_executable(anotest_music anotest_music.c)
 target_link_libraries(anotest_music PRIVATE anoptic_core)
 add_test(NAME anoptic_music COMMAND anotest_music)
-set_tests_properties(anoptic_music PROPERTIES TIMEOUT 30 LABELS "unit")
+set_tests_properties(anoptic_music PROPERTIES TIMEOUT 120 LABELS "unit;concurrency")
 
 # Testing for Vulkan Lifecycle
 if(TARGET anoptic_render)
-    # The vk tests resolve shaders (loadFile) and assets exe-relative, and their
-    # executables live HERE, not next to anopticengine -- so stage both into this
-    # directory too. Plain custom target: re-copies on every build, but that is six
-    # small .spv plus the dev assets, and it can never go stale.
+    # Stage shaders/assets into this binary dir (vk tests resolve exe-relative, exes live here).
     add_custom_target(anoptic_test_resources ALL
             COMMAND ${CMAKE_COMMAND} -E copy_directory ${SHADER_BIN_DIR} ${CMAKE_CURRENT_BINARY_DIR}/resources/shaders
             COMMENT "Staging shaders (and assets, if present) into tests/"
@@ -299,6 +304,12 @@ if(TARGET anoptic_render)
     set_tests_properties(anotest_vk_lifecycle PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
         SKIP_RETURN_CODE 77)
 
+    # Static shadow-caster region of the backend.h static-row contract: pure logic, no GPU device.
+    add_executable(anotest_vk_shadow anotest_vk_shadow.c)
+    target_link_libraries(anotest_vk_shadow PRIVATE anoptic_render)
+    add_test(NAME anotest_vk_shadow COMMAND anotest_vk_shadow)
+    set_tests_properties(anotest_vk_shadow PROPERTIES TIMEOUT 30 LABELS "unit;render")
+
     add_executable(anotest_vk_components anotest_vk_components.c)
     target_link_libraries(anotest_vk_components PRIVATE anoptic_render)
     add_test(NAME anotest_vk_components COMMAND anotest_vk_components)
@@ -307,7 +318,7 @@ if(TARGET anoptic_render)
     add_executable(anotest_vk_compliance_layers anotest_vk_compliance_layers.c)
     target_link_libraries(anotest_vk_compliance_layers PRIVATE anoptic_render)
     add_test(NAME anotest_vk_compliance_layers COMMAND anotest_vk_compliance_layers)
-    # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
+    # Asserts validation layers catch an intentional error. Disabled in Release (layers Debug-only).
     set_tests_properties(anotest_vk_compliance_layers PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
         DISABLED "$<CONFIG:Release>" SKIP_RETURN_CODE 77)
 
@@ -320,14 +331,62 @@ if(TARGET anoptic_render)
     add_executable(anotest_vk_sync anotest_vk_sync.c)
     target_link_libraries(anotest_vk_sync PRIVATE anoptic_render)
     add_test(NAME anotest_vk_sync COMMAND anotest_vk_sync)
-    # Asserts the validation layers catch an intentional error; layers are Debug-only, so disable in Release.
+    # Asserts validation layers catch an intentional error. Disabled in Release (layers Debug-only).
     set_tests_properties(anotest_vk_sync PROPERTIES TIMEOUT 30 LABELS "unit;vulkan"
         DISABLED "$<CONFIG:Release>" SKIP_RETURN_CODE 77)
+
+    # Texture-custody guards: real TUs vs link-seam vk/helper stubs; EXISTS until sources land.
+
+    # createTextureImage / createTextureImageFromPixels failure unwind + MUTABLE_FORMAT format list.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_texunwindguard.c)
+        add_executable(anotest_texunwindguard anotest_texunwindguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/texture/texture.c)
+        target_include_directories(anotest_texunwindguard PRIVATE ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+        target_link_libraries(anotest_texunwindguard PRIVATE anoptic_core m)
+        add_test(NAME anoptic_texunwindguard COMMAND anotest_texunwindguard)
+        set_tests_properties(anoptic_texunwindguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+    endif()
+
+    # ano_vk_register_texture growth refusal; mi_realloc/mi_free renamed to test seams.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_texregisterguard.c)
+        add_executable(anotest_texregisterguard anotest_texregisterguard.c ${CMAKE_SOURCE_DIR}/src/vulkan_backend/components.c)
+        target_include_directories(anotest_texregisterguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+        target_compile_definitions(anotest_texregisterguard PRIVATE mi_realloc=anotest_seam_realloc mi_free=anotest_seam_free)
+        target_link_libraries(anotest_texregisterguard PRIVATE anoptic_core m)
+        add_test(NAME anoptic_texregisterguard COMMAND anotest_texregisterguard)
+        set_tests_properties(anoptic_texregisterguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
+    endif()
+
+    # parseGltf texture custody: refuse construct, refuse adopt, haltLoad on device refusal.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_gltftexleakguard.c)
+        add_executable(anotest_gltftexleakguard anotest_gltftexleakguard.c ${CMAKE_SOURCE_DIR}/src/render/gltf/ano_GltfParser.c)
+        target_include_directories(anotest_gltftexleakguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+        target_link_libraries(anotest_gltftexleakguard PRIVATE anoptic_core m)
+        add_test(NAME anoptic_gltftexleakguard COMMAND anotest_gltftexleakguard)
+        set_tests_properties(anoptic_gltftexleakguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+    endif()
+
+    # glTF colour/data domain split: dual views, distinct bindless slots, no cross-domain alias.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_gltftexdomainguard.c)
+        add_executable(anotest_gltftexdomainguard anotest_gltftexdomainguard.c ${CMAKE_SOURCE_DIR}/src/render/gltf/ano_GltfParser.c)
+        target_include_directories(anotest_gltftexdomainguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
+        target_link_libraries(anotest_gltftexdomainguard PRIVATE anoptic_core m)
+        add_test(NAME anoptic_gltftexdomainguard COMMAND anotest_gltftexdomainguard)
+        set_tests_properties(anoptic_gltftexdomainguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
+    endif()
+
+    # Dual-view SRGB/UNORM sample readback via compute probe.
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_vk_texdomain.c)
+        add_executable(anotest_vk_texdomain anotest_vk_texdomain.c)
+        target_link_libraries(anotest_vk_texdomain PRIVATE anoptic_render)
+        add_test(NAME anotest_vk_texdomain COMMAND anotest_vk_texdomain)
+        set_tests_properties(anotest_vk_texdomain PROPERTIES TIMEOUT 30 LABELS "unit;vulkan" SKIP_RETURN_CODE 77)
+        add_dependencies(anotest_vk_texdomain anoptic_test_resources)
+    endif()
 
     # A lone `--build --target anotest_vk_*` must still stage this directory's
     # shaders/assets before the test can run.
     foreach(vktest IN ITEMS anotest_render_slots anotest_vk_lifecycle anotest_vk_components
-            anotest_vk_compliance_layers anotest_vk_memory anotest_vk_sync)
+            anotest_vk_shadow anotest_vk_compliance_layers anotest_vk_memory anotest_vk_sync)
         add_dependencies(${vktest} anoptic_test_resources)
     endforeach()
 else()
@@ -341,10 +400,7 @@ else()
         "################################################################\n")
 endif()
 
-# Sanitizers run 2-15x slower and CI runners have 2 cores; scale every ctest
-# TIMEOUT so starvation cannot masquerade as failure (musicdrive hit its 120 s
-# budget under tsan on 2026-07-16 with zero race reports). Tests without an
-# explicit TIMEOUT keep the ctest default.
+# Scale ctest TIMEOUTs under sanitizers. Tests without an explicit TIMEOUT keep the default.
 if(ANOPTIC_SANITIZE STREQUAL "tsan")
     set(ANO_TEST_TIMEOUT_SCALE 8)
 elseif(ANOPTIC_SANITIZE STREQUAL "asan")

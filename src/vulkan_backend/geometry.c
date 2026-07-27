@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include "vulkan_backend/geometry.h"
+#include <anoptic_memory.h>   // puts this TU's malloc/free in the engine allocator (MI_OVERRIDE is OFF)
 #include <string.h>
 #include <stdio.h>
 #include <anoptic_log.h>
@@ -109,7 +110,7 @@ static bool geometry_pool_emit_level(GeometryPool* pool, GpuAllocator* alloc, Vk
                                      const uint32_t* indices, uint32_t indexCount,
                                      uint32_t meshIndex)
 {
-    // Wait for any in-flight draws to complete before mutating shared device-local buffers
+    // Wait for in-flight draws
     vkDeviceWaitIdle(device);
 
     // Build meshlets and calculate bounds on the host
@@ -289,7 +290,7 @@ static bool geometry_pool_emit_level(GeometryPool* pool, GpuAllocator* alloc, Vk
         finalIndexOffset = pool->indexWriteOffset;
     }
 
-    // Both fit — now commit the reservations.
+    // Commit reservations
     if (vertexFreeIdx >= 0) {
         pool->vertexFreeBlocks[vertexFreeIdx].offset += vertexSize;
         pool->vertexFreeBlocks[vertexFreeIdx].size -= vertexSize;
@@ -394,7 +395,7 @@ static bool geometry_pool_emit_level(GeometryPool* pool, GpuAllocator* alloc, Vk
     return true;
 }
 
-// Acquire one mesh slot then emit. Slot commits only on success; failure returns fallback 0.
+// Acquire one mesh slot then emit. Slot commits only on success; every refusal answers ANO_MESH_NONE.
 uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
                               uint32_t transferFamily, VkQueue transferQueue,
                               const Vertex* vertices, uint32_t vertexCount,
@@ -406,7 +407,7 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
         meshIndex = pool->freeMeshIndices[pool->freeMeshIndexCount - 1];
     } else {
         // Cap at ANO_MAX_MESHES (updateCullingBuffers writes meshData[i*9] for i < meshCount).
-        if (pool->meshCount >= ANO_MAX_MESHES) return 0; // fallback; GPU buffers full
+        if (pool->meshCount >= ANO_MAX_MESHES) return ANO_MESH_NONE; // GPU buffers full
         if (pool->meshCount >= pool->meshCapacity) {
             pool->meshCapacity = pool->meshCapacity == 0 ? 100 : pool->meshCapacity * 2;
             pool->meshes = realloc(pool->meshes, pool->meshCapacity * sizeof(MeshRegion));
@@ -416,7 +417,7 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
 
     if (!geometry_pool_emit_level(pool, alloc, device, transferFamily, transferQueue,
                                   vertices, vertexCount, indices, indexCount, meshIndex))
-        return 0; // fallback mesh; slot acquisition not committed
+        return ANO_MESH_NONE; // slot acquisition not committed
 
     if (recycled) pool->freeMeshIndexCount--;
     else          pool->meshCount++;
@@ -466,7 +467,7 @@ static uint32_t geometry_compact_level(const Vertex* srcVerts, uint32_t srcVerte
 // Upload contiguous LOD chain. Level 0 = full mesh; level i = ano_simplify(source, ratios[i]) then compact+emit.
 // Cull bound from level 0 only. Truncates on stall/exhaust; releases unused reserved slots.
 // in: source mesh, config (NULL => one full level)
-// out: base mesh index / *out_lodCount; 0 + *out_lodCount==0 on total failure
+// out: base / *out_lodCount; total failure => ANO_MESH_NONE + 0 (never the fallback slot)
 uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
                                     uint32_t transferFamily, VkQueue transferQueue,
                                     const Vertex* vertices, uint32_t vertexCount,
@@ -479,11 +480,11 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
     if (want > ANO_MAX_LOD) want = ANO_MAX_LOD;
     float targetError = config ? config->targetError : 0.0f;
 
-    // Clamp chain to remaining ANO_MAX_MESHES slots; no room -> fallback 0.
+    // Clamp chain to remaining ANO_MAX_MESHES slots; no room -> refuse.
     if (pool->meshCount >= ANO_MAX_MESHES) {
-        if (out_lodBase)  *out_lodBase = 0u;
+        if (out_lodBase)  *out_lodBase = ANO_MESH_NONE;
         if (out_lodCount) *out_lodCount = 0u;
-        return 0u;
+        return ANO_MESH_NONE;
     }
     if ((uint64_t)pool->meshCount + want > ANO_MAX_MESHES)
         want = (uint32_t)(ANO_MAX_MESHES - pool->meshCount);
@@ -520,8 +521,7 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
             ano_optimize_vertex_cache(simplified, simplified, got, vertexCount);
             lvlIndices = simplified;
             lvlCount = (uint32_t)got;
-            // Compact to just the referenced vertices (remaps `simplified` in place). On alloc failure
-            // (cc==0) keep the full array with the unmodified indices — correct, just not space-optimal.
+            // Compact referenced verts (remaps simplified in place); cc==0 keeps full array
             if (compacted) {
                 uint32_t cc = geometry_compact_level(vertices, vertexCount, simplified, lvlCount, compacted);
                 if (cc > 0u) { lvlVertices = compacted; lvlVertexCount = cc; }
@@ -536,16 +536,15 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
     free(simplified);
     free(compacted);
 
-    // Release the reserved-but-unfilled tail so the cull shader never addresses an empty slot.
+    // Release unused reserved slots
     pool->meshCount = lodBase + produced;
 
-    // The base mesh advertises the chain length (cull reads meshDrawData[base].lodCount to pick a
-    // level); members keep their default lodCount==1 since they are never referenced as a base.
+    // Base lodCount = chain length; members stay at 1
     if (produced) pool->meshes[lodBase].lodCount = produced;
 
-    if (out_lodBase)  *out_lodBase = produced ? lodBase : 0u;
+    if (out_lodBase)  *out_lodBase = produced ? lodBase : ANO_MESH_NONE;
     if (out_lodCount) *out_lodCount = produced;
-    return produced ? lodBase : 0u;
+    return produced ? lodBase : ANO_MESH_NONE;
 }
 
 void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex)
@@ -588,8 +587,7 @@ void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex)
     memset(mesh, 0, sizeof(MeshRegion));
 }
 
-// Free a contiguous LOD chain, releasing each level's vertex/index ranges and mesh slot. Symmetric
-// with geometry_pool_upload_chain — freeing only lodBase would leak the rest of the chain.
+// Free contiguous LOD chain (all levels). Symmetric with geometry_pool_upload_chain.
 void geometry_pool_free_chain(GeometryPool* pool, uint32_t lodBase, uint32_t lodCount)
 {
     for (uint32_t i = 0; i < lodCount; ++i)

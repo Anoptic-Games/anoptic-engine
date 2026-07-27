@@ -4,7 +4,8 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Variable-time delay primitive + Schroeder allpass + feedback comb.
-// Reads clamp delay into [1, cap]. Buffer zeroed from mi_heap_calloc.
+// Frac reads clamp to [1, mask - 1]. Line is mask + 1 samples. Taps <= mask - 1 and i + 1 stay written.
+// Buffer zeroed from mi_heap_calloc.
 
 #ifndef ANO_DSP_DELAY_H
 #define ANO_DSP_DELAY_H
@@ -13,17 +14,22 @@
 #include <stdint.h>
 #include <mimalloc.h>
 
+// Allocation floor in samples. Power of two >= 2 (mask >= 1).
+#define ANO_DSP_DELAY_MIN_CAP 2u
+static_assert(ANO_DSP_DELAY_MIN_CAP >= 2u, "delay floor keeps mask >= 1 so mask - 1 cannot wrap");
+static_assert((ANO_DSP_DELAY_MIN_CAP & (ANO_DSP_DELAY_MIN_CAP - 1u)) == 0u,
+              "delay floor must be a power of two: mask is cap - 1");
+
 typedef struct AnoDspDelay
 {
     float   *buf;
-    uint32_t mask; // capacity - 1 (pow2)
-    uint32_t cap;  // max delay samples
+    uint32_t mask; // capacity - 1 (pow2, >= 1)
     uint32_t w;    // write cursor
 } AnoDspDelay;
 
 static inline uint32_t ano_dsp_delay_pow2_(uint32_t v)
 {
-    if (v < 2u) return 2u;
+    if (v < ANO_DSP_DELAY_MIN_CAP) return ANO_DSP_DELAY_MIN_CAP;
     v--;
     v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16;
     return v + 1u;
@@ -37,7 +43,6 @@ static inline bool ano_dsp_delay_init(AnoDspDelay *d, mi_heap_t *heap, uint32_t 
     if (!d->buf)
         return false;
     d->mask = cap - 1u;
-    d->cap  = maxDelay;
     d->w    = 0u;
     return true;
 }
@@ -48,19 +53,19 @@ static inline void ano_dsp_delay_write(AnoDspDelay *d, float x)
     d->w++;
 }
 
-// Sample written `delay` ago. Clamps into [1, cap].
+// Sample written `delay` ago. Caller keeps delay in [1, mask]; the index is masked either way.
 static inline float ano_dsp_delay_read_int(const AnoDspDelay *d, uint32_t delay)
 {
-    if (delay < 1u) delay = 1u;
-    if (delay > d->cap) delay = d->cap;
     return d->buf[(d->w - delay) & d->mask];
 }
 
-// Fractional tap, linear interp. Clamps into [1, cap - 1].
+// Fractional tap, linear interp. Clamps to [1, mask - 1].
+// Degenerate mask == 1: tap collapses to 0, no interp.
 static inline float ano_dsp_delay_read_frac(const AnoDspDelay *d, float delay)
 {
-    if (delay < 1.0f) delay = 1.0f;
-    if (delay > (float)(d->cap - 1u)) delay = (float)(d->cap - 1u);
+    float dmax = (float)(d->mask - 1u);
+    if (!(delay > 1.0f)) delay = 1.0f; // accept-form: NaN clamps here too
+    if (delay > dmax) delay = dmax;
     uint32_t i = (uint32_t)delay;
     float    f = delay - (float)i;
     float a = d->buf[(d->w - i) & d->mask];

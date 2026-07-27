@@ -34,8 +34,7 @@ typedef pthread_rwlockattr_t anothread_rwlockattr_t;
 // Darwin: POSIX barrier stand-in (C23 atomics). attr ignored.
 typedef struct {
     unsigned int count;       // required arrivals, set at init
-    atomic_uint  arrived;     // arrivals this round
-    atomic_uint  generation;  // phase counter enabling barrier reuse
+    atomic_uint  arrived;     // whole round in one word: [phase : high half][arrivals : low half]
 } pthread_barrier_t;
 typedef struct {
     int pshared;              // accepted, unused
@@ -149,8 +148,12 @@ void* ano_thread_getspecific(anothread_key_t key);
 
 /* Synchronization Barriers */
 
-int ano_thread_barrier_init(anothread_barrier_t *barrier, const anothread_barrierattr_t *attr, unsigned int count);
+// EINVAL on count 0, and on Darwin past 65535 (the state word's arrival half); elsewhere the platform's own EINVAL. 
+// An unchecked init leaves an unusable barrier.
+[[nodiscard]] int ano_thread_barrier_init(anothread_barrier_t *barrier, const anothread_barrierattr_t *attr, unsigned int count);
 
+// out: 0 to every waiter but one; exactly one per cohort gets the serial return, a platform-defined
+// non-zero value that is not exported. Portable test: `!= 0` is the serial thread, never a literal.
 int ano_thread_barrier_wait(anothread_barrier_t *barrier);
 
 int ano_thread_barrier_destroy(anothread_barrier_t *barrier);

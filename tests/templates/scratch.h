@@ -3,10 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Scratch dirs and file oracles for tests that write output. Scratch paths are relative to the
-// process's working directory; call scratch_anchor_to_exe() once at the top of main() to point that
-// at the executable's own directory (build/<cfg>/tests), so a by-hand run from the repo root leaves
-// no litter in the CWD. Tests delete their scratch on exit.
+// Scratch dirs and file oracles for tests that write output.
+// Paths relative to CWD. Call scratch_anchor_to_exe() once at top of main() to point CWD at the exe dir (build/<cfg>/tests).
+// Tests delete their scratch on exit.
 
 #ifndef ANOPTIC_TEST_TEMPLATES_SCRATCH_H
 #define ANOPTIC_TEST_TEMPLATES_SCRATCH_H
@@ -17,18 +16,13 @@
 
 #include <anoptic_filesystem.h>
 
-// Base for the relative scratch paths below; "." means "the CWD", which scratch_anchor_to_exe()
-// repoints at the executable's directory. We deliberately do NOT bake a compile-time build path
-// here anymore: that was a build-MACHINE path, meaningless when the exe runs on another OS (e.g.
-// cross-built for Windows and launched via WSL interop, where /home/... is not a valid path).
+// Base for relative scratch paths. "." = CWD (repointed by scratch_anchor_to_exe()).
 #ifndef ANO_TEST_OUTDIR
 #define ANO_TEST_OUTDIR "."
 #endif
 
-// Anchor the CWD to the executable's own directory via the engine's cross-platform gamepath
-// resolver (readlink/GetModuleFileName/_NSGetExecutablePath), so relative scratch paths resolve
-// there regardless of launch dir, on every target OS. Call once at the top of main(). Returns
-// false if the exe path could not be resolved (scratch then falls back to the launch CWD).
+// chdir to the executable's directory. Call once at top of main().
+// Returns false if unresolved (scratch stays at launch CWD).
 static inline bool scratch_anchor_to_exe(void) { return ano_fs_chdir_gamepath(); }
 
 #if defined(_WIN32)

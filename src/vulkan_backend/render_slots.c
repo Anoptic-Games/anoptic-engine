@@ -18,7 +18,10 @@ static bool ensure_cap(mi_heap_t *heap, void **arr, uint32_t *cap, uint32_t need
 {
     if (need <= *cap) return true;
     uint32_t newcap = *cap ? *cap : 8u;
-    while (newcap < need) newcap *= 2u;
+    while (newcap < need) {
+        if (newcap > UINT32_MAX / 2u) { newcap = need; break; }   // last doubling would wrap
+        newcap *= 2u;
+    }
     void *p = mi_heap_realloc(heap, *arr, (size_t)newcap * elem);
     if (!p) return false;
     *arr = p;
@@ -27,8 +30,11 @@ static bool ensure_cap(mi_heap_t *heap, void **arr, uint32_t *cap, uint32_t need
 }
 
 // Grows the logical map to cover render_id, initializing new entries to UNMAPPED.
+// in: table, render_id (any value; the UNMAPPED sentinel is out of domain)
+// out: false on the sentinel or on OOM, with *arr/*cap untouched
 static bool logical_reserve(RenderSlotTable *t, uint32_t render_id)
 {
+    if (render_id == ANO_RENDER_SLOT_UNMAPPED) return false;   // render_id + 1u would wrap to 0
     if (render_id < t->logicalCapacity) return true;
     uint32_t old = t->logicalCapacity;
     if (!ensure_cap(t->heap, (void **)&t->logicalToSlot, &t->logicalCapacity,
@@ -67,6 +73,7 @@ void render_slots_destroy(RenderSlotTable *table)
 uint32_t render_slots_alloc(RenderSlotTable *t, uint32_t render_id)
 {
     if (!logical_reserve(t, render_id)) return ANO_RENDER_SLOT_UNMAPPED;
+    if (t->logicalToSlot[render_id] != ANO_RENDER_SLOT_UNMAPPED) return ANO_RENDER_SLOT_UNMAPPED; // already live
 
     uint32_t slot;
     if (t->freeCount > 0u) {
@@ -81,15 +88,34 @@ uint32_t render_slots_alloc(RenderSlotTable *t, uint32_t render_id)
     return slot;
 }
 
+// Unpublishes the first n batch elements. slotHighWater unchanged.
+static void alloc_range_rollback(RenderSlotTable *t, const uint32_t *render_ids,
+                                 uint32_t base, uint32_t n)
+{
+    for (uint32_t j = 0; j < n; j++) {
+        t->logicalToSlot[render_ids[j]] = ANO_RENDER_SLOT_UNMAPPED;
+        t->slotToLogical[base + j]      = ANO_RENDER_SLOT_UNMAPPED;
+    }
+}
+
+// Contiguous slot range for a bulk spawn from the high-water region.
+// in: table, render_ids (count, each unmapped and distinct; UNMAPPED out of domain), count > 0
+// out: base slot, or UNMAPPED on sentinel/mapped/duplicate/capacity/OOM
+// inv: failures leave mappings untouched; mid-batch refusal rolls back the prefix
+//      slotHighWater advances only once the batch is whole
 uint32_t render_slots_alloc_range(RenderSlotTable *t, const uint32_t *render_ids, uint32_t count)
 {
     if (count == 0u) return ANO_RENDER_SLOT_UNMAPPED;
-    // A contiguous range comes only from the high-water region. Bulk spawn extends it.
     if ((uint64_t)t->slotHighWater + count > t->slotCapacity) return ANO_RENDER_SLOT_UNMAPPED;
 
     uint32_t base = t->slotHighWater;
     for (uint32_t i = 0; i < count; i++) {
-        if (!logical_reserve(t, render_ids[i])) return ANO_RENDER_SLOT_UNMAPPED;
+        // Sentinel/OOM, or id already mapped (live or intra-batch duplicate).
+        if (!logical_reserve(t, render_ids[i]) ||
+            t->logicalToSlot[render_ids[i]] != ANO_RENDER_SLOT_UNMAPPED) {
+            alloc_range_rollback(t, render_ids, base, i);
+            return ANO_RENDER_SLOT_UNMAPPED;
+        }
         t->logicalToSlot[render_ids[i]] = base + i;
         t->slotToLogical[base + i] = render_ids[i];
     }
@@ -173,7 +199,7 @@ uint32_t render_slots_compact(RenderSlotTable *t)
 {
     if (!t || t->freeCount == 0u) return 0u;
 
-    // Sort ascending so the trailing free run is a suffix.
+    // Ascending: trailing free run is a suffix.
     qsort(t->freeSlots, t->freeCount, sizeof(uint32_t), cmp_u32_asc);
 
     uint32_t before = t->slotHighWater;

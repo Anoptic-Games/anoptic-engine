@@ -47,8 +47,8 @@ VkFormat findSupportedFormat(VulkanContext* ctx, const VkFormat* candidates, uin
 VkFormat findDepthFormat(VulkanContext* ctx)
 {
 	VkFormat candidates[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
-	return(findSupportedFormat(ctx, &candidates[0], sizeof(candidates)/sizeof(VkFormat),
-								VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT));
+	return findSupportedFormat(ctx, &candidates[0], sizeof(candidates)/sizeof(VkFormat),
+		VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
 }
 
 bool hasStencilComponent(VkFormat format)
@@ -77,16 +77,21 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 			if (!createImage(ctx, &swapchainAllocator, state->viewExtent[v].width,
 				state->viewExtent[v].height, 1, ctx->msaaSamples, state->depthFormat,
 				VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-							 &vr->depthImage, &vr->depthAlloc, false))
+				&vr->depthImage, &vr->depthAlloc, false))
 			{
 				ano_log(ANO_FATAL, "Failed to create depth resource for frame %d view %u!", i, v);
 				return false;
 			}
 
 			vr->depthView = createImageView(ctx->device, vr->depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+			if (vr->depthView == VK_NULL_HANDLE)
+			{
+				ano_log(ANO_FATAL, "Failed to create depth view for frame %u view %u!", i, v);
+				return false;
+			}
 
-			if(!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->depthImage, depthFormat,
-									  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
+			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->depthImage, depthFormat,
+				VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
 			{
 				ano_log(ANO_FATAL, "Failed to transition depth buffer layout for frame %d view %u!", i, v);
 				return false;
@@ -99,17 +104,22 @@ bool createDepthResources(VulkanContext* ctx, RendererState* state)
 				if (!createImageShared(ctx, &swapchainAllocator, state->viewExtent[v].width,
 					state->viewExtent[v].height, 1, VK_SAMPLE_COUNT_1_BIT, state->depthFormat,
 					VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-								 &vr->depthResolveImage, &vr->depthResolveAlloc, false,
-								 shareFamilies, state->asyncHiz ? 2u : 0u))
+					&vr->depthResolveImage, &vr->depthResolveAlloc, false,
+					shareFamilies, state->asyncHiz ? 2u : 0u, NULL, 0))
 				{
 					ano_log(ANO_FATAL, "Failed to create depth-resolve resource for frame %d view %u!", i, v);
 					return false;
 				}
 				vr->depthResolveView = createImageView(ctx->device, vr->depthResolveImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+				if (vr->depthResolveView == VK_NULL_HANDLE)
+				{
+					ano_log(ANO_FATAL, "Failed to create depth-resolve view for frame %u view %u!", i, v);
+					return false;
+				}
 				if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->depthResolveImage, depthFormat,
-										  VK_IMAGE_LAYOUT_UNDEFINED,
-										  state->asyncHiz ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-										                  : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
+					VK_IMAGE_LAYOUT_UNDEFINED,
+					state->asyncHiz ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+					                : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 1))
 				{
 					ano_log(ANO_FATAL, "Failed to transition depth-resolve layout for frame %d view %u!", i, v);
 					return false;
@@ -128,8 +138,10 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
 			// Per-view pyramid, half the view's render extent.
-			uint32_t w = (state->viewExtent[v].width  + 1u) / 2u; if (w < 1u) w = 1u;
-			uint32_t h = (state->viewExtent[v].height + 1u) / 2u; if (h < 1u) h = 1u;
+			uint32_t w = (state->viewExtent[v].width  + 1u) / 2u;
+			if (w < 1u) w = 1u;
+			uint32_t h = (state->viewExtent[v].height + 1u) / 2u;
+			if (h < 1u) h = 1u;
 			uint32_t mips = 1u;
 			for (uint32_t m = (w > h) ? w : h; m > 1u; m >>= 1) ++mips;
 			if (mips > ANO_MAX_HIZ_MIPS) mips = ANO_MAX_HIZ_MIPS;
@@ -144,14 +156,19 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 				VK_FORMAT_R32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
 				VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 				&vr->hizImage, &vr->hizAlloc, false,
-				shareFamilies, state->asyncHiz ? 2u : 0u))
+				shareFamilies, state->asyncHiz ? 2u : 0u, NULL, 0))
 			{
 				ano_log(ANO_FATAL, "Failed to create Hi-Z image for frame %u view %u!", i, v);
 				return false;
 			}
 
 			vr->hizSampledView = createImageView(ctx->device, vr->hizImage, VK_FORMAT_R32_SFLOAT,
-												 VK_IMAGE_ASPECT_COLOR_BIT, mips);
+				VK_IMAGE_ASPECT_COLOR_BIT, mips);
+			if (vr->hizSampledView == VK_NULL_HANDLE)
+			{
+				ano_log(ANO_FATAL, "Failed to create Hi-Z sampled view (frame %u view %u)!", i, v);
+				return false;
+			}
 
 			for (uint32_t m = 0; m < mips; m++)
 			{
@@ -173,7 +190,7 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 
 			// Seed every pyramid to SHADER_READ for the first frames' cull.
 			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->hizImage, VK_FORMAT_R32_SFLOAT,
-									   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mips))
+				VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mips))
 			{
 				ano_log(ANO_FATAL, "Failed to transition Hi-Z image for frame %u view %u!", i, v);
 				return false;
@@ -186,31 +203,53 @@ bool createHiZResources(VulkanContext* ctx, RendererState* state)
 	return true;
 }
 
-void createColorResources(VulkanContext* ctx)
-{
+[[nodiscard]] bool createColorResourcesChecked(VulkanContext* ctx)
+{ // in: ctx + rendererState extents. out: false on first refused image/view/transition. Partial set stays for cleanupSwapChain.
 	// Transient HDR float MSAA target, per view, resolved by a later tonemap pass.
 	VkFormat colorFormat = ANO_HDR_COLOR_FORMAT;
 
 	for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 	{
-		createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
+		if (!createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
 			1, ctx->msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage[v], &rendererState.colorImageAlloc[v], false);
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.colorImage[v], &rendererState.colorImageAlloc[v], false))
+		{ // createImage out-handle undefined on failure
+			rendererState.colorImage[v] = VK_NULL_HANDLE;
+			ano_log(ANO_ERROR, "Failed to create MSAA color image (view %u)!", v);
+			return false;
+		}
 		rendererState.colorView[v] = createImageView(ctx->device, rendererState.colorImage[v], colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+		if (rendererState.colorView[v] == VK_NULL_HANDLE)
+		{
+			ano_log(ANO_ERROR, "Failed to create MSAA color view (view %u)!", v);
+			return false;
+		}
 
 		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.colorImage[v], colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
 		{
 			ano_log(ANO_ERROR, "Failed to transition color image layout (view %u)!", v);
+			return false;
 		}
 
 		// MSAA picking-id attachment, per view, mirrors the MSAA color target.
-		createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
+		if (!createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
 			1, ctx->msaaSamples, VK_FORMAT_R32_UINT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.pickIdImage[v], &rendererState.pickIdImageAlloc[v], false);
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &rendererState.pickIdImage[v], &rendererState.pickIdImageAlloc[v], false))
+		{
+			rendererState.pickIdImage[v] = VK_NULL_HANDLE;
+			ano_log(ANO_ERROR, "Failed to create picking id image (view %u)!", v);
+			return false;
+		}
 		rendererState.pickIdView[v] = createImageView(ctx->device, rendererState.pickIdImage[v], VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+		if (rendererState.pickIdView[v] == VK_NULL_HANDLE)
+		{
+			ano_log(ANO_ERROR, "Failed to create picking id view (view %u)!", v);
+			return false;
+		}
 		if (!transitionImageLayout(ctx, VK_NULL_HANDLE, rendererState.pickIdImage[v], VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
 		{
 			ano_log(ANO_ERROR, "Failed to transition picking id image layout (view %u)!", v);
+			return false;
 		}
 	}
 
@@ -220,25 +259,47 @@ void createColorResources(VulkanContext* ctx)
 		for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++)
 		{
 			ViewResources* vr = &rendererState.frames[i].views[v];
-			createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
+			if (!createImage(ctx, &swapchainAllocator, rendererState.viewExtent[v].width, rendererState.viewExtent[v].height,
 				1, VK_SAMPLE_COUNT_1_BIT, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-						VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vr->hdrColorImage, &vr->hdrColorAlloc, false);
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vr->hdrColorImage, &vr->hdrColorAlloc, false))
+			{
+				vr->hdrColorImage = VK_NULL_HANDLE;
+				ano_log(ANO_ERROR, "Failed to create HDR resolve image (frame %u view %u)!", i, v);
+				return false;
+			}
 			vr->hdrColorView = createImageView(ctx->device, vr->hdrColorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+			if (vr->hdrColorView == VK_NULL_HANDLE)
+			{
+				ano_log(ANO_ERROR, "Failed to create HDR resolve view (frame %u view %u)!", i, v);
+				return false;
+			}
 			if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->hdrColorImage, colorFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1))
 			{
 				ano_log(ANO_ERROR, "Failed to transition HDR resolve image layout!");
+				return false;
 			}
 
 			// Picking id resolve target, view 0 only.
 			if (v == 0)
 			{
-				createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
+				if (!createImage(ctx, &swapchainAllocator, rendererState.imageExtent.width, rendererState.imageExtent.height,
 					1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R32_UINT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-							VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vr->pickIdResolveImage, &vr->pickIdResolveAlloc, false);
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &vr->pickIdResolveImage, &vr->pickIdResolveAlloc, false))
+				{
+					vr->pickIdResolveImage = VK_NULL_HANDLE;
+					ano_log(ANO_ERROR, "Failed to create picking id resolve image (frame %u)!", i);
+					return false;
+				}
 				vr->pickIdResolveView = createImageView(ctx->device, vr->pickIdResolveImage, VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+				if (vr->pickIdResolveView == VK_NULL_HANDLE)
+				{
+					ano_log(ANO_ERROR, "Failed to create picking id resolve view (frame %u)!", i);
+					return false;
+				}
 				if (!transitionImageLayout(ctx, VK_NULL_HANDLE, vr->pickIdResolveImage, VK_FORMAT_R32_UINT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 1))
 				{
 					ano_log(ANO_ERROR, "Failed to transition picking id resolve image layout!");
+					return false;
 				}
 			}
 		}
@@ -246,5 +307,10 @@ void createColorResources(VulkanContext* ctx)
 
 	// Text overlay raster targets, per-frame, swapchain-sized.
 	ano_vk_text_create_overlay(ctx, &rendererState);
+	return true;
 }
 
+void createColorResources(VulkanContext* ctx)
+{ // Status-dropping face of createColorResourcesChecked.
+	(void)createColorResourcesChecked(ctx);
+}

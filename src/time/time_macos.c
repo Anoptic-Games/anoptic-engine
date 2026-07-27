@@ -12,6 +12,7 @@
 #include <mach/mach_time.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 #include <stdatomic.h>
 
@@ -21,21 +22,32 @@
 // Cache timebase frequency in ticks/s, once. ticks/sec = 1e9 * denom / numer.
 static _Atomic uint64_t cachedTimebaseFreq = 0;
 
-static int initialize_timebase() {
+// Resolve the timebase into cachedTimebaseFreq. The module's single validation point.
+//   out: void. cachedTimebaseFreq is nonzero on return.
+static void initialize_timebase(void) {
 
     mach_timebase_info_data_t tb;
-    if (mach_timebase_info(&tb) != KERN_SUCCESS || tb.numer == 0) {
+    uint64_t freq = 0;
+    if (mach_timebase_info(&tb) == KERN_SUCCESS && tb.numer != 0)
+        freq = (uint64_t)1000000000ULL * tb.denom / tb.numer;
+    if (freq == 0) {
         printf("Failed to query mach timebase.\n");
-        return -1;
+        abort();   // no timebase, no engine; trips the crash blackbox
     }
-    cachedTimebaseFreq = (uint64_t)1000000000ULL * tb.denom / tb.numer;
+    cachedTimebaseFreq = freq;
 
     #ifdef DEBUG_BUILD
     printf("\nTimebase Frequency: %llu (numer=%u denom=%u)\n\n",
-           cachedTimebaseFreq, tb.numer, tb.denom);
+           (unsigned long long)freq, tb.numer, tb.denom);
     #endif
+}
 
-    return 0;
+// Timebase frequency in ticks/s, resolved on first use.
+//   out: uint64_t ticks/s, never 0
+static inline uint64_t timebase_freq(void) {
+    if (cachedTimebaseFreq == 0)
+        initialize_timebase();
+    return cachedTimebaseFreq;
 }
 
 // Bare timebase counter, no conversion. mach_absolute_time() is a register read.
@@ -46,20 +58,14 @@ uint64_t ano_timestamp_ticks() {
 // Convert raw mach ticks (value or delta) to nanoseconds, overflow-safe via the cached timebase.
 uint64_t ano_ticks_to_ns(uint64_t ticks) {
 
-    // Cache the timebase frequency on first run.
-    if (cachedTimebaseFreq == 0) {
-        if (initialize_timebase() != 0) {
-            printf("Exiting due to error with fetching mach timebase.");
-            return UINT64_MAX; // Indicate an error occurred.
-        }
-    }
+    uint64_t freq = timebase_freq();
 
     // Split into seconds and sub-seconds to scale without overflow.
-    uint64_t largePart = ticks / cachedTimebaseFreq;    // Seconds
-    uint64_t smallPart = ticks % cachedTimebaseFreq;    // Sub-seconds
+    uint64_t largePart = ticks / freq;    // Seconds
+    uint64_t smallPart = ticks % freq;    // Sub-seconds
 
     // Recombine the two parts.
-    smallPart = smallPart * 1000000000LL / cachedTimebaseFreq;
+    smallPart = smallPart * 1000000000LL / freq;
     return smallPart + (largePart * 1000000000LL);
 }
 
@@ -69,22 +75,12 @@ uint64_t ano_timestamp_raw() {
 
 // return ano_timestamp_raw, but scaled to microseconds.
 uint64_t ano_timestamp_us() {
-
-    uint64_t timestampNs = ano_timestamp_raw();
-    if (timestampNs == UINT64_MAX)
-        return UINT64_MAX; // Indicate an error occurred.
-
-    return timestampNs / 1000;  // Convert nanoseconds to microseconds
+    return ano_timestamp_raw() / 1000;  // Convert nanoseconds to microseconds
 }
 
 // return ano_timestamp_raw, but truncated to ms.
 uint32_t ano_timestamp_ms() {
-
-    uint64_t timestampNs = ano_timestamp_raw();
-    if (timestampNs == UINT64_MAX)
-        return UINT32_MAX; // Indicate an error occurred.
-
-    return (uint32_t)(timestampNs / 1000000LL);  // Convert nanoseconds to milliseconds
+    return (uint32_t)(ano_timestamp_raw() / 1000000LL);  // Convert nanoseconds to milliseconds
 }
 
 
@@ -141,20 +137,15 @@ int ano_busywait(uint64_t ns) {
 }
 
 // Convert nanoseconds to raw mach ticks, overflow-safe via the cached timebase.
-// Returns UINT64_MAX if the timebase is unavailable.
 static uint64_t ano_ns_to_ticks(uint64_t ns) {
 
-    // Cache the timebase frequency on first run.
-    if (cachedTimebaseFreq == 0) {
-        if (initialize_timebase() != 0)
-            return UINT64_MAX;
-    }
+    uint64_t freq = timebase_freq();
 
     // Split into seconds and sub-seconds to scale without overflow.
     uint64_t largePart = ns / 1000000000LL;     // Seconds
     uint64_t smallPart = ns % 1000000000LL;     // Sub-seconds
 
-    return largePart * cachedTimebaseFreq + smallPart * cachedTimebaseFreq / 1000000000LL;
+    return largePart * freq + smallPart * freq / 1000000000LL;
 }
 
 // Tail window spun instead of slept: kernel timer leeway cannot land closer than this.
@@ -166,9 +157,6 @@ static uint64_t ano_ns_to_ticks(uint64_t ns) {
 int ano_sleep(uint64_t us) {
 
     uint64_t waitTicks = ano_ns_to_ticks(us * 1000ULL);
-    if (waitTicks == UINT64_MAX)
-        return -1;
-
     uint64_t deadline = mach_absolute_time() + waitTicks;
     uint64_t spinTicks = ano_ns_to_ticks(ANO_SLEEP_SPIN_NS);
 

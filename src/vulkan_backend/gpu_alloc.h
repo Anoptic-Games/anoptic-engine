@@ -33,8 +33,7 @@ typedef struct GpuAllocation
 GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs,
                         VkMemoryPropertyFlags props);
 
-// Free is deferred — blocks are freed on allocator teardown or explicit reset.
-// Individual allocations are not freed (arena semantics).
+// Arena: no per-alloc free. Blocks reset or torn down only.
 void gpu_alloc_reset(GpuAllocator* alloc);   // reset all blocks to offset=0
 void gpu_alloc_destroy(GpuAllocator* alloc);  // free all VkDeviceMemory
 

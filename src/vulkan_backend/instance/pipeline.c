@@ -38,8 +38,12 @@ static FILE* openEngineFile(const char* relative)
 	return fopen(path, "rb");
 }
 
+// inv: false leaves *buffer inert ({NULL, 0}) on every arm
+// inv: size is ftell's long as uint32_t; >4GiB out of contract, undetected
 bool loadFile(const char* filename, struct Buffer* buffer)
 {
+	*buffer = (struct Buffer){0};
+
 	FILE* file = openEngineFile(filename);
 	if (file == NULL)
 	{
@@ -53,17 +57,18 @@ bool loadFile(const char* filename, struct Buffer* buffer)
 
 
 	buffer->data = ano_aligned_malloc(size, alignof(uint32_t));
-	if (buffer->data == NULL) 
+	if (buffer->data == NULL)
 	{
 		ano_log(ANO_ERROR, "Failed to allocate memory for file: %s", filename);
 		fclose(file);
 		return false;
 	}
 
-	if (fread(buffer->data, 1, size, file) != size) 
+	if (fread(buffer->data, 1, size, file) != size)
 	{
 		ano_log(ANO_ERROR, "Failed to read file: %s", filename);
-		free(buffer->data);
+		ano_aligned_free(buffer->data);
+		buffer->data = NULL;
 		fclose(file);
 		return false;
 	}
@@ -110,10 +115,7 @@ bool ano_pipeline_task_stage(VulkanContext* ctx, VkBool32 shadowPass, VkBool32 c
 	store->spec = (VkSpecializationInfo){ .mapEntryCount = 2, .pMapEntries = store->entries,
 		.dataSize = sizeof(store->data), .pData = store->data };
 
-	*stage = (VkPipelineShaderStageCreateInfo){ .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-		.stage = VK_SHADER_STAGE_TASK_BIT_EXT, .module = *outModule, .pName = "main",
-		.pSpecializationInfo = &store->spec };
-	return true;
+	return ano_pipeline_stage(VK_SHADER_STAGE_TASK_BIT_EXT, *outModule, &store->spec, stage);
 }
 
 
@@ -330,7 +332,10 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 
 		if (state->prototypes[i].implementations != NULL)
 		{
-			for (uint32_t j = 0; j < state->prototypes[i].implementationCount; ++j)
+			// Count-first: zero implementationCount before free
+			uint32_t count = state->prototypes[i].implementationCount;
+			state->prototypes[i].implementationCount = 0;
+			for (uint32_t j = 0; j < count; ++j)
 			{
 				if (state->prototypes[i].implementations[j].pipeline != VK_NULL_HANDLE)
 				{
@@ -340,7 +345,6 @@ void ano_vk_cleanup_pipelines(VulkanContext* ctx, RendererState* state)
 			}
 			free(state->prototypes[i].implementations);
 			state->prototypes[i].implementations = NULL;
-			state->prototypes[i].implementationCount = 0;
 		}
 	}
 }

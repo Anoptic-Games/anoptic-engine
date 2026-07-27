@@ -185,9 +185,8 @@ if(Vulkan_FOUND)
     add_library(anoptic_render STATIC "")
     target_link_libraries(anoptic_render PUBLIC anoptic_core glfw Vulkan::Vulkan)
 
-    # Nix's clang wrapper makes Vulkan_INCLUDE_DIRS implicit and CMake filters them out of -I,
-    # losing <vulkan/vulkan.h> from compile_commands.json for clangd.
-    # Compile options bypass the implicit-directory filter. Inert where the path is explicit.
+    # Nix clang: Vulkan headers implicit → CMake drops -I → clangd loses vulkan.h.
+    # -isystem bypasses the filter; inert when path is already explicit.
     foreach(vk_dir IN LISTS Vulkan_INCLUDE_DIRS)
         if(vk_dir IN_LIST CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
             target_compile_options(anoptic_render PUBLIC "-isystem${vk_dir}")
@@ -251,7 +250,7 @@ if(Vulkan_FOUND)
         set(SPV_OUTPUTS ${SPV_OUTPUTS} ${SHADER_BIN_DIR}/${output}.spv PARENT_SCOPE)
     endfunction()
 
-    foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag textraster.comp overlay.frag textworld.vert textworld.frag)
+    foreach(shader IN ITEMS flat.mesh flat.vert flat.frag flat.task transmission.frag additive.frag cull.comp tpsort.comp update.comp scatter.comp lightcull.comp lightsetup.comp shadowsetup.comp hiz.comp shadow_depth.frag shadowblur.vert shadowblur.frag tonemap.vert tonemap.frag textraster.comp overlay.frag textworld.vert textworld.frag texdomain_probe.comp)
         ano_add_shader(${shader} ${shader})
     endforeach()
     # Depth-only variants for the depth pre-pass and shadow atlas.

@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #include <string.h>
-#include <ctype.h>
 #include <math.h>
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
@@ -22,14 +21,32 @@
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/ui_raster.h"
 
+// in: empty Monitors (caller dissolves any live ledger first)
+// out: owned (monitorInfos, monitorCount), or (NULL, 0)
+// modes: GLFW-owned until glfwTerminate. Post-glfwInit only.
 void enumerateMonitors(Monitors* monitors) // Instance creation helper
 {
-	GLFWmonitor** glfwMonitors = glfwGetMonitors(&(monitors->monitorCount));
-	monitors->monitorInfos = mi_malloc(monitors->monitorCount * sizeof(MonitorInfo));
-	for (int i = 0; i < monitors->monitorCount; i++) 
+	int count = 0;
+	GLFWmonitor** glfwMonitors = glfwGetMonitors(&count);
+	monitors->monitorInfos = NULL; // empty until the fill commits
+	monitors->monitorCount = 0;
+	if (glfwMonitors == NULL || count <= 0)
 	{
-		monitors->monitorInfos[i].modes = glfwGetVideoModes(glfwMonitors[i], &(monitors->monitorInfos[i].modeCount));
+		return; // headless host, or every display lost
 	}
+
+	MonitorInfo* infos = mi_malloc((size_t)count * sizeof(MonitorInfo));
+	if (infos == NULL)
+	{
+		ano_log(ANO_ERROR, "Failed to allocate monitor info for %d monitors!", count);
+		return;
+	}
+	for (int i = 0; i < count; i++)
+	{
+		infos[i].modes = glfwGetVideoModes(glfwMonitors[i], &(infos[i].modeCount));
+	}
+	monitors->monitorInfos = infos; // commit last: the pair publishes together
+	monitors->monitorCount = count;
 }
 
 static void forward_input(const AnoInputEvent* ie); // defined below
@@ -184,16 +201,17 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 	if (getenv("ANO_FLOAT") != NULL)
 		glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
 
-	// Choose the monitor
+	// Choose the monitor. List and its bound come from one query, post-glfwInit.
 	GLFWmonitor* chosenMonitor = NULL;
 	uint32_t monitorIndex = getChosenMonitor();
-	if (monitorIndex >= 0 && monitorIndex < monitors->monitorCount)
+	int monitorCount = 0;
+	GLFWmonitor** glfwMonitors = glfwGetMonitors(&monitorCount); // GLFW: count >= 0
+	if (monitorIndex < (uint32_t)monitorCount)
 	{
-		GLFWmonitor** glfwMonitors = glfwGetMonitors(NULL);
 		chosenMonitor = glfwMonitors[monitorIndex];
 	}
-	else if (monitorIndex >= 0)
-	{ // Default to primary if index is out of range
+	else
+	{ // Out of range, incl. the windowed sentinel: primary, undone below
 		chosenMonitor = glfwGetPrimaryMonitor();
 	}
 
@@ -206,12 +224,19 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 		resolution.height = mode->height;
 	}
 
-	if (monitorIndex == -1)
+	if (monitorIndex == -1) // -1 wraps to UINT32_MAX: windowed (structs.h)
 	{
 		chosenMonitor = NULL;
 	}
 	
 	GLFWwindow *window = glfwCreateWindow((int)resolution.width, (int)resolution.height, "Vulkan", chosenMonitor, NULL);
+	if (window == NULL)
+	{ // Headless/dead display or a 0x0 extent; every call below requires a live handle
+		const char* desc = NULL;
+		int code = glfwGetError(&desc);
+		ano_log(ANO_FATAL, "Failed to create window! (0x%08X: %s)", code, desc ? desc : "no description");
+		return NULL;
+	}
 
 	// ANO_POS=XxY places the window, in screen coordinates. Windowed mode only.
 	const char* posEnv = getenv("ANO_POS");
@@ -244,13 +269,16 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 }
 
 
+// in: Monitors from enumerateMonitors
+// out: pair cleared, count first. Before glfwTerminate (modes are GLFW-owned).
 void cleanupMonitors(Monitors* monitors)
 {
-	if (monitors->monitorInfos)
+	MonitorInfo* infos = monitors->monitorInfos;
+	monitors->monitorCount = 0;
+	monitors->monitorInfos = NULL;
+	if (infos)
 	{
-		free(monitors->monitorInfos);
-		monitors->monitorInfos = NULL;
-		monitors->monitorCount = 0;
+		free(infos);
 	}
 }
 

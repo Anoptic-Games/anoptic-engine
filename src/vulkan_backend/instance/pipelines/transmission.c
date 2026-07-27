@@ -9,17 +9,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// Transmission lane: opaque (index 0) + blended (index 1) variants.
+// Cache refuse -> VK_NULL_HANDLE. Commit-last on implementationCount.
 bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
 	// 1. Setup cache
 	VkPipelineCacheCreateInfo cacheInfo = {};
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-	vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &proto->cache);
+	if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &proto->cache) != VK_SUCCESS)
+		proto->cache = VK_NULL_HANDLE;
 
 	// Mesh stage on capable devices, vertex stage on fallback.
 	bool useMesh = ctx->deviceCapabilities.meshShader;
 	bool useTask = state->taskCull;
-	VkShaderStageFlags geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
+	VkShaderStageFlagBits geometryStage = useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT;
 
 	// 2. Setup layout
 	VkPushConstantRange pushConstantRange = {};
@@ -43,8 +46,10 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	}
 
 	proto->type = PIPELINE_TRANSMISSION;
-	proto->implementationCount = 2;
 	proto->implementations = calloc(2, sizeof(PipelineImplementation));
+	if (proto->implementations == NULL)
+		return false;
+	proto->implementationCount = 2;
 	proto->supportedFeatures =
 		PBR_FEATURE_BASE_COLOR_FACTOR |
 		PBR_FEATURE_BASE_COLOR_TEXTURE |
@@ -60,38 +65,32 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		PBR_FEATURE_DOUBLE_SIDED;   // cullMode NONE -> double-sided
 
 	// Load shaders: mesh on capable devices, vertex on fallback.
-	struct Buffer geomShaderCode;
+	// Unwind: goto fail discharges all. Clear dangling buffer on load refuse.
+	struct Buffer geomShaderCode = {0}, fragShaderCode = {0};
+	VkShaderModule geomShaderModule = VK_NULL_HANDLE, fragShaderModule = VK_NULL_HANDLE;
+	VkShaderModule taskModule = VK_NULL_HANDLE;
 	char geomShaderPath[64];
 	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
 		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
-	if (!loadFile(geomShaderPath, &geomShaderCode)) return false;
+	if (!loadFile(geomShaderPath, &geomShaderCode)) { geomShaderCode.data = NULL; goto fail; }
 
-	struct Buffer fragShaderCode;
 	// fp16 CDF-reconstruct variant when shaderFloat16 available.
 	if (!loadFile(ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/transmission_fp16.frag.spv"
 	                                                    : "resources/shaders/transmission.frag.spv",
-	              &fragShaderCode)) return false;
+	              &fragShaderCode)) { fragShaderCode.data = NULL; goto fail; }
 
-	VkShaderModule geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
-	VkShaderModule fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
+	geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
+	fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
 
-	VkShaderModule taskModule = VK_NULL_HANDLE;
 	TaskStageStorage taskStore;
 	VkPipelineShaderStageCreateInfo taskStageInfo = {};
 	if (useTask && !ano_pipeline_task_stage(ctx, VK_FALSE, VK_FALSE, &taskStore, &taskModule, &taskStageInfo))
-		return false;
+		goto fail;
 
-	VkPipelineShaderStageCreateInfo geomShaderStageInfo = {};
-	geomShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	geomShaderStageInfo.stage = geometryStage;
-	geomShaderStageInfo.module = geomShaderModule;
-	geomShaderStageInfo.pName = "main";
-
-	VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
-	fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	fragShaderStageInfo.module = fragShaderModule;
-	fragShaderStageInfo.pName = "main";
+	VkPipelineShaderStageCreateInfo geomShaderStageInfo, fragShaderStageInfo;
+	if (!ano_pipeline_stage(geometryStage, geomShaderModule, NULL, &geomShaderStageInfo)
+		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, NULL, &fragShaderStageInfo))
+		goto fail;
 
 	VkPipelineShaderStageCreateInfo shaderStages[3] = {taskStageInfo, geomShaderStageInfo, fragShaderStageInfo};
 	VkPipelineShaderStageCreateInfo* stageList = useTask ? shaderStages : &shaderStages[1];
@@ -184,7 +183,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	renderingInfo.pColorAttachmentFormats = &colorFormat;
 	renderingInfo.depthAttachmentFormat = depthFormat;
 
-	// Fallback vertex path uses programmable vertex pulling + triangle-list assembly.
+	// Fallback vertex: pull + triangle list.
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
@@ -211,7 +210,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	pipelineInfo.subpass = 0;
 
 	// Opaque variant (index 0)
-	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) return false;
+	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) goto fail;
 	proto->implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[0].depthWrite = VK_TRUE;
 	proto->implementations[0].blendEnable = VK_FALSE;
@@ -227,7 +226,7 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 	colorBlending.pAttachments = &colorBlendAttachment;
 	
-	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[1].pipeline) != VK_SUCCESS) return false;
+	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[1].pipeline) != VK_SUCCESS) goto fail;
 	proto->implementations[1].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[1].depthWrite = VK_FALSE;
 	proto->implementations[1].blendEnable = VK_TRUE;
@@ -241,4 +240,12 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		vkDestroyShaderModule(ctx->device, taskModule, NULL);
 
 	return true;
+
+fail:
+	ano_aligned_free(geomShaderCode.data);
+	ano_aligned_free(fragShaderCode.data);
+	vkDestroyShaderModule(ctx->device, geomShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragShaderModule, NULL);
+	vkDestroyShaderModule(ctx->device, taskModule, NULL);
+	return false;
 }

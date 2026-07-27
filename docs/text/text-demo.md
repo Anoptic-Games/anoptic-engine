@@ -1,6 +1,6 @@
 # Text Demo: from string literal to rendered glyph
 
-Type Ancient Greek or Elder Futhark into a C string literal and it renders as anti-aliased vector glyphs, swept on the GPU. This is the map between those two points, written around the demo text (Homer and the Gallehus horn). It also records the byte-count refactor that made the styled-run tables safe to edit.
+Ancient Greek or Elder Futhark in a C string literal renders as anti-aliased vector glyphs on the GPU. This maps that path around the demo text (Homer, Gallehus horn) and the byte-count refactor for styled-run tables.
 
 `FONT_RENDER.md` is the rasterizer design doc. This covers the layer above: fonts, bake ranges, shaping, the two display lanes, and how demo text is authored.
 
@@ -9,7 +9,7 @@ Type Ancient Greek or Elder Futhark into a C string literal and it renders as an
 ## The pipeline at a glance
 
 ```
- UTF-8 string literal (main.c / text_raster.c — Greek and runes typed verbatim)
+ UTF-8 string literal (main.c / text_raster.c: Greek and runes typed verbatim)
         │
         ▼
  ano_text_shape / ano_text_shape_runs          src/text/text_shape.c   (any thread)
@@ -20,7 +20,7 @@ Type Ancient Greek or Elder Futhark into a C string literal and it renders as an
    [0, 8192)   screen overlay region (OSD + logic HUD blocks)
    [8192, …)   world panel region (shaped once at init)
         ▼
- textraster.comp — Scanline Sweeper            GPU, async compute lane
+ textraster.comp: Scanline Sweeper            GPU, async compute lane
    analytic coverage from monotone quadratic Béziers; no atlas, no SDF
         ▼
  composite                                     GPU, graphics queue
@@ -40,13 +40,13 @@ One bake serves every lane, assembled at init in `ano_vk_text_init` (`src/vulkan
 | Noto Sans Regular | Greek & Coptic `0370–03FF`, Greek Extended `1F00–1FFF` | Geist has ~no Greek. Extended carries Homer's polytonic accents |
 | Noto Sans Runic | Runic `16A0–16F8` | Elder Futhark and friends |
 
-The contract (`ano_text_font_bake_ranges`, `include/anoptic_text.h`): ranges are codepoint-sorted and disjoint, slots assigned range by range in input order. So the range list interleaves faces: Greek sits between Latin-1 and Cyrillic because that is where its codepoints fall. A missing auxiliary font fails soft: its ranges are skipped, never a dead overlay.
+The contract (`ano_text_font_bake_ranges`, `include/anoptic_text.h`): ranges are codepoint-sorted and disjoint, slots assigned range by range in input order. The range list interleaves faces: Greek between Latin-1 and Cyrillic by codepoint order. A missing auxiliary font fails soft: its ranges are skipped, never a dead overlay.
 
 Two flavors of "not there", both graceful. A codepoint outside every baked range advances the pen a fixed half-em gap. A codepoint inside a range the face doesn't cover bakes as a blank `ANO_GLYPH_MISSING` entry and shapes to nothing. Neither draws tofu.
 
 Kerning comes from GPOS pair tables and never bridges faces. The shaper drops the kern chain across size changes, newlines, and gaps.
 
-## UTF-8 in string literals — yes, really
+## UTF-8 in string literals: yes, really
 
 The source files are UTF-8 and C23 clang consumes UTF-8 source natively, so demo text is typed as itself:
 
@@ -56,9 +56,9 @@ n = ano_text_shape_lit(bake,
                        22.0f, homerOrg, aegean, hud, HUD_TEXT_CAP, NULL);
 ```
 
-A plain `""` literal carries the UTF-8 bytes verbatim. No `u8""`/`char8_t` friction, no `\u` escape soup (the runes used to read `"\u16D6\u16B2 ..."`, unreadable and unreviewable). The `_lit` macros wrap `anostr_lit`, which folds the byte length at compile time. No strlen, no allocation.
+A plain `""` literal carries the UTF-8 bytes verbatim. No `u8""`/`char8_t`, no `\u` escapes. The `_lit` macros wrap `anostr_lit`, which folds the byte length at compile time. No strlen, no allocation.
 
-The shaper decodes the bytes as UTF-8 (`anostr_rune_next`, malformed bytes become U+FFFD) and looks each codepoint up in the bake's range map. If the glyph is baked, it renders. That is the whole story: put Ancient Greek in a string literal and it displays.
+The shaper decodes the bytes as UTF-8 (`anostr_rune_next`, malformed bytes become U+FFFD) and looks each codepoint up in the bake's range map. If the glyph is baked, it renders. Put Ancient Greek in a string literal and it displays.
 
 ## Styled runs and the byte-count refactor
 
@@ -72,7 +72,7 @@ typedef struct AnoTextRun {
 } AnoTextRun;
 ```
 
-Byte counts are fine for dynamic text, where the caller computed them. The static demo tables hand-rolled them: literal counts like `{ 17, ... } { 101, ... }` beside a comment, with a `static_assert` checking only the total. Hand-counting multi-byte UTF-8 (101 bytes of runes, 69 of Greek) was a trap. A wrong split between runs compiled clean and silently bled one run's color into the next.
+Byte counts work for dynamic text (caller-computed). Static demo tables used to hand-roll them: `{ 17, ... } { 101, ... }` beside a comment, `static_assert` on the total only. Wrong multi-byte UTF-8 splits compiled clean and bled one run's color into the next.
 
 The refactor makes boundaries correct by construction. Each run's text is its own macro, the full string is their concatenation, each `byteCount` is `sizeof` its own segment:
 
@@ -93,7 +93,7 @@ static const AnoTextRun worldRuns[] = {
 };
 ```
 
-Edit a line and its run resizes with it. The checksum `static_assert` became redundant and was removed. The same pattern replaced the HUD title runs in `src/engine/main.c` (`TITLE_HEAD` / `TITLE_TAIL`). `runs_valid` (`src/text/text_shape.c`) still rejects any run list whose byte sum disagrees with the text length.
+Edit a line and its run resizes with it. The checksum `static_assert` became redundant and was removed. Same pattern for HUD title runs in `src/engine/main.c` (`TITLE_HEAD` / `TITLE_TAIL`). `runs_valid` (`src/text/text_shape.c`) still rejects any run list whose byte sum disagrees with the text length.
 
 Two conventions the world table demonstrates, keep them when editing:
 
@@ -110,11 +110,11 @@ Two conventions the world table demonstrates, keep them when editing:
 | `HUD_TEXT_NOTICE` | transient line, clears itself after 15 s (`RCMD_TEXT_CLEAR` proof) |
 | `HUD_TEXT_CAM` | camera readout, replaced once per second (REPLACE semantics proof) |
 | `HUD_TEXT_UNICODE` | Gallehus horn inscription + Cyrillic/Latin-1 sampler |
-| `HUD_TEXT_HOMER` | Odyssey 1.1 — Ἄνδρα μοι ἔννεπε, Μοῦσα, πολύτροπον |
+| `HUD_TEXT_HOMER` | Odyssey 1.1: Ἄνδρα μοι ἔννεπε, Μοῦσα, πολύτροπον |
 
-**World panel.** Instance region `[8192, …)`, shaped once at init into every frame slot, drawn by `textworld.vert/.frag` as a quad in the scene (768×352 virtual pixels onto 6.0×2.75 world units). The bake's curve data is resolution-independent, so the same instances survive any camera distance and angle. No re-shape, no mips, no atlas. Its text is the styled-runs table above: title, kerning proof line, the Gallehus inscription, and Iliad 1.1 — Μῆνιν ἄειδε θεὰ Πηληϊάδεω Ἀχιλῆος.
+**World panel.** Instance region `[8192, …)`, shaped once at init into every frame slot, drawn by `textworld.vert/.frag` as a quad in the scene (768×352 virtual pixels onto 6.0×2.75 world units). The bake's curve data is resolution-independent, so the same instances survive any camera distance and angle. No re-shape, no mips, no atlas. Its text is the styled-runs table above: title, kerning proof line, the Gallehus inscription, and Iliad 1.1: Μῆνιν ἄειδε θεὰ Πηληϊάδεω Ἀχιλῆος.
 
-On the quotes: the Gallehus horn inscription (ᛖᚲ ᚺᛚᛖᚹᚨᚷᚨᛊᛏᛁᛉ ᚺᛟᛚᛏᛁᛃᚨᛉ ᚺᛟᚱᚾᚨ ᛏᚨᚹᛁᛞᛟ, "I, Hlewagastiz of Holt, made the horn", ~400 AD) is among the most famous genuine Elder Futhark texts. It beats an Old Norse quote because Viking-age Norse used Younger Futhark, a different Unicode block from the Elder Futhark glyphs we bake.
+On the quotes: the Gallehus horn inscription (ᛖᚲ ᚺᛚᛖᚹᚨᚷᚨᛊᛏᛁᛉ ᚺᛟᛚᛏᛁᛃᚨᛉ ᚺᛟᚱᚾᚨ ᛏᚨᚹᛁᛞᛟ, "I, Hlewagastiz of Holt, made the horn", ~400 AD) is genuine Elder Futhark. Not Old Norse: Viking-age Norse used Younger Futhark, a different Unicode block from the glyphs we bake.
 
 ## File map
 

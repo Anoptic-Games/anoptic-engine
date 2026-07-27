@@ -1,12 +1,10 @@
 #version 450
 #extension GL_ARB_shader_viewport_layer_array : require
 
-// Fullscreen triangle for the LAYERED shadow blur: same clip/uv expansion as tonemap.vert, plus
-// gl_Layer routed from the push constant, so one render pass (the atlas/temp array bound as a
-// layered color attachment) blurs every active sublayer with back-to-back draws — no per-layer
-// passes or barriers. Requires vertex-stage gl_Layer (vk1.2 shaderOutputLayer); devices without it
-// bind tonemap.vert instead and render per-layer views. Block layout must match shadowblur.frag's
-// push_constant block (dir is unread here but keeps the offsets shared).
+// LAYERED shadow blur fullscreen triangle (clip/uv as tonemap.vert).
+// gl_Layer from push constant; one pass, back-to-back draws per sublayer.
+// Needs vertex gl_Layer (vk1.2 shaderOutputLayer); else tonemap.vert per-layer.
+// Push layout matches shadowblur.frag (dir unread; shared offsets).
 layout(push_constant) uniform Push {
     vec2 dir;
     int  layer;

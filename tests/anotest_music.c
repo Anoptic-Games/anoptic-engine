@@ -6,10 +6,15 @@
 // Determinism kernel vs CPython 3.12 vectors (TECH_SPEC §8): Blake2b-8, MT19937, random/randint/choice/choices/shuffle/uniform/sample/gauss, banker's round.
 // Doubles compare exactly (==). Exit 0 == pass.
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <anoptic_music.h>
+#include <anoptic_synth.h>
+#include <anoptic_threads.h>
 
 #include "music/music_det.h"
 #include "music/music_theory.h"
@@ -45,8 +50,545 @@ static bool feq(double a, double b)
     return false;
 }
 
+/* Public-API boundary walks */
+
+// Public anoptic_music.h walks: config, overrides, synth seam. Assert on AnoMusicMeaning.
+
+typedef struct CadenceWalk
+{
+    int    cadenceBars;  // meaning.isCadence
+    int    flaggedBars;  // meaning.cadencePolicy != NONE (cadence + pre-cadence)
+    int    offPlan;      // flagged bars not reporting the policy the caller planned
+    int    outOfEnum;    // policies outside [NONE, DECEPTIVE]
+    int8_t firstBad;     // first out-of-enum value seen
+} CadenceWalk;
+
+// Inputs: cfg, optional cadence_policy ov, bars. Default static path, dramaturg off.
+// plan: flagged vs plan[(bar/8)%planCount]; expect>=0: vs expect.
+static CadenceWalk cadence_walk(const AnoMusicConfig *cfg, bool hasOverride, double ov, int bars,
+                                const int8_t *plan, uint32_t planCount, int expect)
+{
+    static AnoMusicBar bar; // ~9 KB: keep it off the walk's frame
+    CadenceWalk w = { .firstBad = 0 };
+
+    AnoMusicEngine *e = ano_music_create(cfg, 42);
+    if (!e) {
+        CHECK(false, "cadence walk: engine creation");
+        return w;
+    }
+    if (hasOverride)
+        ano_music_set_override(e, "cadence_policy", ov);
+
+    for (int b = 0; b < bars; ++b) {
+        ano_music_advance_bar(e, &bar);
+        int8_t p = bar.meaning.cadencePolicy;
+        if (bar.meaning.isCadence)
+            w.cadenceBars++;
+        if (p != ANO_CADENCE_NONE) {
+            w.flaggedBars++;
+            if (plan && p != plan[(bar.meaning.bar / 8) % (int)planCount])
+                w.offPlan++;
+            if (expect >= 0 && p != (int8_t)expect)
+                w.offPlan++;
+        }
+        if (p < ANO_CADENCE_NONE || p > ANO_CADENCE_DECEPTIVE) {
+            if (w.outOfEnum == 0)
+                w.firstBad = p;
+            w.outOfEnum++;
+        }
+    }
+    ano_music_destroy(e);
+    return w;
+}
+
+// Default config + melody layer (cadence sink).
+static AnoMusicConfig cadence_config(void)
+{
+    AnoMusicConfig cfg = ano_music_config_default();
+    cfg.params.layersActive |= (uint8_t)(1u << ANO_MUSIC_MELODY);
+    return cfg;
+}
+
+// cadence_policy override domain: out-of-enum must not reach meaning.cadencePolicy.
+// Controls: default walk + HALF override land in-enum.
+static void test_cadence_policy_domain(void)
+{
+    AnoMusicConfig cfg = cadence_config();
+
+    CadenceWalk w = cadence_walk(&cfg, false, 0.0, 24, NULL, 0, -1);
+    CHECK(w.cadenceBars >= 1, "default walk reaches at least one cadence bar in 24 bars");
+    CHECK(w.flaggedBars >= 1, "default walk flags at least one cadence/pre-cadence bar");
+    CHECK(w.outOfEnum == 0, "default walk reports only in-enum cadence policies");
+
+    w = cadence_walk(&cfg, true, (double)ANO_CADENCE_HALF, 24, NULL, 0, ANO_CADENCE_HALF);
+    CHECK(w.cadenceBars >= 1, "HALF override: cadence bars still occur");
+    CHECK(w.flaggedBars >= 1 && w.offPlan == 0, "HALF override lands on every flagged bar");
+    CHECK(w.outOfEnum == 0, "HALF override reports only in-enum cadence policies");
+
+    // one past DECEPTIVE
+    w = cadence_walk(&cfg, true, 3.0, 24, NULL, 0, -1);
+    CHECK(w.cadenceBars >= 1, "policy 3: cadence machinery must not vanish");
+    if (w.outOfEnum)
+        printf("  (policy 3 walk reported out-of-enum cadencePolicy %d on %d bars)\n",
+               (int)w.firstBad, w.outOfEnum);
+    CHECK(w.outOfEnum == 0, "policy 3: meaning.cadencePolicy stays a valid AnoCadencePolicy");
+
+    // below NONE
+    w = cadence_walk(&cfg, true, -3.0, 24, NULL, 0, -1);
+    CHECK(w.cadenceBars >= 1, "policy -3: cadence machinery must not vanish");
+    if (w.outOfEnum)
+        printf("  (policy -3 walk reported out-of-enum cadencePolicy %d on %d bars)\n",
+               (int)w.firstBad, w.outOfEnum);
+    CHECK(w.outOfEnum == 0, "policy -3: meaning.cadencePolicy stays a valid AnoCadencePolicy");
+}
+
+// cadencePolicyCount domain vs cadencePolicies[8]. meaning.cadencePolicy stays in-enum.
+// Controls: count 4 and count 8 cycles land per plan.
+static void test_cadence_cycle_count_domain(void)
+{
+    static const int8_t CYCLE4[8] = {
+        ANO_CADENCE_HALF, ANO_CADENCE_DECEPTIVE, ANO_CADENCE_HALF, ANO_CADENCE_AUTHENTIC,
+        ANO_CADENCE_AUTHENTIC, ANO_CADENCE_AUTHENTIC, ANO_CADENCE_AUTHENTIC, ANO_CADENCE_AUTHENTIC,
+    };
+    static const int8_t CYCLE8[8] = {
+        ANO_CADENCE_AUTHENTIC, ANO_CADENCE_HALF, ANO_CADENCE_DECEPTIVE, ANO_CADENCE_HALF,
+        ANO_CADENCE_AUTHENTIC, ANO_CADENCE_DECEPTIVE, ANO_CADENCE_HALF, ANO_CADENCE_AUTHENTIC,
+    };
+    static const int8_t ALL_HALF[8] = {
+        ANO_CADENCE_HALF, ANO_CADENCE_HALF, ANO_CADENCE_HALF, ANO_CADENCE_HALF,
+        ANO_CADENCE_HALF, ANO_CADENCE_HALF, ANO_CADENCE_HALF, ANO_CADENCE_HALF,
+    };
+
+    AnoMusicConfig cfg = cadence_config();
+    for (int i = 0; i < 8; ++i)
+        cfg.cadencePolicies[i] = CYCLE4[i];
+    cfg.cadencePolicyCount = 4;
+    CadenceWalk w = cadence_walk(&cfg, false, 0.0, 32, CYCLE4, 4, -1);
+    CHECK(w.cadenceBars >= 2, "count 4: explicit cycle reaches cadence bars in 32 bars");
+    CHECK(w.flaggedBars >= 2, "count 4: cadence/pre-cadence bars are flagged");
+    CHECK(w.offPlan == 0, "count 4: every flagged bar reports its phrase's planned policy");
+    CHECK(w.outOfEnum == 0, "count 4: only in-enum cadence policies reported");
+
+    for (int i = 0; i < 8; ++i)
+        cfg.cadencePolicies[i] = CYCLE8[i];
+    cfg.cadencePolicyCount = 8;
+    w = cadence_walk(&cfg, false, 0.0, 64, CYCLE8, 8, -1);
+    CHECK(w.cadenceBars >= 2, "count 8: full-capacity cycle reaches cadence bars in 64 bars");
+    CHECK(w.offPlan == 0, "count 8: every flagged bar reports its phrase's planned policy");
+    CHECK(w.outOfEnum == 0, "count 8: only in-enum cadence policies reported");
+
+    // count 12: past cadencePolicies[8]; assert enum domain only
+    for (int i = 0; i < 8; ++i)
+        cfg.cadencePolicies[i] = ALL_HALF[i];
+    cfg.cadencePolicyCount = 12;
+    w = cadence_walk(&cfg, false, 0.0, 80, NULL, 0, -1);
+    CHECK(w.cadenceBars >= 2, "count 12: cadence machinery must not vanish");
+    if (w.outOfEnum)
+        printf("  (count 12 walk reported out-of-enum cadencePolicy %d on %d bars)\n",
+               (int)w.firstBad, w.outOfEnum);
+    CHECK(w.outOfEnum == 0, "count 12: meaning.cadencePolicy stays a valid AnoCadencePolicy");
+}
+
+typedef struct ModeWalk
+{
+    int bars;      // bars advanced
+    int outOfEnum; // meaning.mode outside [IONIAN, COUNT)
+    int offMode;   // bars whose meaning.mode != expect (expect >= 0 only)
+    int firstBad;  // first out-of-enum value seen
+} ModeWalk;
+
+// 4 bars; cfgMode lands on the config seam, useMapper + hasOverride/ov on the override seam.
+// expect >= 0 counts bars that stray from it.
+static ModeWalk mode_walk(int cfgMode, bool useMapper, bool hasOverride, double ov, int expect)
+{
+    static AnoMusicBar bar; // ~9 KB: keep it off the walk's frame
+    ModeWalk w = { .firstBad = 0 };
+
+    AnoMusicConfig cfg = ano_music_config_default();
+    cfg.mode = cfgMode;
+    if (useMapper) {
+        cfg.hasMapper = true;
+        cfg.mapper = ano_mapping_table_default();
+    }
+    AnoMusicEngine *e = ano_music_create(&cfg, 42);
+    if (!e) {
+        CHECK(false, "mode walk: engine creation");
+        return w;
+    }
+    if (hasOverride)
+        CHECK(ano_music_set_override(e, "mode", ov), "override name \"mode\" is known");
+
+    for (int b = 0; b < 4; ++b) {
+        ano_music_advance_bar(e, &bar);
+        int m = bar.meaning.mode;
+        w.bars++;
+        if (m < ANO_MODE_IONIAN || m >= ANO_MODE_COUNT) {
+            if (w.outOfEnum == 0)
+                w.firstBad = m;
+            w.outOfEnum++;
+        }
+        if (expect >= 0 && m != expect)
+            w.offMode++;
+    }
+    ano_music_destroy(e);
+    return w;
+}
+
+// mode domain via cfg.mode and "mode" override; meaning.mode stays in AnoMode.
+// Controls: DORIAN config + LYDIAN override land verbatim.
+static void test_mode_domain(void)
+{
+    ModeWalk w = mode_walk(ANO_MODE_DORIAN, false, false, 0.0, ANO_MODE_DORIAN);
+    CHECK(w.bars == 4 && w.offMode == 0, "config DORIAN lands in meaning.mode on every bar");
+    CHECK(w.outOfEnum == 0, "config DORIAN walk reports only in-enum modes");
+
+    w = mode_walk((int)ANO_MODE_NONE, true, true, (double)ANO_MODE_LYDIAN, ANO_MODE_LYDIAN);
+    CHECK(w.bars == 4 && w.offMode == 0, "override LYDIAN lands in meaning.mode on every bar");
+    CHECK(w.outOfEnum == 0, "override LYDIAN walk reports only in-enum modes");
+
+    // config seam, past the enum
+    w = mode_walk(99, false, false, 0.0, -1);
+    if (w.outOfEnum)
+        printf("  (config 99 walk reported out-of-enum meaning.mode %d on %d bars)\n",
+               w.firstBad, w.outOfEnum);
+    CHECK(w.outOfEnum == 0, "config 99: meaning.mode stays a valid AnoMode");
+
+    // override seam, past the enum
+    w = mode_walk((int)ANO_MODE_NONE, true, true, 99.0, -1);
+    if (w.outOfEnum)
+        printf("  (override 99 walk reported out-of-enum meaning.mode %d on %d bars)\n",
+               w.firstBad, w.outOfEnum);
+    CHECK(w.outOfEnum == 0, "override 99: meaning.mode stays a valid AnoMode");
+
+    // override seam, below enum
+    w = mode_walk((int)ANO_MODE_NONE, true, true, -3.0, -1);
+    if (w.outOfEnum)
+        printf("  (override -3 walk reported out-of-enum meaning.mode %d on %d bars)\n",
+               w.firstBad, w.outOfEnum);
+    CHECK(w.outOfEnum == 0, "override -3: meaning.mode stays a valid AnoMode");
+}
+
+typedef struct MotifWalk
+{
+    uint64_t notes;         // events summed over the walk
+    int      barsWithNotes;
+    int      statedBars;    // meaning.motifStated
+    bool     created;
+} MotifWalk;
+
+// 4-note arch cell, n == 4, in-bar rhythm + diatonic contour.
+static AnoMotif motif_hero_cell(void)
+{
+    static const int RH[8] = { 0, 4, 4, 2, 6, 2, 8, 4 };
+    static const int CT[4] = { 0, 2, 1, 0 };
+    AnoMotif m = { 0 };
+    m.n = 4;
+    m.shape = ANO_SHAPE_ARCH;
+    for (int i = 0; i < 4; ++i) {
+        m.rhythm[i] = (AnoRhythmNote){ RH[2 * i], RH[2 * i + 1] };
+        m.contour[i] = CT[i];
+    }
+    return m;
+}
+
+// Inputs: poisonN (0 = keep n, else overwrite), bars.
+// Isolates motif.n domain; leniency 1.0 + standing request forces motif arm.
+static MotifWalk motif_walk(uint32_t poisonN, int bars)
+{
+    static AnoMusicBar bar; // ~9 KB: keep it off the walk's frame
+    MotifWalk w = { 0 };
+
+    AnoMusicConfig cfg = ano_music_config_default();
+    cfg.params.layersActive |= (uint8_t)(1u << ANO_MUSIC_MELODY); // the realizers' sink
+    cfg.motifLeniency = 1.0;
+    AnoMotif hero = motif_hero_cell();
+    if (poisonN)
+        hero.n = poisonN;
+    cfg.motifLibrary[0] = (AnoSignatureMotif){ "hero", hero, 0.9 };
+    cfg.motifLibraryCount = 1;
+
+    AnoMusicEngine *e = ano_music_create(&cfg, 42);
+    if (!e)
+        return w;
+    w.created = true;
+    for (int b = 0; b < bars; ++b) {
+        ano_music_request_motif(e, "hero"); // cleared once honoured; keep it standing
+        ano_music_advance_bar(e, &bar);
+        w.notes += bar.eventCount;
+        if (bar.eventCount)
+            w.barsWithNotes++;
+        if (bar.meaning.motifStated)
+            w.statedBars++;
+    }
+    ano_music_destroy(e);
+    return w;
+}
+
+// motif.n past ANO_MOTIF_MAX must not overrun rhythm/contour; engine keeps composing.
+// Control: valid 4-note cell creates, emits, and states.
+static void test_motif_count_domain(void)
+{
+    enum { BARS = 32 };
+
+    MotifWalk w = motif_walk(0, BARS);
+    CHECK(w.created, "valid motif config creates an engine");
+    CHECK(w.notes > 0, "valid motif config composes notes");
+    CHECK(w.barsWithNotes >= BARS / 2, "notes keep arriving across the walk");
+    CHECK(w.statedBars > 0, "the authored motif is stated");
+
+    // one past the buffers
+    w = motif_walk((uint32_t)ANO_MOTIF_MAX + 1u, BARS);
+    CHECK(w.created, "n = MAX+1: engine still creates");
+    CHECK(w.notes > 0, "n = MAX+1: the clamped engine still emits bars, not silence");
+
+    // n = 1<<20 past ANO_MOTIF_MAX sinks
+    w = motif_walk(1u << 20, BARS);
+    CHECK(w.created, "n = 1<<20: engine still creates");
+    CHECK(w.notes > 0, "n = 1<<20: the clamped engine still emits bars, not silence");
+}
+
+typedef struct SeamTally
+{
+    uint32_t arpEvents;   // arp-lane events seen (non-vacuity)
+    uint32_t maxVelocity; // max velocity crossing the seam
+    uint32_t maxPitch;    // max pitch crossing the seam
+    uint32_t hotStaged;   // out-of-contract events the synth accepted
+    bool     plumbingOk;  // score API calls all succeeded
+} SeamTally;
+
+// advance_bar -> ano_synth_score_* on the live AnoMusicBar path.
+// hot: velocity_center override 150.
+static void seam_drive(uint32_t bars, bool hot, SeamTally *out)
+{
+    *out = (SeamTally){ .plumbingOk = true };
+
+    // mapper path, energy 0.95: every gated layer on from bar 0 (arp gate 0.62)
+    AnoMusicConfig cfg = ano_music_config_default();
+    cfg.hasMapper = true;
+    cfg.mapper = ano_mapping_table_default();
+    cfg.energy = 0.95f;
+    AnoMusicEngine *eng = ano_music_create(&cfg, 42);
+    if (hot)
+        ano_music_set_override(eng, "velocity_center", 150.0);
+
+    AnoSynth *syn = ano_synth_create(NULL);
+    double barQ = ano_music_bar_quarters(eng);
+    out->plumbingOk &= ano_synth_score_begin(syn, barQ, bars,
+                                             bars * ANO_MUSIC_MAX_TEMPO,
+                                             bars * ANO_MUSIC_MAX_BAR_EVENTS);
+
+    AnoMusicBar *bar = malloc(sizeof *bar);
+    for (uint32_t b = 0; b < bars; ++b) {
+        ano_music_advance_bar(eng, bar);
+        for (uint32_t t = 0; t < bar->tempoCount; ++t)
+            out->plumbingOk &= ano_synth_score_tempo(syn, bar->tempo[t].beat,
+                                                     bar->tempo[t].bpm);
+        out->plumbingOk &= ano_synth_score_bar(syn, b, &bar->params, &bar->affect);
+        for (uint32_t i = 0; i < bar->eventCount; ++i) {
+            const AnoNoteEvent *ev = &bar->events[i];
+            if (ev->layer == ANO_MUSIC_ARP)
+                out->arpEvents++;
+            if (ev->velocity > out->maxVelocity)
+                out->maxVelocity = ev->velocity;
+            if (ev->pitch > out->maxPitch)
+                out->maxPitch = ev->pitch;
+            bool staged = ano_synth_score_event(syn, ev);
+            bool legal = ev->start >= 0.0 && ev->dur > 0.0 && ev->pitch <= 127u
+                      && ev->velocity >= 1u && ev->velocity <= 127u
+                      && ev->layer < ANO_MUSIC_LAYER_COUNT;
+            if (staged && !legal)
+                out->hotStaged++;
+        }
+    }
+    out->plumbingOk &= ano_synth_score_end(syn);
+
+    free(bar);
+    ano_synth_destroy(syn);
+    ano_music_destroy(eng);
+}
+
+// Composer events at synth seam: velocity 1..127, pitch 0..127 (incl. hot velocity_center).
+// Control: default dynamics + arp live stay in contract.
+static void test_synth_seam_event_ranges(void)
+{
+    const uint32_t bars = 16u;
+
+    SeamTally clean;
+    seam_drive(bars, false, &clean);
+    CHECK(clean.plumbingOk, "control: score API plumbing");
+    CHECK(clean.arpEvents > 0u, "control: arp lane live (gate open at energy 0.95)");
+    CHECK(clean.maxVelocity <= 127u && clean.maxPitch <= 127u,
+          "control: default-dynamics events honor AnoNoteEvent ranges");
+    CHECK(clean.hotStaged == 0u, "control: no out-of-contract event staged");
+
+    // velocity_center 150: the arp lane clamps then adds its slot accent
+    SeamTally hot;
+    seam_drive(bars, true, &hot);
+    CHECK(hot.plumbingOk, "hot: score API plumbing");
+    CHECK(hot.arpEvents > 0u, "hot: arp lane live");
+    printf("  seam max velocity: clean %u, hot %u (contract 1..127)\n",
+           clean.maxVelocity, hot.maxVelocity);
+    CHECK(hot.maxVelocity <= 127u,
+          "composer events crossing the seam honor AnoNoteEvent velocity 1..127");
+    CHECK(hot.hotStaged == 0u, "synth stages no out-of-contract composer event");
+}
+
+/* Engine-instance independence */
+
+#define DET_SEED   42ull
+#define DET_BARS   1024u
+#define DET_ROUNDS 8
+
+// Inputs: h fold state, data/n bytes. Output: FNV-1a folded state.
+static uint64_t det_fnv1a64(uint64_t h, const void *data, size_t n)
+{
+    const unsigned char *p = data;
+    for (size_t i = 0; i < n; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+// Fold one composed bar's playable content: defined fields only, struct padding never hashed.
+static uint64_t det_bar_fold(uint64_t h, const AnoMusicBar *b)
+{
+    h = det_fnv1a64(h, &b->eventCount, sizeof b->eventCount);
+    for (uint32_t i = 0; i < b->eventCount; ++i) {
+        const AnoNoteEvent *e = &b->events[i];
+        h = det_fnv1a64(h, &e->start, sizeof e->start);
+        h = det_fnv1a64(h, &e->dur, sizeof e->dur);
+        h = det_fnv1a64(h, &e->pitch, 1);
+        h = det_fnv1a64(h, &e->velocity, 1);
+        h = det_fnv1a64(h, &e->layer, 1);
+        h = det_fnv1a64(h, &e->tie, 1);
+    }
+    h = det_fnv1a64(h, &b->tempoCount, sizeof b->tempoCount);
+    for (uint32_t i = 0; i < b->tempoCount; ++i) {
+        h = det_fnv1a64(h, &b->tempo[i].beat, sizeof b->tempo[i].beat);
+        h = det_fnv1a64(h, &b->tempo[i].bpm, sizeof b->tempo[i].bpm);
+    }
+    return h;
+}
+
+// Inputs: seed, bar count, snapshot buffer (ano_music_snapshot_size() bytes).
+// Output: event-stream fold; *snap holds the engine bytes after the last bar.
+// Default config (pad + bass): every bar routes through the chord voicer.
+static uint64_t det_run_span(uint64_t seed, uint32_t bars, void *snap)
+{
+    AnoMusicEngine *e = ano_music_create(NULL, seed);
+    AnoMusicBar *bar = malloc(sizeof *bar);
+    uint64_t h = 1469598103934665603ull;
+    for (uint32_t i = 0; i < bars; ++i) {
+        ano_music_advance_bar(e, bar);
+        h = det_bar_fold(h, bar);
+    }
+    ano_music_snapshot(e, snap, ano_music_snapshot_size());
+    ano_music_destroy(e);
+    free(bar);
+    return h;
+}
+
+typedef struct DetSpanJob
+{
+    uint64_t seed;
+    uint32_t bars;
+    void    *snap;
+    uint64_t h;
+} DetSpanJob;
+
+// First-touch thread: det_run_span must match main-thread stream.
+static void *det_span_thread(void *arg)
+{
+    DetSpanJob *j = arg;
+    j->h = det_run_span(j->seed, j->bars, j->snap);
+    return NULL;
+}
+
+typedef struct DetDisturber
+{
+    atomic_bool stop;
+    uint64_t    seed;
+} DetDisturber;
+
+// Concurrent disturber: independent engine advances while caller composes.
+static void *det_disturb(void *arg)
+{
+    DetDisturber *d = arg;
+    AnoMusicEngine *e = ano_music_create(NULL, d->seed);
+    AnoMusicBar *bar = malloc(sizeof *bar);
+    while (!atomic_load_explicit(&d->stop, memory_order_relaxed))
+        ano_music_advance_bar(e, bar);
+    ano_music_destroy(e);
+    free(bar);
+    return NULL;
+}
+
+// Same (config, seed, bar) -> byte-identical across engines/threads.
+// Controls: solo replay, foreign-thread span, different seed diverges.
+static void test_engine_instance_independence(void)
+{
+    size_t ss = ano_music_snapshot_size();
+    void *ref = malloc(ss), *ctl = malloc(ss), *trial = malloc(ss);
+    if (!ref || !ctl || !trial) {
+        CHECK(false, "snapshot buffers allocated");
+        free(ref); free(ctl); free(trial);
+        return;
+    }
+
+    uint64_t hRef = det_run_span(DET_SEED, DET_BARS, ref);
+    uint64_t hCtl = det_run_span(DET_SEED, DET_BARS, ctl);
+    CHECK(hCtl == hRef, "solo replay reproduces the event stream");
+    CHECK(memcmp(ctl, ref, ss) == 0, "solo replay snapshot byte-identical");
+
+    DetSpanJob job = { DET_SEED, DET_BARS, ctl, 0 };
+    anothread_t st;
+    bool spanStarted = ano_thread_create(&st, NULL, det_span_thread, &job) == 0;
+    CHECK(spanStarted, "foreign-thread span starts");
+    if (spanStarted) {
+        ano_thread_join(st, NULL);
+        CHECK(job.h == hRef, "foreign-thread solo replay reproduces the event stream");
+        CHECK(memcmp(ctl, ref, ss) == 0, "foreign-thread snapshot byte-identical");
+    }
+
+    void *alt = malloc(ss);
+    if (alt) {
+        uint64_t hAlt = det_run_span(DET_SEED + 1u, DET_BARS, alt);
+        CHECK(hAlt != hRef, "a different seed yields a different event stream");
+        CHECK(memcmp(alt, ref, ss) != 0, "a different seed yields a different snapshot");
+        free(alt);
+    }
+
+    // the same span with a second engine composing concurrently
+    for (int round = 0; round < DET_ROUNDS; ++round) {
+        DetDisturber d;
+        atomic_init(&d.stop, false);
+        d.seed = 0x9E3779B97F4A7C15ull + (uint64_t)round;
+        anothread_t t;
+        CHECK(ano_thread_create(&t, NULL, det_disturb, &d) == 0, "disturber thread starts");
+        uint64_t hTrial = det_run_span(DET_SEED, DET_BARS, trial);
+        atomic_store(&d.stop, true);
+        ano_thread_join(t, NULL);
+
+        bool streamOk = hTrial == hRef;
+        bool snapOk = memcmp(trial, ref, ss) == 0;
+        CHECK(streamOk, "concurrent engines: bar stream is a pure function of (config, seed, bar)");
+        CHECK(snapOk, "concurrent engines: snapshot byte-identical to the solo run");
+        if (!streamOk || !snapOk) {
+            printf("  diverged in round %d of %d\n", round + 1, DET_ROUNDS);
+            break; // one witness is the finding; skip the remaining rounds
+        }
+    }
+
+    free(ref);
+    free(ctl);
+    free(trial);
+}
+
 int main(void)
 {
+    setvbuf(stdout, NULL, _IONBF, 0); // a boundary walk may fault; keep FAIL lines visible
+
     // --- BLAKE2b-8 tag -> big-endian seed ---
     {
         static const struct { const char *tag; uint64_t seed; } T[] = {
@@ -113,7 +655,7 @@ int main(void)
     }
 
     // --- gauss (cached pair) ---
-    // V[1] is sin-leg; ucrt vs glibc 2 ULP — exact per-platform vectors.
+    // V[1] is sin-leg; ucrt vs glibc 2 ULP. Exact per-platform vectors.
     ano_music_rng_seed(&r, 99);
     {
 #ifdef _WIN32
@@ -2933,7 +3475,7 @@ static const LintVio L4_IMIT[] = { { "imitation", 8 } };
             BAD[0].core.pitch = 25;   // bass below its floor, chromatic, degree a lie
             BAD[1].core.pitch = 99;   // a drum off the map
             BAD[3].core.pitch = 90;   // pad above its ceiling, chromatic, non-chord
-            BAD[6].core.start = 0.55; // off the grid — its doubling loses its source
+            BAD[6].core.start = 0.55; // off the grid: doubling loses its source
             BAD[12].degree = 7;       // an annotation that contradicts the scale
             BAD[30].core.tie = ANO_MUSIC_TIE_IN; // continues a note that never sounded
             BAD[62].core.pitch = 73;             // chromatic, with no licensing role
@@ -3591,6 +4133,15 @@ static const LongRow LONG[] = {
         CHECK(leng2.st.clock.segmentCount > 128 && LONG_BARS > 1024,
               "long-run passes the old caps");
     }
+
+    // --- public-API boundary walks ---
+    test_cadence_policy_domain();
+    test_cadence_cycle_count_domain();
+    test_mode_domain();
+    test_motif_count_domain();
+    test_synth_seam_event_ranges();
+    test_engine_instance_independence();
+
     if (failures) {
         printf("anotest_music: %d FAILURE(S)\n", failures);
         return 1;

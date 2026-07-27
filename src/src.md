@@ -1,20 +1,17 @@
 # Source Directory
 
-The `src/` directory is the root directory of the game engine's source code.
-
-``main.c``, the entry point of the engine, is here. 
+`src/` is the engine implementation root. `main.c`, the entry point, lives here.
 (This is subject to change as the engine expands and the entry point for a final game build is moved to the games themselves, with the engine core becoming a dynamic library).
 
-Other subdirectories within ``src/`` are for the various submodules
+Other subdirectories are modules.
 
 ## Directory Structure
 
 Each module follows the platform-abstraction convention (see `docs/docs.md`):
-a public interface lives in `include/anoptic_<mod>.h` (exposing only `ano_*()`
-declarations and platform-agnostic types), while `src/<mod>/` holds the
-implementation — a common `<mod>.c` plus, where needed, per-platform files
+public interface in `include/anoptic_<mod>.h` (`ano_*()` + platform-agnostic types only);
+`src/<mod>/` holds a common `<mod>.c` plus, where needed, per-platform files
 (`<mod>_linux.c` / `<mod>_win64.c` / `<mod>_macos.c`) selected by the module's
-`CMakeLists.txt`. Callers only ever include the public header and call `ano_*()`.
+`CMakeLists.txt`. Callers include the public header and call `ano_*()`.
 
 The current layout:
 
@@ -38,65 +35,32 @@ src/
 
 ## Purpose of Each Subdirectory
 
-- `audio/` (public `include/anoptic_audio.h`): The audio world. A mixer thread owns every
-  audio structure — sources, buses, insert chains, sends — and structural change reaches it
-  only as commands applied at block boundaries, over lock-free rings; telemetry and the
-  listener pose ride published double buffers. Device backends are per-platform and
-  hand-rolled, cascading to a null device when none opens. A `generator` seam lets another
-  module render into the bus mixes; the synth is the one that does.
+- `audio/` (public `include/anoptic_audio.h`): Mixer thread owns every audio structure (sources, buses, insert chains, sends). Structural change arrives as commands at block boundaries over lock-free rings; telemetry and listener pose ride published double buffers. Device backends are per-platform and hand-rolled, cascading to a null device when none opens. A `generator` seam lets another module render into the bus mixes; the synth is the one that does.
 
-- `synth/` (public `include/anoptic_synth.h`): Voices, patches, a beat clock, and a
-  deadline-sorted schedule. It renders the music IR into the audio module's buses through
-  that seam, and it is where a live music engine is hosted: attach one and the generator
-  composes ahead of the playhead every block, with steering, per-bar musical meaning, and
-  seek riding the audio bridge.
+- `synth/` (public `include/anoptic_synth.h`): Voices, patches, beat clock, deadline-sorted schedule. Renders music IR into the audio buses through that seam. Hosts a live music engine: attach one and the generator composes ahead of the playhead every block, with steering, per-bar musical meaning, and seek riding the audio bridge.
 
-- `music/` (public `include/anoptic_music.h`): The composer — harmony, form, motifs,
-  dramaturgy, and one generator per layer, held bit-exact against a Python oracle. It knows
-  nothing of audio, threads, or devices; it emits notes. See `music/ANOPTIC_MUSICGEN.md`.
+- `music/` (public `include/anoptic_music.h`): Composer: harmony, form, motifs, dramaturgy, one generator per layer, bit-exact against a Python oracle. Knows nothing of audio, threads, or devices; emits notes. See `music/ANOPTIC_MUSICGEN.md`.
 
-- `engine/`: The process entry point. `main.c` runs the render world (all Vulkan +
-  GLFW) directly on the main thread — GLFW pins window/event handling to the process
-  main thread, mandatory on macOS. It calls `initVulkan`, spawns the logic/ECS master
-  (`anoLogicThreadMain`) as the sole producer of render commands over the bridge, then
-  drives the frame loop (`glfwPollEvents` + `drawFrame`) until the window closes.
+- `engine/`: Process entry. `main.c` runs the render world (Vulkan + GLFW) on the main thread (GLFW pins window/event handling there; mandatory on macOS). Calls `initVulkan`, spawns the logic/ECS master (`anoLogicThreadMain`) as sole producer of render commands over the bridge, then drives `glfwPollEvents` + `drawFrame` until the window closes.
 
 - `render_bridge/` (private `render_bridge.h`; public command protocol in
-  `include/anoptic_render.h`): The one-way-each-direction boundary between the logic and
-  render worlds. Two bounded lock-free SPSC rings carry `RenderCommand`s (logic -> render)
-  and `RenderEvent`s (render -> logic). Also defines the logic-side `DisplayState`
-  projection and the command/event protocol. (The logic-side ECS that will produce these
-  was removed pending a proper rebuild; see `docs/notes.md`.)
+  `include/anoptic_render.h`): One-way-each-direction boundary between logic and render. Two bounded lock-free SPSC rings carry `RenderCommand`s (logic -> render) and `RenderEvent`s (render -> logic). Also defines the logic-side `DisplayState` projection and the command/event protocol. (The logic-side ECS that will produce these was removed pending a proper rebuild; see `docs/notes.md`.)
 
-- `vulkan_backend/` (renderer contract in `include/anoptic_render.h`): The GPU-driven, meshlet-based renderer, run
-  entirely on the render master thread. It is the sole authority over GPU memory and
-  the physical slot space (private `render_slots.h`: logical `render_id` -> GPU slot,
-  stable slots with holes, frame-gated reuse), drains the bridge, and grows the
-  slot-indexed GPU buffers on demand. Owns all GLFW (window + event pump).
+- `vulkan_backend/` (renderer contract in `include/anoptic_render.h`): GPU-driven, meshlet-based renderer on the render master thread. Sole authority over GPU memory and the physical slot space (private `render_slots.h`: logical `render_id` -> GPU slot, stable slots with holes, frame-gated reuse). Drains the bridge; grows slot-indexed GPU buffers on demand. Owns all GLFW (window + event pump).
 
-- `render/`: Higher-level render support that feeds the backend — the glTF model
-  loader (`gltf/`) and the FreeType/SDF text stack (`text/`).
+- `render/`: Asset-facing render support for the backend: glTF loader (`gltf/`), FreeType/SDF text stack (`text/`).
 
-- `mesh/` (`ano_meshoptimizer.h`): Clean-room reimplementation of the meshoptimizer
-  algorithms (no library linked): vertex-cache optimization, meshlet + bounds decomposition
-  for the GPU geometry pool, and quadric-error edge-collapse simplification (`ano_simplify`)
-  for LOD chain production.
+- `mesh/` (`ano_meshoptimizer.h`): Clean-room reimplementation of the meshoptimizer algorithms (no library linked): vertex-cache optimization, meshlet + bounds decomposition for the GPU geometry pool, and quadric-error edge-collapse simplification (`ano_simplify`) for LOD chain production.
 
-- `memory/` (`anoptic_memory.h`): Aligned allocation primitives, the hardware
-  interference constants (`ANO_CACHE_LINE` / `ANO_THREAD_LINE`), and the mimalloc
-  integration that backs the engine's arenas and thread-local heaps.
+- `memory/` (`anoptic_memory.h`): Aligned allocation primitives, hardware interference constants (`ANO_CACHE_LINE` / `ANO_THREAD_LINE`), and mimalloc integration for arenas and thread-local heaps.
 
-- `threads/` (`anoptic_threads.h`): Platform-agnostic threads, mutexes, condition
-  variables, spinlocks, barriers, and TLS over pthreads / Win32. The spawn shim arms
-  each new thread's crash stack via `ano_log_crash_thread_arm` (see `log/`).
+- `threads/` (`anoptic_threads.h`): Platform-agnostic threads, mutexes, condition variables, spinlocks, barriers, and TLS over pthreads / Win32. Spawn shim arms each new thread's crash stack via `ano_log_crash_thread_arm` (see `log/`).
 
-- `time/` (`anoptic_time.h`): Emulator-grade monotonic timestamps and precise
-  sleep/busy-wait.
+- `time/` (`anoptic_time.h`): Emulator-grade monotonic timestamps and precise sleep/busy-wait.
 
 - `strings/` (`anoptic_strings.h`): Owned-string-type work and scoped-heap experiments.
 
-- `log/` (`anoptic_log.h`, `anoptic_log_crash.h`): Asynchronous, queue-based
-  logger (hot-path enqueue, cold-path flush)
+- `log/` (`anoptic_log.h`, `anoptic_log_crash.h`): Asynchronous, queue-based logger (hot-path enqueue, cold-path flush)
 
 - `anoptic_log_crash.h` Crash handling. The blackbox hooks fatal signals
   (POSIX) and unhandled SEH exceptions + SIGABRT (Windows), writes an async-signal-safe
@@ -114,6 +78,4 @@ as they are built; see `docs/notes.md` for the architecture and build sequence.
 
 ## Usage
 
-The `src/` directory contains the implementation of the game engine. Each subdirectory corresponds to a major component of the engine, and the organization of these directories and files should help to keep the codebase clean and understandable. Code related to a specific component of the engine should be placed in the corresponding subdirectory.
-
-While the source code in `src/` comprises the implementation details of the engine, the game should primarily interface with the engine through the public API in the `include/` directory. The code in `src/` should be thought of as "internal" to the engine, while the headers in `include/` expose a public, stable API for games to use.
+`src/` is internal implementation. Games call the public API in `include/`. Put component code in its matching subdirectory.

@@ -53,12 +53,10 @@
 #define ANO_UI_MAX_PAINTS        256u
 #define ANO_UI_MAX_STOPS         1024u
 #define ANO_UI_MAX_CURVE_WORDS   16384u // packed path curve stream (binding 8), 64 KiB/slot
-// Per-tile prim lists (binding 9 offsets, 10 entries). Offset words cover the max 8px
-// grid (2560x1368 = 54720 tiles) + slack + the trailing total, 256-word aligned.
+// Per-tile prim lists (bindings 9/10). Offset words: max 8px grid + slack + total, 256-aligned.
 #define ANO_UI_TILE_OFFSET_WORDS 65792u
 #define ANO_UI_MAX_TILE_ENTRIES  262144u
-// UI glyph label region of the text frame buffer, above the world panel. Drawn only by
-// UI_GLYPHS prims, z-interleaved.
+// UI glyph label region (text frame buffer, above world). UI_GLYPHS only, z-interleaved.
 #define ANO_UI_GLYPH_FIRST       16384u
 #define ANO_UI_MAX_GLYPHS        5120u
 // Max live logic-submitted UI blocks; excess dropped.
@@ -89,6 +87,9 @@ _Static_assert(ANO_SHADOW_FRUSTUM_COUNT <= 64u, "MoverBound.exposeMask is a u64 
 #define ANO_SHADOW_SAMPLE_VP_CAP 64u
 #define ANO_SHADOW_RT_SINGLE_BASE ANO_SHADOW_STATIC_FRUSTUM_COUNT                          // single-pool first slot
 #define ANO_SHADOW_RT_POINT_BASE  (ANO_SHADOW_RT_SINGLE_BASE + ANO_SHADOW_RT_SINGLE_COUNT) // point-pool first slot
+// Static free-list caps: 1-entry / 6-entry blocks in [0, shadowFrustumNext).
+#define ANO_SHADOW_ST_SINGLE_FREE_CAP ANO_SHADOW_STATIC_FRUSTUM_COUNT
+#define ANO_SHADOW_ST_POINT_FREE_CAP  (ANO_SHADOW_STATIC_FRUSTUM_COUNT / ANO_SHADOW_CUBE_FACES)
 #define ANO_SHADOW_NONE          0xFFFFFFFFu // "no shadow frustum" sentinel
 #define ANO_FRUSTUM_COUNT        (ANO_VIEW_COUNT + ANO_SHADOW_FRUSTUM_COUNT)  // camera + shadow frustums
 #define ANO_SHADOW_DIM           512u                   // per-layer shadow map resolution
@@ -159,14 +160,9 @@ typedef struct RenderEntity
     mat4 transform;
 } RenderEntity;
 
-typedef struct SwapChainSupportDetails 
-{
-    VkSurfaceCapabilitiesKHR capabilities;
-    uint32_t formatCount;
-    VkSurfaceFormatKHR *formats;
-    uint32_t presentModesCount;
-    VkPresentModeKHR *presentModes;
-} SwapChainSupportDetails;
+// std430: transform at offset 16.
+static_assert(offsetof(RenderEntity, transform) == 16 && sizeof(RenderEntity) == 80,
+              "RenderEntity no longer matches std430");
 
 typedef struct VulkanContext
 {
@@ -486,14 +482,12 @@ typedef struct PerFrameResources
     VkBuffer            textFrameBuffer;
     GpuAllocation       textFrameAlloc;
     void*               textFrameMapped;
-    // UI overlay lane frame data: one host-visible buffer holding the table regions
-    // (raster-set bindings 4-10). Created whenever textOverlay is up.
+    // UI overlay tables (bindings 4-10), host-visible. Alive with textOverlay.
     VkBuffer            uiFrameBuffer;
     GpuAllocation       uiFrameAlloc;
     void*               uiFrameMapped;
     uint32_t            uiSlotVersion;   // uiVersion this slot's tables last copied
-    // Per-tile prim lists (§3.7): built into this slot's tile regions in the record path,
-    // keyed on (version, grid).
+    // Per-tile prim lists (§3.7): slot tile regions, keyed (version, grid).
     uint32_t            uiTileVersion;   // 0 = never built / invalid
     int32_t             uiTileOx, uiTileOy;
     uint32_t            uiTileGx, uiTileGy;
@@ -598,8 +592,7 @@ typedef struct RendererState
     uint32_t                uiClipCount; // clip count, ditto (shader bound-check, fail closed)
     uint32_t                uiPaintCount; // paint count, ditto (gradient fail-closed bound)
     float                   uiBounds[4]; // current px AABB incl. shadow pads, inverted when blank
-    // UI block registry (v0 bridge) + the composed pending tables (textHeap allocations),
-    // copied per slot by ano_vk_ui_frame_refresh when uiVersion moves.
+    // UI block registry + pending tables (textHeap). Slot copy on uiVersion bump.
     struct { uint32_t id; const RenderUiBlock* blk; } uiBlocks[ANO_UI_MAX_BLOCKS];
     uint32_t                uiBlockCount;
     bool                    uiPinned;            // ANO_UI_DEMO/_OPAQUE: registry adopts, compose suppressed
@@ -685,7 +678,7 @@ typedef struct RendererState
     uint32_t                slotMotionCap;
     uint32_t                motionActiveCount;  // live slots with non-static motion
 
-    // Swept-bound motion exposure: CPU mirrors of base pose + mesh index (device copies not host-readable). Arrays [slotMotionCap].
+    // Swept-bound exposure: CPU mirrors of base pose + mesh index [slotMotionCap].
     mat4*                   slotBasePose;       // CPU mirror of staged base poses
     uint32_t*               slotMeshIdx;        // CPU mirror of staged mesh indices (NO_MESH_INDEX default)
     uint32_t*               slotMoverIdx;       // slot -> movers[] row, ANO_RENDER_SLOT_UNMAPPED if none
@@ -710,13 +703,19 @@ typedef struct RendererState
 
     // Static rig frustum allocator (init): fills [0, shadowFrustumNext).
     uint32_t                shadowFrustumNext;
-    uint32_t                shadowTypeUsed[3];
+    uint32_t                shadowTypeUsed[LIGHT_TYPE_COUNT]; // live static casters per LightType
 
     // Runtime frustum free-lists above static rig: single [RT_SINGLE_BASE, RT_POINT_BASE), point 6-block bases [RT_POINT_BASE, FRUSTUM_COUNT).
     uint32_t                rtSingleFree[ANO_SHADOW_RT_SINGLE_COUNT];
     uint32_t                rtSingleFreeCount;
     uint32_t                rtPointFree[ANO_SHADOW_RT_POINT_COUNT];
     uint32_t                rtPointFreeCount;
+
+    // Static free-lists: revoked/resized blocks, exact-footprint reuse before shadowFrustumNext bumps.
+    uint32_t                stSingleFree[ANO_SHADOW_ST_SINGLE_FREE_CAP];
+    uint32_t                stSingleFreeCount;
+    uint32_t                stPointFree[ANO_SHADOW_ST_POINT_FREE_CAP];
+    uint32_t                stPointFreeCount;
 
     // Fallback resources
     VkImage                 fallbackImage;
@@ -737,19 +736,19 @@ typedef struct RendererState
     // Runtime render config (lightingMode, debugView). Render-thread only.
     uint32_t                lightingMode;   // AnoLightingMode; default ANO_LIGHTING_SHADOWMAP (0)
     uint32_t                debugView;      // RC debug visualization selector (0 = off)
-    // Per-view cull threshold (px): drop when projected radius falls below. 0 disables. -> CullUBO.viewCullParams[v][1] squared.
+    // Per-view cull threshold (px). 0 = off. -> CullUBO.viewCullParams[v][1] squared.
     float                   cullPixelThreshold[ANO_VIEW_COUNT];
-    // Per-view LOD threshold (px): projected radius where level 1 begins (halving drops a level). 0 disables. -> CullUBO.viewCullParams[v][2].
+    // Per-view LOD threshold (px). 0 = off. -> CullUBO.viewCullParams[v][2].
     float                   lodPixelThreshold[ANO_VIEW_COUNT];
     // Global LOD bias (+ coarser, - finer). -> CullUBO.viewCullParams[v][3].
     int32_t                 lodBias;
     // Shadow LOD offset vs view 0 (+ coarser). -> CullUBO.shadowLodBias.
     int32_t                 shadowLodBias;
-    // Hi-Z: viewProjHist[slot] -> CullUBO.prevViewProj for reprojection; hizEnable per-view (0=off).
+    // Hi-Z: viewProjHist[slot] -> CullUBO.prevViewProj; hizEnable per-view (0=off).
     mat4                    viewProjHist[MAX_FRAMES_IN_FLIGHT][ANO_VIEW_COUNT];
     uint32_t                hizEnable[ANO_VIEW_COUNT];
 
-    // Async Hi-Z: pyramid reduce on compute queue, cull lag-2. gfxTimeline/hizTimeline 1-based. Gate: asyncHiz.
+    // Async Hi-Z: compute pyramid reduce, cull lag-2. Timelines 1-based. Gate: asyncHiz.
     bool                    asyncHiz;
     VkSemaphore             gfxTimeline;
     VkSemaphore             hizTimeline;
@@ -757,12 +756,12 @@ typedef struct RendererState
     uint64_t                hizValidOrdinal;    // first ordinal whose cull may trust the sampled pyramids
     VkCommandPool           computeCommandPool; // compute-family pool for the per-frame build CBs
 
-    // Async light-cull: per-view froxel binning on compute during shadow. preludeTimeline/lcTimeline order split. Gate: asyncLc.
+    // Async light-cull: froxel bin on compute during shadow. prelude/lc timelines. Gate: asyncLc.
     bool                    asyncLc;
     VkSemaphore             preludeTimeline;
     VkSemaphore             lcTimeline;
 
-    // Task meshlet cull (flat.task): frustum/cone/Hi-Z culls 32 meshlets/WG, launches mesh WGs for survivors. Init: meshShader && taskShader && !ANO_FORCE_NO_TASK.
+    // Task meshlet cull (flat.task): 32 meshlets/WG. Init: meshShader && taskShader && !ANO_FORCE_NO_TASK.
     bool                    taskCull;
 
     // GPU timestamp profiling. validBits==0 disables.

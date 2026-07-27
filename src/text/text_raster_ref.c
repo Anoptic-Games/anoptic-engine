@@ -3,7 +3,11 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// CPU ref rasterizer for Scanline Sweeper coverage: scalar float32 mirror of the GLSL compute shader. Baked stream grammar in text_internal.h. No gamma, linear coverage like FT_Render_Glyph.
+// CPU float32 ref of Scanline Sweeper coverage math in resources/shaders/textcoverage.glsl.
+// solve_mono, curve_area, ano_text_window_sum mirror GLSL; ano_text_raster_ref is harness-only.
+// Blank (curveCount 0) guarded in ano_text_window_sum here; GLSL leaves it to callers. Both yield 0.0.
+// Port: copysignf vs sign ternary; half_lo/half_hi vs vec2/unpackHalf2x16.
+// Stream grammar in text_internal.h. No gamma. Linear coverage like FT_Render_Glyph.
 
 #include "anoptic_text.h"
 #include "text/text_internal.h"
@@ -86,9 +90,12 @@ static inline float half_lo(uint32_t u) { return ano_half_unpack((uint16_t)(u & 
 static inline float half_hi(uint32_t u) { return ano_half_unpack((uint16_t)(u >> 16)); }
 
 // Unclamped coverage sum for one em-space window: walk stream, signed swept area / window area.
+// Blank (curveCount 0): 0.0, never touches pts.
 float ano_text_window_sum(const uint32_t *pts, const AnoGlyphEntry *g, float wx, float wy,
                           float w, float h)
 {
+    if (g->curveCount == 0)
+        return 0.0f; // blank: pointOffset owns nothing
     uint32_t i = g->pointOffset;
     float p0x = half_lo(pts[i]) - wx, p0y = half_hi(pts[i]) - wy;
     i++;

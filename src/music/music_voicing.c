@@ -19,15 +19,19 @@ AnoVoicingConfig ano_voicing_config_default(void)
     return k;
 }
 
-#define MAX_VOICES 6
-#define MAX_CANDS  256
+#define MAX_VOICES  6
+#define MAX_OPTIONS 2u
+#define MAX_OCTAVES 4u
+#define MAX_CANDS   256
 
 typedef struct Cand { int p[MAX_VOICES]; } Cand;
 
-// Candidate pc multisets in preference order (voice_pc_options): doubling
-// root-then-fifth (never the third); dropping fifth-then-root; at most two.
+// Cand.p and ano_voice_chord out[6] share extent
+_Static_assert(MAX_VOICES == 6, "Cand.p and ano_voice_chord's out[6] index the same slots");
+// pc multisets: double root-then-fifth (never third); drop fifth-then-root; at most two.
+// Row fills <= voices slots. Returns 0 iff pcCount == 0.
 static uint32_t pc_options(const uint8_t *pcs, uint32_t pcCount, uint32_t voices,
-                           uint8_t out[2][MAX_VOICES])
+                           uint8_t out[MAX_OPTIONS][MAX_VOICES])
 {
     if (pcCount == voices) {
         for (uint32_t i = 0; i < voices; ++i)
@@ -37,7 +41,7 @@ static uint32_t pc_options(const uint8_t *pcs, uint32_t pcCount, uint32_t voices
     uint32_t count = 0;
     if (pcCount < voices) {
         static const uint32_t DOUBLE_IDX[3] = { 0, 2, 1 };
-        for (int k = 0; k < 3 && count < 2u; ++k) {
+        for (int k = 0; k < 3 && count < MAX_OPTIONS; ++k) {
             uint32_t di = DOUBLE_IDX[k];
             if (di >= pcCount)
                 continue;
@@ -49,22 +53,20 @@ static uint32_t pc_options(const uint8_t *pcs, uint32_t pcCount, uint32_t voices
         }
     } else {
         static const uint32_t DROP_IDX[3] = { 2, 0, 1 };
-        for (int k = 0; k < 3 && count < 2u; ++k) {
+        for (int k = 0; k < 3 && count < MAX_OPTIONS; ++k) {
             uint32_t n = 0;
             for (uint32_t i = 0; i < pcCount; ++i)
-                if (i != DROP_IDX[k])
-                    out[count][n++] = pcs[i];
-            // trim extensions beyond capacity (list.pop from the end)
+                if (i != DROP_IDX[k]) {
+                    // trim extensions beyond capacity at the write (list.pop from the end)
+                    if (n < voices)
+                        out[count][n] = pcs[i];
+                    n++;
+                }
             if (n > voices)
                 n = voices;
             if (n == voices)
                 count++;
         }
-    }
-    if (count == 0) {
-        for (uint32_t i = 0; i < voices; ++i)
-            out[0][i] = pcs[i];
-        return 1;
     }
     return count;
 }
@@ -99,6 +101,9 @@ static double voicing_cost(const int *cand, uint32_t n, const int *prev, uint32_
     return (double)movement + topSmoothness + perVoiceExcess;
 }
 
+// Inputs: chordPcs/pcCount; prev/prevLen (0 = none); cfg (NULL = default). Voices > MAX_VOICES clamp.
+// Outputs: out[0..V-1], *outCost if non-NULL, V (0 if nothing places).
+// Invariant: cands is call-transient thread-local scratch; no state across calls.
 uint32_t ano_voice_chord(const uint8_t *chordPcs, uint32_t pcCount,
                          const int *prev, uint32_t prevLen,
                          const AnoVoicingConfig *cfg, int out[6], double *outCost)
@@ -106,23 +111,27 @@ uint32_t ano_voice_chord(const uint8_t *chordPcs, uint32_t pcCount,
     AnoVoicingConfig def = ano_voicing_config_default();
     if (!cfg)
         cfg = &def;
-    const uint32_t V = cfg->voices;
+    // V in [1, MAX_VOICES] or return 0
+    if (cfg->voices == 0u)
+        return 0;
+    const uint32_t V = cfg->voices < MAX_VOICES ? cfg->voices : MAX_VOICES;
 
-    uint8_t options[2][MAX_VOICES];
+    uint8_t options[MAX_OPTIONS][MAX_VOICES];
     uint32_t optCount = pc_options(chordPcs, pcCount, V, options);
 
-    static Cand cands[MAX_CANDS]; // single-threaded conductor context
+    // thread_local: ~6 KiB, too fat for the audio-callback stack
+    static thread_local Cand cands[MAX_CANDS];
     uint32_t candCount = 0;
 
     for (uint32_t o = 0; o < optCount; ++o) {
         // per-voice octave option lists
-        int opts[MAX_VOICES][4];
+        int opts[MAX_VOICES][MAX_OCTAVES];
         uint32_t optN[MAX_VOICES];
         for (uint32_t v = 0; v < V; ++v) {
             int pc = options[o][v];
             int first = cfg->lo + ((pc - cfg->lo) % 12 + 12) % 12;
             uint32_t n = 0;
-            for (int p = first; p <= cfg->hi && n < 4u; p += 12)
+            for (int p = first; p <= cfg->hi && n < MAX_OCTAVES; p += 12)
                 opts[v][n++] = p;
             optN[v] = n;
         }

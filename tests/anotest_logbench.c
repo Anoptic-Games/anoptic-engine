@@ -163,8 +163,7 @@ static double run_throughput(const logger_api *api, int producers)
 /* Variable Length */
 
 // Random length 8..1024B, random ASCII. Stresses ring spanning / wrapping / full.
-// Content built as NUL-terminated string, logged as ("%s", buf) -- literal format, no varargs mismatch.
-// Each producer owns a test_rng seeded from battery seed + id (reproducible; shared rand() was not).
+// Logged as ("%s", buf). Per-thread rng from battery seed + id.
 
 static int      g_var_msgs;     // per-thread message count for the active variable-length battery
 static unsigned g_var_seed;     // battery seed, mixed with each producer's id

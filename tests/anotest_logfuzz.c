@@ -104,8 +104,7 @@ static void *producer(void *arg)
         ano_loglevel_t lvl = LEVELS[rng_below(&s, sizeof LEVELS / sizeof LEVELS[0])];
 
         if (pick < 2) {
-            // Occasional output-dir swap between two valid dirs. Records still all land in one of the
-            // two files we sum, so the oracle holds. This call itself enqueues nothing.
+            // Occasional DIR_A/DIR_B swap. Enqueues nothing.
             ano_log_output_dir((rng_next(&s) & 1) ? DIR_A : DIR_B);
         } else if (pick < 5) {
             // Occasional NOW route. FILE named explicitly, so one file line and no echo.

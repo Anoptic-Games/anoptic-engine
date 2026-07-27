@@ -498,13 +498,8 @@ static bool collate_sort_core(sort_rec_t *recs, sort_rec_t *tmp, size_t n,
     return false;
 }
 
-// Comparator fallbacks for allocation failure. Thread-local ctx.
+// Stable index-sort fallback for allocation failure. Thread-local ctx.
 static _Thread_local const anostr_t *fb_items_;
-
-static int collate_qsort(const void *a, const void *b)
-{
-    return anostr_collate(*(const anostr_t *)a, *(const anostr_t *)b);
-}
 
 static int fb_order_cmp_(const void *a, const void *b)
 {
@@ -515,15 +510,31 @@ static int fb_order_cmp_(const void *a, const void *b)
     return x < y ? -1 : (x > y);
 }
 
-static _Thread_local const anostr_intern_t *fb_tbl_;
-
-static int fb_sym_cmp_(const void *a, const void *b)
+static void collate_insertion(anostr_t *items, size_t count)
 {
-    anostr_sym x = *(const anostr_sym *)a, y = *(const anostr_sym *)b;
-    int c = anostr_collate(anostr_sym_str(fb_tbl_, x), anostr_sym_str(fb_tbl_, y));
-    if (c != 0)
-        return c;
-    return x < y ? -1 : (x > y);
+    for (size_t i = 1; i < count; i++) {
+        anostr_t x = items[i];
+        size_t j = i;
+        while (j > 0 && anostr_collate(items[j - 1], x) > 0) {
+            items[j] = items[j - 1];
+            j--;
+        }
+        items[j] = x;
+    }
+}
+
+static void sym_insertion(const anostr_intern_t *t, anostr_sym *syms, size_t count)
+{
+    for (size_t i = 1; i < count; i++) {
+        anostr_sym x = syms[i];
+        anostr_t str = anostr_sym_str(t, x);
+        size_t j = i;
+        while (j > 0 && anostr_collate(anostr_sym_str(t, syms[j - 1]), str) > 0) {
+            syms[j] = syms[j - 1];
+            j--;
+        }
+        syms[j] = x;
+    }
 }
 
 void anostr_sort(anostr_t *items, size_t count)
@@ -532,7 +543,7 @@ void anostr_sort(anostr_t *items, size_t count)
         return;
     sort_rec_t *recs = count <= UINT32_MAX ? mi_malloc(2 * count * sizeof *recs) : NULL;
     if (recs == NULL) {     // no scratch: correct, slower
-        qsort(items, count, sizeof items[0], collate_qsort);
+        collate_insertion(items, count);
         return;
     }
     sort_rec_t *tmp = recs + count;
@@ -598,8 +609,7 @@ void anostr_sym_sort(anostr_intern_t *t, anostr_sym *syms, size_t count)
         return;
     sort_rec_t *recs = count <= UINT32_MAX ? mi_malloc(2 * count * sizeof *recs) : NULL;
     if (recs == NULL) {
-        fb_tbl_ = t;
-        qsort(syms, count, sizeof syms[0], fb_sym_cmp_);
+        sym_insertion(t, syms, count);
         return;
     }
     sort_rec_t *tmp = recs + count;

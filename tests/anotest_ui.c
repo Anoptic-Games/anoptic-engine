@@ -841,7 +841,7 @@ static void test_tiles(uint32_t soak)
     AnoUiBuilder b;
     demo_build(prims, clips, paints, stops, curves, &b);
     AnoUiScene s = ano_ui_scene(&b);
-    // Tiled path clips shadows at 3-sigma AABB; brute keeps the Gaussian tail.
+    // Tiled clips shadows at 3-sigma AABB. Brute keeps the Gaussian tail.
     CHECK(tiles_check(&s, "demo") <= 2e-3, "demo tiled matches brute within the shadow-cull tail");
 
     // Shadow-free random rrects on fractional tile-straddling positions: bit-identical.
@@ -866,6 +866,355 @@ static void test_tiles(uint32_t soak)
         AnoUiScene rs = ano_ui_scene(&rb);
         if (tiles_check(&rs, "random") != 0.0)
             CHECK(false, "random rrects tiled == brute (bit-identical)");
+    }
+}
+
+
+/* Boundary inputs */
+
+// Edge counts/refs: full array -> REF_NONE no mutation; OOR ref -> transparent.
+
+static bool is_transparent(const float out[4])
+{
+    return out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f && out[3] == 0.0f;
+}
+
+static AnoUiStop make_stop(float t)
+{
+    AnoUiStop st = { .color = { t, t, t, 1.0f }, .t = t };
+    return st;
+}
+
+// paint_linear stop-table fullness: wrap under cap, honest overflow, push+sort control.
+static void test_paint_stop_overflow(void)
+{
+    enum { STOP_CAP = 16 };
+    AnoUiPaint paints[4];
+    AnoUiStop stops[STOP_CAP];
+    AnoUiBuilder b;
+    ano_ui_builder_init(&b, NULL, 0, NULL, 0, paints, 4, stops, STOP_CAP);
+
+    const float p0[2] = { 0.0f, 0.0f }, p1[2] = { 8.0f, 0.0f };
+
+    // 8 stops, deliberately reversed: push, sort ascending, land as paint 0
+    AnoUiStop src[8];
+    for (int i = 0; i < 8; i++)
+        src[i] = make_stop((float)(7 - i) / 7.0f);
+    uint32_t idx = ano_ui_paint_linear(&b, p0, p1, src, 8);
+    CHECK(idx == 0, "first gradient lands at paint 0");
+    CHECK(b.stopCount == 8, "8 stops resident");
+    for (int i = 1; i < 8; i++)
+        CHECK(stops[i - 1].t <= stops[i].t, "stops sorted ascending");
+
+    // honest overflow: 16 into 8 free slots refuses, nothing mutated
+    AnoUiStop big[16];
+    for (int i = 0; i < 16; i++)
+        big[i] = make_stop((float)i / 15.0f);
+    uint32_t rej = ano_ui_paint_linear(&b, p0, p1, big, 16);
+    CHECK(rej == ANO_UI_REF_NONE, "honest overflow returns NONE");
+    CHECK(b.stopCount == 8 && b.paintCount == 1, "refused push mutates nothing");
+
+    // 8 + (2^32 - 5) is 3 in uint32, under stopCap 16
+    uint32_t wrapped = ano_ui_paint_linear(&b, p0, p1, src, UINT32_MAX - 4u);
+    CHECK(wrapped == ANO_UI_REF_NONE, "wrapping stopCount returns NONE");
+    CHECK(b.stopCount == 8 && b.paintCount == 1, "wrapping stopCount mutates nothing");
+}
+
+// path_fill contour bound: empty contours -> REF_NONE; square fills; over-budget quads refuse.
+static void test_path_contour_bound(void)
+{
+    enum { ZIG_LINES = 600, EMPTY_MOVES = 2000,
+           CRASH_K_LO = 515, CRASH_K_HI = 520, BIG_CURVE_CAP = 8192 };
+
+    AnoUiPrim prims[4];
+    uint32_t curves[256];
+    AnoUiBuilder b;
+    ano_ui_builder_init(&b, prims, 4, NULL, 0, NULL, 0, NULL, 0);
+    ano_ui_builder_curves(&b, curves, 256);
+
+    const float red[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+
+    const AnoUiPathSeg square[4] = {
+        { ANO_UI_SEG_MOVE, { 2.0f, 2.0f } },
+        { ANO_UI_SEG_LINE, { 12.0f, 2.0f } },
+        { ANO_UI_SEG_LINE, { 12.0f, 12.0f } },
+        { ANO_UI_SEG_LINE, { 2.0f, 12.0f } },   // auto-closes to (2,2)
+    };
+    uint32_t sq = ano_ui_path_fill(&b, square, 4, red, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+    CHECK(sq == 0, "square path accepted as prim 0");
+    CHECK(b.primCount == 1, "square committed exactly one prim");
+    CHECK(b.curveCount == 9, "square stream is start word + 4 curve pairs");
+    if (b.primCount == 1) {
+        AnoUiScene s = ano_ui_scene(&b);
+        float px[4];
+        ano_ui_ref_eval(&s, 6.0f, 6.0f, px);
+        CHECK(fabsf(px[3] - 1.0f) < 1e-3f, "square interior evaluates opaque");
+    }
+
+    // the quad budget rejects a 600-line contour cleanly, nothing committed
+    static AnoUiPathSeg zig[ZIG_LINES + 1];
+    zig[0] = (AnoUiPathSeg){ ANO_UI_SEG_MOVE, { 0.0f, 0.0f } };
+    for (uint32_t i = 1; i <= (uint32_t)ZIG_LINES; i++)
+        zig[i] = (AnoUiPathSeg){ ANO_UI_SEG_LINE, { (float)i, (float)(i & 1u) } };
+    uint32_t zg = ano_ui_path_fill(&b, zig, ZIG_LINES + 1, red, ANO_UI_REF_NONE,
+                                   ANO_UI_REF_NONE, 0);
+    CHECK(zg == ANO_UI_REF_NONE, "over-budget quad count rejected");
+    CHECK(b.primCount == 1 && b.curveCount == 9, "builder untouched by quad-budget rejection");
+
+    // One real triangle (qn > 0, valid bbox) then many empty contours
+    uint32_t nseg = 4u + EMPTY_MOVES;
+    AnoUiPathSeg *segs = malloc((size_t)nseg * sizeof *segs);
+    CHECK(segs != NULL, "empty-contour buffer allocated");
+    if (segs != NULL) {
+        segs[0] = (AnoUiPathSeg){ ANO_UI_SEG_MOVE, {  0.0f,  0.0f } };
+        segs[1] = (AnoUiPathSeg){ ANO_UI_SEG_LINE, { 20.0f,  0.0f } };
+        segs[2] = (AnoUiPathSeg){ ANO_UI_SEG_LINE, { 20.0f, 20.0f } };
+        segs[3] = (AnoUiPathSeg){ ANO_UI_SEG_LINE, {  0.0f, 20.0f } };
+        for (uint32_t i = 0; i < (uint32_t)EMPTY_MOVES; i++)
+            segs[4 + i] = (AnoUiPathSeg){ ANO_UI_SEG_MOVE,
+                                          { (float)(i & 7u), (float)((i >> 3) & 7u) } };
+        fflush(stdout);
+        uint32_t mv = ano_ui_path_fill(&b, segs, nseg, red,
+                                       ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+        // any non-corrupting outcome is acceptable: reject, or a committed prim
+        CHECK(mv == ANO_UI_REF_NONE || b.primCount >= 1, "empty contours returned without corruption");
+        free(segs);
+    }
+
+    // Fresh builder per K at contour-count boundary; large curve scratch.
+    static uint32_t bigCurves[BIG_CURVE_CAP];
+    static AnoUiPathSeg segs2[4u + CRASH_K_HI];
+    segs2[0] = (AnoUiPathSeg){ ANO_UI_SEG_MOVE, {  0.0f,  0.0f } };
+    segs2[1] = (AnoUiPathSeg){ ANO_UI_SEG_LINE, { 20.0f,  0.0f } };
+    segs2[2] = (AnoUiPathSeg){ ANO_UI_SEG_LINE, { 20.0f, 20.0f } };
+    segs2[3] = (AnoUiPathSeg){ ANO_UI_SEG_LINE, {  0.0f, 20.0f } };
+    for (uint32_t k = CRASH_K_LO; k <= (uint32_t)CRASH_K_HI; k++) {
+        AnoUiPrim prims2[4];
+        AnoUiBuilder b2;
+        ano_ui_builder_init(&b2, prims2, 4, NULL, 0, NULL, 0, NULL, 0);
+        ano_ui_builder_curves(&b2, bigCurves, BIG_CURVE_CAP);
+        for (uint32_t i = 0; i < k; i++)
+            segs2[4 + i] = (AnoUiPathSeg){ ANO_UI_SEG_MOVE,
+                                           { (float)(i & 7u), (float)((i >> 3) & 7u) } };
+        fflush(stdout);
+        uint32_t mv2 = ano_ui_path_fill(&b2, segs2, 4u + k, red,
+                                        ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+        CHECK(mv2 == ANO_UI_REF_NONE || b2.primCount >= 1,
+              "contour count at the boundary returned without corruption");
+    }
+}
+
+// Two-stop table (black t=0 -> white t=1) under one linear paint, stop window parametrized.
+static AnoUiStop  g_stopwin_stops[2];
+static AnoUiPaint g_stopwin_paint;
+
+static AnoUiScene stopwin_scene(uint32_t stopFirst, uint32_t stopCount)
+{
+    g_stopwin_stops[0] = (AnoUiStop){ .color = { 0.0f, 0.0f, 0.0f, 1.0f }, .t = 0.0f };
+    g_stopwin_stops[1] = (AnoUiStop){ .color = { 1.0f, 1.0f, 1.0f, 1.0f }, .t = 1.0f };
+    g_stopwin_paint = (AnoUiPaint){
+        .kind = ANO_UI_GRAD_LINEAR, .stopFirst = stopFirst, .stopCount = stopCount,
+        .xform = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f }, // t = px
+    };
+    return (AnoUiScene){ .paints = &g_stopwin_paint, .paintCount = 1,
+                         .stops = g_stopwin_stops, .stopCount = 2 };
+}
+
+// ref_paint stop window: valid interpolates; NONE -> base; OOR/zero/wrap fail closed.
+static void test_paint_ref_stop_window(void)
+{
+    const float base[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    float out[4];
+
+    AnoUiScene s = stopwin_scene(0, 2);
+    ano_ui_ref_paint(&s, 0, 0.5f, 0.0f, base, out);
+    CHECK(fabsf(out[0] - 0.5f) < 1e-4f && fabsf(out[1] - 0.5f) < 1e-4f
+          && fabsf(out[2] - 0.5f) < 1e-4f && fabsf(out[3] - 1.0f) < 1e-4f,
+          "valid stop window interpolates mid-gradient");
+
+    ano_ui_ref_paint(&s, ANO_UI_REF_NONE, 0.5f, 0.0f, base, out);
+    CHECK(out[0] == 1.0f && out[1] == 1.0f && out[2] == 1.0f && out[3] == 1.0f,
+          "paintRef NONE returns base");
+
+    ano_ui_ref_paint(&s, 7, 0.5f, 0.0f, base, out);
+    CHECK(is_transparent(out), "out-of-range paintRef fails closed");
+
+    // window 1000..1001 of a 2-stop table: out of range without wrapping
+    s = stopwin_scene(1000u, 2);
+    ano_ui_ref_paint(&s, 0, 0.5f, 0.0f, base, out);
+    CHECK(is_transparent(out), "plain out-of-range stop window fails closed");
+
+    s = stopwin_scene(0, 0);
+    ano_ui_ref_paint(&s, 0, 0.5f, 0.0f, base, out);
+    CHECK(is_transparent(out), "stopCount 0 fails closed");
+
+    // stopFirst UINT32_MAX with stopCount 2 wraps first + count to 1, inside a 2-stop table
+    s = stopwin_scene(UINT32_MAX, 2);
+    out[0] = out[1] = out[2] = out[3] = -1.0f;
+    ano_ui_ref_paint(&s, 0, 0.5f, 0.0f, base, out);
+    CHECK(is_transparent(out), "wrapping stop window fails closed");
+}
+
+// Four shadow-free rrects (radius 0, no clip, no paint) over a 64x64 grid of 8x8 tiles.
+// Prim 0 blankets the grid and is solid over the interior tiles; prim 2 is the ADD glow.
+#define ENTRY_GRID_TILES 8u
+#define ENTRY_GRID_PX    64
+
+static AnoUiPrim g_entry_prims[4];
+
+static const float ENTRY_COLOR_A[4] = { 0.10f, 0.20f, 0.30f, 0.40f };
+static const float ENTRY_COLOR_B[4] = { 0.25f, 0.05f, 0.15f, 0.50f };
+static const float ENTRY_COLOR_C[4] = { 0.30f, 0.10f, 0.20f, 0.25f };
+static const float ENTRY_COLOR_D[4] = { 0.05f, 0.35f, 0.15f, 0.60f };
+
+static AnoUiScene entry_scene(void)
+{
+    AnoUiBuilder b;
+    ano_ui_builder_init(&b, g_entry_prims, 4, NULL, 0, NULL, 0, NULL, 0);
+    const float r0[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    ano_ui_rrect(&b, (float[2]){ 0.0f, 0.0f }, (float[2]){ 64.0f, 64.0f }, r0, ENTRY_COLOR_A,
+                 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, ANO_UI_BLEND_OVER);
+    ano_ui_rrect(&b, (float[2]){ 16.0f, 16.0f }, (float[2]){ 48.0f, 48.0f }, r0, ENTRY_COLOR_B,
+                 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, ANO_UI_BLEND_OVER);
+    ano_ui_rrect(&b, (float[2]){ 8.0f, 40.0f }, (float[2]){ 56.0f, 60.0f }, r0, ENTRY_COLOR_C,
+                 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, ANO_UI_BLEND_ADD);
+    ano_ui_rrect(&b, (float[2]){ 24.0f, 4.0f }, (float[2]){ 40.0f, 60.0f }, r0, ENTRY_COLOR_D,
+                 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, ANO_UI_BLEND_OVER);
+    return ano_ui_scene(&b);
+}
+
+// One tile at (ox,oy) holding n caller-supplied entry words, evaluated at (px,py).
+static void eval_one_tile(const AnoUiScene *s, int32_t ox, int32_t oy, const uint32_t *entries,
+                          uint32_t n, int32_t px, int32_t py, float out[4])
+{
+    const uint32_t offsets[2] = { 0u, n };
+    ano_ui_ref_eval_tiled(s, ox, oy, 1, 1, offsets, entries, px, py, out);
+}
+
+// Tile entry domain: OOR index fail-closed; built stream == brute; solid flat-fill; ADD accumulates.
+static void test_tile_entry_domain(void)
+{
+    AnoUiScene s = entry_scene();
+    CHECK(s.primCount == 4, "scene builds four prims");
+
+    uint32_t offsets[ENTRY_GRID_TILES * ENTRY_GRID_TILES + 1] = { 0 };
+    uint32_t cursor[ENTRY_GRID_TILES * ENTRY_GRID_TILES] = { 0 };
+    uint32_t entries[512] = { 0 };
+    bool ok = false;
+    uint32_t nEntries = ano_ui_tile_build(&s, 0, 0, ENTRY_GRID_TILES, ENTRY_GRID_TILES, offsets,
+                                          ENTRY_GRID_TILES * ENTRY_GRID_TILES + 1, entries, 512,
+                                          cursor, &ok);
+    CHECK(ok, "tile build fits the caps");
+    CHECK(nEntries > 0, "tile build emits entries");
+
+    // tiled == brute bitwise
+    {
+        uint32_t bad = 0;
+        for (int32_t py = 0; py < ENTRY_GRID_PX; py++)
+            for (int32_t px = 0; px < ENTRY_GRID_PX; px++) {
+                float brute[4], tiled[4];
+                ano_ui_ref_eval(&s, (float)px, (float)py, brute);
+                ano_ui_ref_eval_tiled(&s, 0, 0, ENTRY_GRID_TILES, ENTRY_GRID_TILES, offsets,
+                                      entries, px, py, tiled);
+                if (memcmp(brute, tiled, sizeof brute) != 0)
+                    bad++;
+            }
+        CHECK(bad == 0, "module-built stream matches brute eval bitwise");
+    }
+
+    // (4,4) outside prim 3: solid skips SDF
+    {
+        const uint32_t e[1] = { 3u | ANO_UI_ENTRY_SOLID };
+        float out[4];
+        eval_one_tile(&s, 0, 0, e, 1, 4, 4, out);
+        CHECK(memcmp(out, ENTRY_COLOR_D, sizeof out) == 0,
+              "solid entry at last valid index flat-fills");
+    }
+
+    // Grid at (24,44); (28,48) inside prims 0 and 2
+    {
+        const uint32_t e[2] = { 0u, 2u };
+        float src0[4], src2[4], want[4], out[4];
+        ano_ui_ref_shade(&s, 0, 28.0f, 48.0f, src0);
+        ano_ui_ref_shade(&s, 2, 28.0f, 48.0f, src2);
+        for (int k = 0; k < 4; k++) want[k] = src0[k];
+        for (int k = 0; k < 3; k++) want[k] += src2[k];
+        eval_one_tile(&s, 24, 44, e, 2, 28, 48, out);
+        CHECK(memcmp(out, want, sizeof out) == 0, "ADD entry accumulates additively");
+        CHECK(out[0] > src0[0], "ADD entry raised rgb above the OVER register");
+        CHECK(out[3] == src0[3], "ADD entry left alpha untouched");
+    }
+
+    // a valid entry followed by an out-of-domain one: the bad entry contributes nothing
+    {
+        const uint32_t bad[4] = {
+            4u,                                            // == primCount, solid clear
+            4u | ANO_UI_ENTRY_SOLID,                       // == primCount, solid set
+            ANO_UI_ENTRY_INDEX_MASK,                       // max index, solid clear
+            ANO_UI_ENTRY_INDEX_MASK | ANO_UI_ENTRY_SOLID,  // max index, solid set
+        };
+        const char *name[4] = {
+            "idx == primCount (solid clear) contributes nothing",
+            "idx == primCount (solid set) contributes nothing",
+            "idx == INDEX_MASK (solid clear) contributes nothing",
+            "idx == INDEX_MASK (solid set) contributes nothing",
+        };
+        float want[4];
+        ano_ui_ref_shade(&s, 0, 4.0f, 4.0f, want);
+        for (int i = 0; i < 4; i++) {
+            const uint32_t e[2] = { 0u, bad[i] };
+            float out[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
+            eval_one_tile(&s, 0, 0, e, 2, 4, 4, out);
+            CHECK(memcmp(out, want, sizeof out) == 0, name[i]);
+        }
+
+        // and alone in the tile: the whole result is the transparent arm
+        for (int i = 0; i < 4; i++) {
+            float out[4] = { -1.0f, -1.0f, -1.0f, -1.0f };
+            eval_one_tile(&s, 0, 0, &bad[i], 1, 4, 4, out);
+            CHECK(is_transparent(out), "lone out-of-domain entry evaluates transparent");
+        }
+    }
+
+    // Stale stream: 4-prim entries vs 1-prim scene; (28,28) -> prim 0 only.
+    {
+        AnoUiScene s1 = s;
+        s1.primCount = 1;
+        float want[4], out[4];
+        ano_ui_ref_eval(&s1, 28.0f, 28.0f, want);
+        ano_ui_ref_eval_tiled(&s1, 0, 0, ENTRY_GRID_TILES, ENTRY_GRID_TILES, offsets, entries,
+                              28, 28, out);
+        CHECK(memcmp(out, want, sizeof out) == 0, "stale entries past primCount fail closed");
+    }
+}
+
+// tile_build grid caps: 2x2 ok; undersized refuse; tilesX*tilesY wrap -> *ok false.
+static void test_tile_build_grid_caps(void)
+{
+    AnoUiScene s = { 0 };   // empty scene: primCount 0, nothing to scatter
+
+    {
+        uint32_t offsets[5] = { 0 }, entries[4] = { 0 }, cursor[4] = { 0 };
+        bool ok = false;
+        uint32_t n = ano_ui_tile_build(&s, 0, 0, 2, 2, offsets, 5, entries, 4, cursor, &ok);
+        CHECK(ok, "2x2 grid with exact caps reports ok");
+        CHECK(n == 0, "empty scene emits no entries");
+        CHECK(offsets[4] == 0, "prefix total is zero for an empty scene");
+    }
+
+    {
+        uint32_t offsets[4] = { 0 }, entries[4] = { 0 }, cursor[4] = { 0 };
+        bool ok = true;
+        (void)ano_ui_tile_build(&s, 0, 0, 2, 2, offsets, 4, entries, 4, cursor, &ok);
+        CHECK(!ok, "2x2 grid needs offsetsCap 5, cap 4 must refuse");
+    }
+
+    // 65536 x 65536 is 2^32 tiles, which wraps the tile count to 0
+    {
+        uint32_t offsets[8] = { 0 }, entries[4] = { 0 }, cursor[4] = { 0 };
+        bool ok = true;
+        (void)ano_ui_tile_build(&s, 0, 0, 65536u, 65536u, offsets, 8, entries, 4, cursor, &ok);
+        CHECK(!ok, "2^32-tile request with offsetsCap 8 must report ok == false");
     }
 }
 
@@ -1053,9 +1402,14 @@ int main(int argc, char **argv)
     test_coverage();
     test_clip();
     test_gradient();
+    test_paint_stop_overflow();
+    test_paint_ref_stop_window();
     test_path();
+    test_path_contour_bound();
     test_scale();
     test_tiles(soak);
+    test_tile_entry_domain();
+    test_tile_build_grid_caps();
     test_shadow();
     test_blend();
     test_demo();

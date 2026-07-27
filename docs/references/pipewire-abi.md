@@ -1,11 +1,9 @@
 # PipeWire dlopen ABI sheet (verified 1.0.5)
 
-The minimal `libpipewire-0.3.so.0` surface `src/audio/audio_linux.c` hand-declares
-for pw_stream playback, extracted from upstream headers at tag 1.0.5 and verified
-against this machine's runtime lib (`nm -D`: all symbols present). SPA pods are
-wire-stable serialized ABI; the structs below are public stable ABI. x86-64 LP64.
-If the backend ever misbehaves on a newer PipeWire, re-verify against this sheet
-first.
+Minimal `libpipewire-0.3.so.0` surface `src/audio/audio_linux.c` hand-declares for pw_stream playback.
+Extracted from upstream headers at tag 1.0.5; `nm -D` verified (all symbols present).
+SPA pods: wire-stable serialized ABI. Structs below: public stable ABI. x86-64 LP64.
+On newer-PipeWire misbehavior, re-verify this sheet first.
 
 ## Constants
 
@@ -28,22 +26,14 @@ first.
 
 ## Structs (LP64 layouts)
 
-- `spa_pod { uint32 size; uint32 type; }` — size counts the body only; every
-  complete pod is padded to an 8-byte boundary. Id/Int values: 12-byte pod +
-  4 pad. Array bodies pack elements with no per-element headers or padding.
+- `spa_pod { uint32 size; uint32 type; }`. size = body only. Complete pods pad to 8 bytes. Id/Int: 12-byte pod + 4 pad. Array bodies pack elements with no per-element headers or padding.
 - `spa_pod_object body { uint32 type; uint32 id; }` then a series of props.
 - `spa_pod_prop { uint32 key; uint32 flags; spa_pod value; }`.
 - `spa_chunk { uint32 offset; uint32 size; int32 stride; int32 flags; }` (16 B).
 - `spa_data { uint32 type; uint32 flags; int64 fd; uint32 mapoffset; uint32 maxsize; void *data; spa_chunk *chunk; }` (40 B).
 - `spa_buffer { uint32 n_metas; uint32 n_datas; spa_meta *metas; spa_data *datas; }` (24 B).
-- `pw_buffer { spa_buffer *buffer; void *user_data; uint64 size; uint64 requested; uint64 time; }`
-  (40 B at 1.0.5 — `requested` since 0.3.49, `time` since 1.0.5; stream-allocated,
-  never sizeof'd by the client).
-- `pw_stream_events` (96 B): `uint32 version` (+4 pad) then function pointers in
-  order: destroy, state_changed(data, old, state, error), control_info,
-  io_changed, param_changed, add_buffer, remove_buffer, process(data), drained,
-  command, trigger_done. All optional (NULL-checked). The struct is held by
-  POINTER for the stream's lifetime — it must be static or outlive the stream.
+- `pw_buffer { spa_buffer *buffer; void *user_data; uint64 size; uint64 requested; uint64 time; }` (40 B at 1.0.5). `requested` since 0.3.49, `time` since 1.0.5. Stream-allocated; client never sizeof's it.
+- `pw_stream_events` (96 B): `uint32 version` (+4 pad) then function pointers in order: destroy, state_changed(data, old, state, error), control_info, io_changed, param_changed, add_buffer, remove_buffer, process(data), drained, command, trigger_done. All optional (NULL-checked). Held by POINTER for stream lifetime; must be static or outlive the stream.
 
 ## Functions (all in libpipewire-0.3.so.0)
 
@@ -76,21 +66,17 @@ Property key strings: `media.type`, `media.category`, `media.role`, `node.name`,
 
 ## The EnumFormat pod (fixed F32/rate/2ch, position [FL,FR])
 
-168 bytes, 42 little-endian u32 words; body size 160. Word layout (the builder in
-audio_linux.c reproduces exactly this; prop order matches
-spa_format_audio_raw_build): object header {160, 15} {0x40003, 3}; then props
-mediaType=Id 1, mediaSubtype=Id 1, AUDIO_format=Id 283, AUDIO_rate=Int rate,
-AUDIO_channels=Int 2 (each: {key, 0} {4, type} {value, pad}); then
-AUDIO_position {0x10005, 0} {16, 13} {4, 3} then packed [3, 4].
+168 bytes, 42 little-endian u32 words; body size 160. Word layout (builder in
+audio_linux.c matches exactly; prop order = spa_format_audio_raw_build): object header
+{160, 15} {0x40003, 3}; then props mediaType=Id 1, mediaSubtype=Id 1,
+AUDIO_format=Id 283, AUDIO_rate=Int rate, AUDIO_channels=Int 2
+(each: {key, 0} {4, type} {value, pad}); then AUDIO_position {0x10005, 0} {16, 13}
+{4, 3} then packed [3, 4].
 
-Fixed (non-choice) values are the canonical form — upstream
-`src/examples/audio-src.c` connects with exactly one such EnumFormat pod and
-flags AUTOCONNECT|MAP_BUFFERS|RT_PROCESS.
+Fixed (non-choice) values are canonical. Upstream `src/examples/audio-src.c` connects with one such EnumFormat pod and flags AUTOCONNECT|MAP_BUFFERS|RT_PROCESS.
 
 ## Teardown order (from upstream examples + thread-loop.h)
 
-`pw_thread_loop_stop` (lock NOT held) → `pw_stream_destroy` → 
+`pw_thread_loop_stop` (lock NOT held) → `pw_stream_destroy` →
 `pw_thread_loop_destroy` → `pw_deinit`. Connect/disconnect and `get_state`
-polling happen under `pw_thread_loop_lock`. With RT_PROCESS the `process`
-callback runs on the RT data thread without the loop lock — it must stay
-lock-free (our ring pop is).
+polling under `pw_thread_loop_lock`. With RT_PROCESS, `process` runs on the RT data thread without the loop lock; must stay lock-free (our ring pop is).

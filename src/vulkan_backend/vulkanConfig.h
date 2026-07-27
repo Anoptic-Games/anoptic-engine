@@ -13,14 +13,13 @@
 
 /* Write Functions */
 
-// Sets the passed name as the preferred GPU. If a matching device is found during instance initialization, it will be used
+// Preferred GPU by name; matched at instance init
 bool requestDevice(char* deviceName);
 
 // Prefer this present mode when available at swapchain create.
 bool requestPresentMode(VkPresentModeKHR presentMode);
 
-// Sets the preferred MSAA sample count (2/4/8). Clamped to device support at init; values
-// below 2 are raised to 2 (the 1x no-MSAA path is not built). !TODO must be set before initVulkan
+// Preferred MSAA samples (2/4/8). Clamped at init; <2 raised to 2. !TODO before initVulkan
 bool requestMsaaSamples(uint32_t samples);
 
 // Sets the desired resolution for window creation/update

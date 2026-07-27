@@ -1,16 +1,9 @@
 #version 450
 
-// Transparency back-to-front sort (audit 4.7). One workgroup per camera view sorts that view's
-// transmission partition's compacted draws by descending depth key (farthest first), so the "over"
-// blend in the transmission graphics pass composites back-to-front instead of in the arbitrary
-// atomic-append order cull.comp produced. Reorders the indirect commands + compacted entity indices
-// in lockstep; on the vertex-fallback path it also rewrites each command's firstInstance to its new
-// ordinal (the mesh path keys off gl_DrawID = buffer position, so it needs no rewrite).
-//
-// Single-workgroup bitonic sort in shared memory. SORT_CAP bounds the per-view transmission draws
-// that get sorted; any excess (drawCount > SORT_CAP) keeps its arbitrary order appended after the
-// sorted block — graceful degradation, never corruption. SORT_CAP=256 fits the 16 KiB guaranteed
-// shared-memory floor (8 KiB used). Reuses the cull descriptor set + the useMeshShader spec constant.
+// Transparency B2F sort (audit 4.7). One WG/view; descending bitonic on transmission draws.
+// Reorders indirect cmds + entity indices; fallback also rewrites firstInstance (mesh: gl_DrawID).
+// SORT_CAP=256 (16 KiB shared floor). Excess stays unsorted after the sorted block.
+// Reuses cull descriptor set + useMeshShader spec constant.
 
 layout(local_size_x = 256) in;
 
@@ -19,7 +12,7 @@ const uint  SORT_CAP = 256u;       // power of two; per-view transmission draws 
 const uint  MAX_CMD_WORDS = 5u;    // VkDrawIndexedIndirectCommand (fallback); mesh path uses 3
 const float NEG_SENTINEL = -3.4e38; // sorts pad entries last (real keys = clip.w > 0 for visible geom)
 
-// constant_id 1: useMeshShader — selects the indirect command stride, matching cull.comp.
+// constant_id 1: useMeshShader -> indirect command stride (matches cull.comp).
 layout(constant_id = 1) const bool useMeshShader = true;
 
 struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
@@ -60,8 +53,7 @@ void main() {
     uint stride = useMeshShader ? 3u : 5u;
     uint lid = gl_LocalInvocationID.x;
 
-    // Load original entries (key, entity id, command words) into shared; pad to SORT_CAP with a
-    // sentinel key so the padding sorts to the tail and leaves [0,capN) holding the real draws.
+    // Load key/entity/cmd into shared; pad to SORT_CAP with sentinel (sorts to tail).
     for (uint i = lid; i < SORT_CAP; i += 256u) {
         if (i < capN) {
             skey[i] = sortKeys[keyBase + i];
@@ -94,9 +86,7 @@ void main() {
         }
     }
 
-    // Scatter sorted order back to global. Output position p takes the entry whose original position
-    // is sperm[p]; sperm[0..capN) is a permutation of [0,capN) (sentinels sorted to [capN,SORT_CAP)).
-    // Reads come from shared, writes go to global position p — no read/write hazard on the buffers.
+    // Scatter: p gets original sperm[p]. Shared reads, global writes.
     for (uint p = lid; p < capN; p += 256u) {
         uint src = sperm[p];
         entityIndices[base + p] = sentity[src];

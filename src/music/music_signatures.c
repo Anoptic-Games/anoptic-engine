@@ -16,6 +16,16 @@
 #define FIT_MIN        0.34
 #define NEVER          999
 
+// Weld: library/barsSince == ANO_SIG_MAX; motif rhythm/contour == ANO_MOTIF_MAX.
+static_assert(sizeof ((AnoMotifDirector *)0)->library / sizeof(AnoSignatureMotif) == ANO_SIG_MAX
+              && sizeof ((AnoMotifDirector *)0)->barsSince / sizeof(int) == ANO_SIG_MAX,
+              "director library capacity must equal ANO_SIG_MAX");
+static_assert(sizeof ((AnoMotif *)0)->rhythm / sizeof(AnoRhythmNote) == ANO_MOTIF_MAX
+              && sizeof ((AnoMotif *)0)->contour / sizeof(int) == ANO_MOTIF_MAX,
+              "motif clamp bound must equal the motif buffers' extent");
+
+// In: library/count. Out: *d clamped copy.
+// Invariant: motif.n <= ANO_MOTIF_MAX.
 void ano_director_init(AnoMotifDirector *d, const AnoSignatureMotif *library,
                        uint32_t count)
 {
@@ -24,6 +34,8 @@ void ano_director_init(AnoMotifDirector *d, const AnoSignatureMotif *library,
         count = ANO_SIG_MAX;
     for (uint32_t i = 0; i < count; ++i) {
         d->library[i] = library[i];
+        if (d->library[i].motif.n > ANO_MOTIF_MAX) // authored count can't exceed the buffers
+            d->library[i].motif.n = ANO_MOTIF_MAX;
         d->barsSince[i] = -1; // dict-absent
     }
     d->libraryCount = count;
@@ -44,8 +56,7 @@ void ano_director_observe(AnoMotifDirector *d, const char *tag, int bars)
             d->barsSince[i] = 0;
 }
 
-// (fit, transform, motif) of the best-fitting admissible transform; first
-// max wins. Transforms always at 16 slots (the prototype default).
+// Best (fit, xform, motif). First max wins. Slot count 16.
 static double best_transform(const AnoSignatureMotif *sig, AnoScale scale,
                              const uint8_t *chordPcs, uint32_t pcCount,
                              int lo, int hi, uint32_t strongMask, int near,

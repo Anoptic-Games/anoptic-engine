@@ -21,14 +21,14 @@ int main() {
     }
     VulkanContext* ctx = vulkanGarbage.ctx;
 
-    // The initialization itself should not have caused validation errors
+    // No validation errors from init
     if (g_ValidationErrors > 0) {
         printf("Error: Validation errors occurred during initVulkan!\n");
         unInitVulkan();
         return 1;
     }
 
-    // Intentionally trigger a validation error by passing invalid creation parameters
+    // Force a validation error
     printf("Triggering intentional validation error (invalid buffer creation)...\n");
     VkBufferCreateInfo badInfo = {};
     badInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -42,7 +42,7 @@ int main() {
 
     unInitVulkan();
 
-    // The test PASSES if we successfully intercepted at least one validation error
+    // Pass if >= 1 validation error caught
     if (g_ValidationErrors > 0) {
         printf("Success: Intercepted %u validation errors!\n", g_ValidationErrors);
         return 0; // Success!

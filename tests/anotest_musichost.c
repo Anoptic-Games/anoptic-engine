@@ -191,7 +191,7 @@ int main(void)
                 if (x[i] != y[i]) { if (first == sz) first = i; n++; }
             // Indeterminate padding in config defaults is the usual culprit.
             printf("  %zu of %zu bytes differ, first at offset %zu "
-                   "(config spans 0..%zu) — indeterminate padding?\n",
+                   "(config spans 0..%zu) 〜 indeterminate padding?\n",
                    n, sz, first, sizeof(AnoEngineConfig));
         }
         CHECK(memcmp(snap, snapB, sz) == 0,

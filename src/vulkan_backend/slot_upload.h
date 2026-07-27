@@ -20,8 +20,8 @@ bool slot_upload_create(SlotUpload* b, uint32_t capacity, uint32_t stride, uint3
 void slot_upload_stage(SlotUpload* b, uint32_t f, uint32_t index, const void* value);
 // Record frame f's staged deltas as a copy into the device buffer.
 void slot_upload_flush(VkCommandBuffer cmd, SlotUpload* b, uint32_t f);
-// Grow every slot-indexed GPU buffer to hold >= required slots. False on OOM.
-bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32_t frameIndex);
+// Grow slot-indexed GPU buffers to >= required. False on OOM; buffers, caps, descriptors unchanged.
+[[nodiscard]] bool ensureEntityCapacity(RendererState* state, uint32_t required, uint32_t frameIndex);
 // Apply gfx+compute CONCURRENT sharing to a buffer the async light-cull touches across queue families.
 void buffer_share_async_compute(VkBufferCreateInfo* bi, uint32_t fams[2]);
 

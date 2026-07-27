@@ -32,7 +32,7 @@ int main() {
     printf("Testing synchronous command buffer submission...\n");
     VkCommandBuffer cmd = beginSingleTimeCommands(ctx);
 
-    // Dummy barrier (no real transition) so the CB is non-empty
+    // Dummy barrier (no real transition, non-empty CB)
     VkMemoryBarrier memBarrier = {};
     memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     memBarrier.srcAccessMask = 0;
@@ -62,10 +62,9 @@ int main() {
     VkSubmitInfo submitInfo = {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    // Headless: no swapchain acquire, so no semaphore wait
-    // which would cause a deadlock or timeout. Instead, we'll just test the Fence.
+    // Headless: fence only (no swapchain semaphore wait)
 
-    // Use the first frame's pre-allocated command buffer and fence.
+    // Frame 0 cmdbuf + fence
     VkCommandBuffer cmdAsync = rendererState.frames[0].commandBuffer;
     VkFence frameFence = rendererState.frames[0].frameFence;
 
@@ -79,7 +78,7 @@ int main() {
         return 1;
     }
 
-    // End the command buffer to put it in the executable state
+    // Executable state
     if (vkEndCommandBuffer(cmdAsync) != VK_SUCCESS) {
         printf("Error: Failed to end command buffer!\n");
         unInitVulkan();
@@ -89,7 +88,7 @@ int main() {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmdAsync;
 
-    // Ensure the fence is reset before submission
+    // Reset fence
     vkResetFences(ctx->device, 1, &frameFence);
 
     if (vkQueueSubmit(ctx->graphicsQueue, 1, &submitInfo, frameFence) != VK_SUCCESS) {
@@ -98,7 +97,7 @@ int main() {
         return 1;
     }
 
-    // Wait for the queue to finish executing using the Fence
+    // Wait on fence
     vkWaitForFences(ctx->device, 1, &frameFence, VK_TRUE, UINT64_MAX);
 
     if (g_ValidationErrors > 0) {

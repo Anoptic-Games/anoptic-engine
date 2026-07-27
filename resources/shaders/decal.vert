@@ -1,16 +1,9 @@
 #version 450
 
-// SKELETON — not in the CMakeLists shader manifest, not loaded by any pipeline.
-// Documents the DECAL DRAW STAGE vertex half (PIPELINE_DECAL). Decals are their own
-// primitive, not a per-entity attribute: one instanced unit cube per DecalRecord
-// (structs.h), anchored to a host by render slot. The cube is placed by the host's
-// live transform composed with the decal's localTransform, so a decal rides a moving
-// host for free. The pool is a global budget with LRU recycling — unbounded over
-// time, fixed in memory.
-//
-// To activate: add to the manifest + a PIPELINE_DECAL prototype + a g_framePasses
-// entry drawing the DecalPool as instanced unit cubes (a deferred-style projection
-// pass, or a forward UV-overlay variant keyed by DecalRecord.flags).
+// SKELETON. Not in CMakeLists shader manifest. Not loaded by any pipeline.
+// PIPELINE_DECAL vertex: one instanced unit cube per DecalRecord (structs.h),
+// host * localTransform. DecalPool: global LRU budget.
+// Activate: manifest + PIPELINE_DECAL prototype + g_framePasses DecalPool draw.
 
 struct DecalRecord {
     mat4 localTransform;
@@ -31,9 +24,8 @@ layout(set = 0, binding = 0) uniform GlobalUBO {
 } global;
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO { mat4 transforms[]; } transformBuf;
-// NOTE: set 0 binding 12 is now LightRuntimeSSBO in the live globalSetLayout (flat.frag/transmission.frag).
-// This decal skeleton is inert (no compiled pipeline), so there is no conflict yet — but renumber this
-// to a free binding (>= 13) when PIPELINE_DECAL is actually wired against globalSetLayout.
+// NOTE: set 0 binding 12 is LightRuntimeSSBO in live globalSetLayout (flat.frag/transmission.frag).
+// Renumber to a free binding (>= 13) when wiring PIPELINE_DECAL.
 layout(set = 0, binding = 12) readonly buffer DecalSSBO    { DecalRecord decals[]; } decalBuf;
 
 layout(location = 0) in vec3 inUnitCubePos; // [-0.5,0.5]^3 projector volume

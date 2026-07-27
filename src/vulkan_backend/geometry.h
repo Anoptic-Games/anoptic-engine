@@ -68,17 +68,22 @@ typedef struct GeometryPool
 bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device, uint32_t graphicsFamily, uint32_t transferFamily);
 void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device);
 
-// Upload mesh data, return a MeshRegion handle (index into meshes[]).
-// Data is staged through a staging buffer -> device-local transfer.
-uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
-                              uint32_t transferFamily, VkQueue transferQueue,
-                              const Vertex* vertices, uint32_t vertexCount,
-                              const uint32_t* indices, uint32_t indexCount);
-
-#define ANO_MAX_LOD 8u
-
 // Per-mesh GPU buffer capacity (MeshSSBO / MeshBoundsSSBO). Host pool must not register past this.
 #define ANO_MAX_MESHES 8192u
+
+// Mesh refusal sentinel. Outside [0, ANO_MAX_MESHES). Same word as NO_MESH_INDEX / ANO_RENDER_NO_MESH.
+// Not slot 0 (FALLBACK_MESH_INDEX).
+#define ANO_MESH_NONE 0xFFFFFFFFu
+_Static_assert(ANO_MESH_NONE >= ANO_MAX_MESHES, "mesh refusal fell inside the grantable slot domain");
+
+// Upload mesh into one pool slot (staging -> device-local).
+// out: meshes[] index, or ANO_MESH_NONE on full/fail. Slot commits only on success.
+[[nodiscard]] uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
+                                            uint32_t transferFamily, VkQueue transferQueue,
+                                            const Vertex* vertices, uint32_t vertexCount,
+                                            const uint32_t* indices, uint32_t indexCount);
+
+#define ANO_MAX_LOD 8u
 
 // Default LOD levels for glTF uploads (1 = no decimation). Clamp: ANO_MAX_LOD.
 #define ANO_DEFAULT_LOD_COUNT 4u
@@ -96,7 +101,7 @@ typedef struct AnoLodConfig
 AnoLodConfig ano_lod_config_default(uint32_t lodCount);
 
 // Upload contiguous LOD chain. Bounds LOD-invariant (full sphere). Truncates on stall/exhaust.
-// out: base index / *out_lodCount; 0 + *out_lodCount==0 on failure. out_* may be NULL.
+// out: base index / *out_lodCount; ANO_MESH_NONE + *out_lodCount==0 on fail (both spellings). out_* may be NULL.
 uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
                                     uint32_t transferFamily, VkQueue transferQueue,
                                     const Vertex* vertices, uint32_t vertexCount,

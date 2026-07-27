@@ -25,6 +25,7 @@ bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
                                VkBuffer* buffer, GpuAllocation* alloc);
 
 // Overlay images (one per frame, swapchain extent). From createColorResources.
+// A refused image view logs and clears textOverlay/asyncText/textWorld.
 void ano_vk_text_create_overlay(VulkanContext* ctx, RendererState* state);
 
 // Destroys the overlay images/views (handle-guarded).

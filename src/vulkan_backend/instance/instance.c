@@ -43,7 +43,7 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 	createInfo.pApplicationInfo = &appInfo;
 
 	#ifdef __APPLE__
-	// MoltenVK portability driver requires this flag
+	// MoltenVK portability flag
 	createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 	#endif
 
@@ -83,7 +83,7 @@ VkResult createInstance(VulkanContext* ctx) // Central component of the init pro
 	{
 		ano_log(ANO_FATAL, "Failed to create Vulkan instance! Error code: %d", result);
 		free(extensions);
-		return result; // Returning the actual error is usually better than hardcoding VK_ERROR_INITIALIZATION_FAILED
+		return result;
 	}
 
 	#ifdef DEBUG_BUILD
@@ -189,15 +189,15 @@ const char** getRequiredExtensions(uint32_t* extensionsCount) // Returns extensi
 	uint32_t idx = 0;
 	for (uint32_t i = 0; i < glfwExtensionCount; i++)
 	{
-		extensions[idx++] = strdup(glfwExtensions[i]);
+		extensions[idx++] = glfwExtensions[i];
 	}
 
 	#ifdef DEBUG_BUILD
-	extensions[idx++] = strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	extensions[idx++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 	#endif
 
 	#ifdef __APPLE__
-	extensions[idx++] = strdup(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+	extensions[idx++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
 	#endif
 
 	*extensionsCount = totalExtensionCount;
