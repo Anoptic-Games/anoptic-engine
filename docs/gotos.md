@@ -140,7 +140,7 @@ Not warranted below about three arms: `render_slots_alloc_range` closed with `al
 
 ## Waiting on the resource manager
 
-`loadFile` retirement (`pipeline.c:63`, ~20 call sites). Every builder's `{ code.data = NULL; goto fail; }` exists because `loadFile` was once non-total; deleted with `loadFile` when shader bytes arrive through `ano_res_load` (docs/BUG-HUNT.md; docs/resourcemgr/resource-manager-plan.md). Do not build new unwinds on `loadFile`. Do not clean re-inerts before it goes.
+`loadFile` retirement (`pipeline.c:63`, ~20 call sites). Every builder's `{ code.data = NULL; goto fail; }` exists because `loadFile` was once non-total; deleted with `loadFile` when shader bytes arrive through `ano_res_load` (docs/BUGS_DONE.md, "The 2026-07-25 remediation"; docs/resourcemgr/resource-manager-plan.md). Do not build new unwinds on `loadFile`. Do not clean re-inerts before it goes.
 
 Any cross-file discharge. Acquisition and only correct discharge in different TUs: label in either file is half an answer. These wait.
 
