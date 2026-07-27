@@ -4,7 +4,7 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // anoptic_threads.h: barrier init domain, exactly-count cohorts, over-subscribed reuse.
-// Watchdog bounds the run. Canaries fence the barrier object. Exit 0 == pass.
+// Watchdog kills a stalled tally. Canaries fence the barrier object. Exit 0 == pass.
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -19,8 +19,9 @@ static int failures = 0;
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \
 } while (0)
 
-#define CANARY      0x5AFEC0DEu
-#define WATCHDOG_US (30u * 1000u * 1000u)
+#define CANARY           0x5AFEC0DEu
+#define WATCHDOG_POLL_US (250u * 1000u)
+#define WATCHDOG_STALLS  40u             // 10s of a frozen tally
 
 
 /* Barrier fence */
@@ -47,14 +48,24 @@ static bool fence_intact(void)
 
 /* Watchdog */
 
-// Bounds the run. Prints tallies on exit.
+// Fires on a frozen tally, never on wall clock: an oversubscribed host is slow, not deadlocked,
+// and a run killed on elapsed time cannot tell the two apart. ctest's TIMEOUT is the outer bound.
 
-static atomic_uint arrivals, releases, serials, early;
+static atomic_uint arrivals, releases, serials, early, cwork;
 
 static void *watchdog(void *arg)
 {
     (void)arg;
-    ano_sleep(WATCHDOG_US);
+    unsigned long long last = 0;
+    for (unsigned stalls = 0; stalls < WATCHDOG_STALLS; ) {
+        ano_sleep(WATCHDOG_POLL_US);
+        // any section's tally moving counts as progress; a reset between sections reads as a move
+        unsigned long long now = (unsigned long long)atomic_load(&arrivals)
+                               + atomic_load(&releases) + atomic_load(&serials)
+                               + atomic_load(&cwork);
+        stalls = now == last ? stalls + 1u : 0u;
+        last   = now;
+    }
     printf("FAIL: barrier deadlocked -- arrivals=%u releases=%u serials=%u early=%u\n",
            atomic_load(&arrivals), atomic_load(&releases),
            atomic_load(&serials), atomic_load(&early));
@@ -90,7 +101,6 @@ static void test_barrier_init_domain(void)
 #define CN      4u
 #define CROUNDS 4000u
 
-static atomic_uint cwork;
 static atomic_int  cbad;
 static unsigned    cpayload[CN];   // plain memory: the barrier owes it a happens-before
 
