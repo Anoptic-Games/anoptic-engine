@@ -14,6 +14,8 @@
 #include <anoptic_threads.h>
 #include <anoptic_time.h>
 
+#include "templates/sanopts.h"   // ASan alt-stack opt-out; see header
+
 static int failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("FAIL: %s (%s:%d)\n", (msg), __FILE__, __LINE__); failures++; } \

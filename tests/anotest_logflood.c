@@ -17,6 +17,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "templates/sanopts.h"   // ASan alt-stack opt-out; see header
+
 #define DIR_CTRL ANO_TEST_OUTDIR "/anolog_flood_ctrl"
 #define DIR_WIDE ANO_TEST_OUTDIR "/anolog_flood_wide"
 // Session-stamped paths, resolved in main().

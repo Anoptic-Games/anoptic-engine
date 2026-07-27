@@ -26,6 +26,8 @@ static char *cwd_str(char *b, size_t n) { return _getcwd(b, (int)n); }
 #else
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "templates/sanopts.h"   // ASan alt-stack opt-out; see header
 static void  make_dir(const char *p) { mkdir(p, 0777); }
 static void  remove_dir(const char *p) { rmdir(p); }
 static char *cwd_str(char *b, size_t n) { return getcwd(b, n); }

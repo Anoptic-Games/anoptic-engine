@@ -23,6 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "templates/sanopts.h"   // ASan alt-stack opt-out; see header
+
 // Suppress mimalloc teardown frames only (logger races stay visible).
 #if defined(__has_feature)
 #  if __has_feature(thread_sanitizer)

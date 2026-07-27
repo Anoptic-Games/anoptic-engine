@@ -20,6 +20,8 @@
 #include "anoptic_time.h" // ano_sleep
 #include "anoptic_log.h"  // ano_log_set_route
 
+#include "templates/sanopts.h"   // ASan alt-stack opt-out; see header
+
 _Static_assert(offsetof(AnoSpscRing, head) - offsetof(AnoSpscRing, tail) >= ANO_CACHE_LINE,
                "SPSC head/tail must live on separate cache lines");
 // Alignas floor: lesser of ANO_CACHE_LINE and ANO_THREAD_LINE.
