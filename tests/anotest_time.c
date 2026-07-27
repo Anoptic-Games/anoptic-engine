@@ -161,24 +161,34 @@ static int testResolution(void) {
     return fails;
 }
 
-/* Timebase granularity: min nonzero ano_timestamp_ticks step, in ns. Assert <100ns (raw QPC is 100ns).
-   Same loop is the dead-clock lock: ano_timestamp_raw() must advance and never step backward. */
+/* Timebase granularity: the GCD of observed tick deltas reveals counter quantization without
+   confusing instrumentation overhead with clock resolution. */
 #define GRAIN_SAMPLES 200000
 #define GRAIN_MAX_NS  100
+
+static uint64_t gcd_u64(uint64_t a, uint64_t b) {
+    while (b != 0) {
+        uint64_t r = a % b;
+        a = b;
+        b = r;
+    }
+    return a;
+}
 
 static int testGranularity(void) {
     printf("\nTesting timebase granularity (smallest resolvable step)\n");
 
-    uint64_t minDelta = UINT64_MAX;
+    uint64_t quantum = 0;
     uint64_t prev = ano_timestamp_ticks();
     uint64_t prevNs = ano_timestamp_raw();
     uint64_t backward = 0;
     for (int i = 0; i < GRAIN_SAMPLES; i++) {
         uint64_t now = ano_timestamp_ticks();
-        uint64_t d = now - prev;    // ticks delta
+        if (now < prev)
+            backward++;
+        else if (now != prev)
+            quantum = gcd_u64(quantum, now - prev);
         prev = now;
-        if (d != 0 && d < minDelta)
-            minDelta = d;
 
         uint64_t nowNs = ano_timestamp_raw();
         if (nowNs < prevNs)
@@ -186,22 +196,22 @@ static int testGranularity(void) {
         prevNs = nowNs;
     }
     if (backward != 0) {
-        printf("  [FAIL] ano_timestamp_raw() stepped backward %" PRIu64 " time(s) across %d samples\n",
+        printf("  [FAIL] timestamp stepped backward %" PRIu64 " time(s) across %d samples\n",
                backward, GRAIN_SAMPLES);
         return 1;
     }
-    printf("  [PASS] ano_timestamp_raw() monotone across %d samples\n", GRAIN_SAMPLES);
-    if (minDelta == UINT64_MAX) {
+    printf("  [PASS] timestamps monotone across %d samples\n", GRAIN_SAMPLES);
+    if (quantum == 0) {
         printf("  [FAIL] timestamp never advanced across %d samples\n", GRAIN_SAMPLES);
         return 1;
     }
 
-    uint64_t grainNs = ano_ticks_to_ns(minDelta);
+    uint64_t grainNs = ano_ticks_to_ns(quantum);
     int ok = grainNs < GRAIN_MAX_NS;
-    printf("  [%s] min step = %" PRIu64 " ticks = %" PRIu64 " ns (need < %d ns)\n",
-           ok ? "PASS" : "FAIL", minDelta, grainNs, GRAIN_MAX_NS);
+    printf("  [%s] quantum = %" PRIu64 " ticks = %" PRIu64 " ns (need < %d ns)\n",
+           ok ? "PASS" : "FAIL", quantum, grainNs, GRAIN_MAX_NS);
     if (!ok)
-        printf("         ^ timebase too coarse (raw 10 MHz QPC steps in 100 ns); expected a finer clock\n");
+        printf("         ^ timebase is quantized too coarsely\n");
     return ok ? 0 : 1;
 }
 
