@@ -2,806 +2,788 @@
 
 Completed ledger: fixed, refuted, and wontfix retirements from `docs/BUGS.md`, plus campaign accounting, contract decisions, removed guards, and test-side corrections. Active defects, entry instructions, root-cause tags, and the reusable remediation taxonomy live in `docs/BUGS.md`.
 
-2026-07-24 retirement text is verbatim as closed. The 19 campaign census retirements are condensed (what was wrong, tier, behaviour delta, guard). No file:line entry appears in both `docs/BUGS.md` and this file.
+2026-07-24 retirement text is verbatim as closed. The 19 campaign census retirements are condensed. No file:line entry appears in both `docs/BUGS.md` and this file.
 
 
 ## Audio
 
 ### Implementation bugs
 
-[X] Fixed 〜 delay.h:39 〜 AnoDspDelay stored cap = maxDelay verbatim while the allocation floors at two slots, so a line built at maxDelay 0 gave ano_dsp_delay_read_frac a clamp ceiling of (float)(cap - 1u) == 2^32 and every tap sailed through to a (uint32_t) conversion of an out-of-range float 〜 UB, C23 6.3.1.4p1, the exact failure the kept clamp exists to prevent; reachable, not latent: neither entry seam bounds sampleRate below (ano_audio.c:95 and audio_mixer.c:655 default only 0), so a config or offline render at 1..29 Hz floors audio_fx.c's fs-derived chorus and FDN line lengths to 0, and NaN additionally bypassed both clamps at every length, reaching the same conversion 〜 test: anotest_dspdelayguard
+[X] Fixed: delay.h:39: delay cap floated free of the allocation floor; tap index UB. test: anotest_dspdelayguard
 - checked-arithmetic
-- fix (2026-07-25) 〜 the ceiling derives from mask (the pow2 allocation floors at 2, so mask >= 1 and mask - 1u cannot wrap) and the cap field is deleted 〜 the struct can no longer represent a capacity unrelated to its allocation; the lower clamp is accept-form, so NaN clamps to 1 instead of reaching the conversion
+- fix (2026-07-25): ceiling from mask; cap field deleted.
 
-[X] Fixed 〜 ano_audio.c:257 〜 buffer_register computes frames * channels * sizeof(float) in uint64 with no wrap guard, so frames ≥ 2^62 wraps bytes64 past 2^64 to a tiny value that passes the SIZE_MAX check; a near-empty block is allocated, the header keeps the huge frame count, and the call returns true instead of rejecting bad args 〜 any voice playing that buffer reads far out of bounds on the mixer thread 〜 test: anotest_audioguard
+[X] Fixed: ano_audio.c:257: buffer_register frames*channels*sizeof(float) wraps past SIZE_MAX; near-empty block, huge frame count kept. test: anotest_audioguard
 - checked-arithmetic
-- fix (2026-07-24) 〜 frames is compared against the headroom quotient before the product is formed
+- fix (2026-07-24): frames compared against headroom quotient before the product.
 
-[X] Fixed 〜 audio_wav.c:34 〜 wav_write has the same unchecked frames * channels * sizeof(float) product, so frames near 2^62 wraps dataBytes64 to a tiny value that slips under the RIFF 32-bit guard; a truncated WAV is written whose fact chunk claims the wrapped frame count and the call returns true instead of rejecting bad args 〜 a caller saving a capture gets silent success and a lying file 〜 test: anotest_wavguard
+[X] Fixed: audio_wav.c:34: wav_write same unchecked product; truncated WAV, fact chunk lies, call returns true. test: anotest_wavguard
 - checked-arithmetic
-- fix (2026-07-24) 〜 frames is compared against the RIFF headroom quotient before the product is formed
+- fix (2026-07-24): frames compared against RIFF headroom quotient before the product.
 
-[X] Fixed 〜 audio_linux.c:168 〜 alsa_stop joins mx->deviceThread before its !st deviceState guard at :170, while wasapi_stop, dsound_stop and pw_stop all guard first, two with the explicit comment that stop tolerates a failed start; latent 〜 today ano_audio.c calls stop() only on a device whose start() returned true 〜 but any caller exercising the tolerance the sibling backends document joins a never-created thread handle, which is UB 〜 test: pending 〜 linux-only, unreachable via today's call order, no trigger seam
+[X] Fixed: audio_linux.c:168: alsa_stop joins deviceThread before deviceState guard; siblings guard first. test: pending: linux-only, unreachable via today's call order
 - odd-sibling-out
-- fix (2026-07-24) 〜 alsa_stop guards deviceState before joining, matching wasapi_stop / dsound_stop / pw_stop
+- fix (2026-07-24): alsa_stop guards deviceState before joining.
 
-[X] Fixed 〜 audio_fx.c:100 〜 fx_limiter's analysis window is one sample shorter than its delay line: winmax_init gets window == lookahead while the sample emitted each step is the one written lookahead steps ago (:391), and the wedge expires stamp + win <= n (dynamics.h:73), so a peak's stamp leaves the window on the exact push that emits it 〜 the "instant attack" gain takes one release step back toward 1.0 before the peak is multiplied out, breaching the ceiling by releaseCoef * (peak - ceiling) on every transient; at the public 1 ms release floor a 10x impulse under the default 0.92 ceiling emits 1.107, past digital full scale, and the sine-driven ceiling check in anotest_audiodsp cannot see it because adjacent sine samples are near-equal 〜 test: anotest_limiterguard
+[X] Fixed: audio_fx.c:100: limiter analysis window one sample short of delay line; peak leaves window on emit; ceiling breached. test: anotest_limiterguard
 - lookahead-off-by-one
-- fix (2026-07-24) 〜 the limiter analysis window is lookahead + 1, so a peak's stamp survives the push that emits it
+- fix (2026-07-24): analysis window is lookahead + 1.
 
-[X] Fixed 〜 ano_audio.c:204 〜 ano_audio_shutdown discharges no adopted sample block: it joins the mixer, stops the device, and destroys both bridge rings and the module heap, but never walks mx->buffers or drains a ring, and adopted blocks live on the default mi heap (plain mi_malloc at :260), not the module heap the teardown frees 〜 so LIVE owned blocks, ACMD_BUFFER_REGISTER blocks still queued in the command ring, and un-polled AEVT_BUFFER_RETIRED blocks all orphan permanently (the producer can never poll a destroyed world to get them back), breaching the lossless-block invariant (audio_internal.h:9) and the block-rides-home promise (anoptic_audio.h:326) on every world torn down with resident audio 〜 test: anotest_audioshutguard
+[X] Fixed: ano_audio.c:204: ano_audio_shutdown never discharges adopted sample blocks; LIVE/queued/unpolled blocks orphan. test: anotest_audioshutguard
 - ownership-leak
-- fix (2026-07-25) 〜 audio_discharge_blocks runs after the mixer joins and the device stops, before the rings and heap die: it drains the command ring (ACMD_BUFFER_REGISTER blocks freed), the event ring (un-polled AEVT_BUFFER_RETIRED blocks freed), and the buffer table (owned slots freed, borrowed skipped), all through ano_audio_block_free 〜 the sole discharge point the rides-home path already used; both drain switches carry no default, so a new command or event kind is a compile-time diagnostic; anoptic_audio.h:326 documents the teardown clause and audio_internal.h:9 the invariant's exception. Settles the open decision: destroy frees outright, no two-phase drain 〜 see "Settled open decisions"
+- fix (2026-07-25): audio_discharge_blocks after mixer join and device stop; drains command ring, event ring, buffer table via ano_audio_block_free. Destroy frees outright.
 
-[X] Fixed 〜 audio_win64.c:589 〜 dsound_main's DSBSTATUS_BUFFERLOST arm called Restore then Play with the ring untouched and writeCursor unchanged, but a restored DirectSound buffer's contents are undefined and its cursors start over, so up to four blocks of whatever the restore left in the ring reached the speakers and every subsequent Lock at the stale writeCursor landed out of phase with the restarted play cursor 〜 test: pending 〜 no trigger seam on any host in this campaign (needs real dsound.dll and a focus change under DSSCL_PRIORITY)
+[X] Fixed: audio_win64.c:589: DSBSTATUS_BUFFERLOST Restore/Play left ring and writeCursor stale; garbage audio, phase desync. test: pending: needs real dsound.dll and DSSCL_PRIORITY focus change
 - recovery-desync
-- fix (2026-07-25) 〜 tier 1, commit-last: `dsound_recover` restores, silences the whole ring (init-prefill Lock/memset/Unlock), then Play. writeCursor re-anchors to 0. Restore/Play HRESULTs heard; still-lost sleeps 10 ms and retries. Delta: post-loss silence ≤ one ring period, then re-converges. Inspection-verified; checklist under "Platform verification posture"
+- fix (2026-07-25): dsound_recover restores, silences ring, re-anchors writeCursor, Play; still-lost retries.
+
 
 ## Filesystem
 
 ### Implementation bugs
 
-[X] Fixed 〜 filesystem_win64.c:137 〜 ano_fs_write advanced cursor and remaining by WriteFile's `written` out-param with no forward-progress test, so a TRUE return carrying 0 bytes re-issued the identical call forever and hung the calling (logging) thread; WriteFile documents `written` as the number of bytes transferred and nowhere promises it is nonzero on success 〜 network redirectors and filter drivers are the plausible producers 〜 while the linux twin is immune because a POSIX write() of nbyte > 0 cannot return 0 〜 test: pending 〜 no seam makes a real WriteFile return a zero-progress TRUE
+[X] Fixed: filesystem_win64.c:137: ano_fs_write advanced on WriteFile written==0; TRUE zero-progress spun forever. test: pending: no seam for zero-progress TRUE
 - unbounded-spin
-- fix (2026-07-25) 〜 tier 4: `|| written == 0` folds into the existing failure test at the WriteFile ingress. Delta: zero-progress write returns -1 instead of spinning. Inspection-verified; checklist under "Platform verification posture"
+- fix (2026-07-25): written == 0 folds into WriteFile failure test; returns -1.
 
-[X] Fixed 〜 filesystem_linux.c:65 〜 ano_fs_resolvepath accepts mkdir's EEXIST as success without checking the existing entry is a directory, so a regular file or dangling symlink squatting ~/.anoptic returns a non-empty path nothing can be created under; the macos (:69) and win64 (:61) twins and the fs_mkdir primitive (:82) behind ano_fs_logpath share the one-sided filter 〜 the header's "Non-empty result is ready to write into" promise breaks: every save/config open under the returned path fails ENOTDIR while the resolver reports success, and a file named logs beside the exe kills the log and crash-log directory the same silent way 〜 test: anotest_fsguard
+[X] Fixed: filesystem_linux.c:65: ano_fs_resolvepath accepted mkdir EEXIST without directory check; file/symlink squat returned ready path. test: anotest_fsguard
 - seam-validation
-- fix (2026-07-24) 〜 fs_mkdir accepts EEXIST only when the existing entry is a directory, and all three ano_fs_userpath bodies route through it
+- fix (2026-07-24): fs_mkdir accepts EEXIST only for directories; all three userpath bodies route through it.
+
 
 ## Log (including log_crash.h)
 
 ### Interface-level bugs and logic inefficiencies
 
-[X] Fixed 〜 log_core.c:205 〜 the deferred capture stores the caller's sourceFile as a raw pointer in the ring blob and format_deferred dereferences it at drain time (:268/:277, batch drain :555), but the header's lifetime contract is one-sided: anoptic_log.h:53 demands "printFormat MUST be a string literal" while sourceFile 〜 the parameter beside it, same trust level 〜 carries no lifetime requirement at all, so a caller passing a stack or heap path through the documented entry points ano_log_write/ano_log_vwrite (whose own comment invites wrappers, exactly where dynamic names arise) gets a dangling deref on the drain thread 〜 strnlen then memcpy of up to 256 bytes from freed or reused memory into the log 〜 or silently logs whatever the buffer holds at drain instead of at call; the implementation's own %s arm proves the intended rule by deep-copying every caller-owned string at capture (:247-:256), and sourceFile is the one string that misses it (the eager fallback at :180 copies it correctly) 〜 test: anotest_logsrcguard
+[X] Fixed: log_core.c:205: deferred capture stored sourceFile as raw pointer; drain deref'd dangling path. test: anotest_logsrcguard
 - dangling-capture
-- fix (2026-07-24) 〜 sourceFile is deep-copied into the capture blob like every %s argument, so the drain never dereferences a caller pointer
+- fix (2026-07-24): sourceFile deep-copied into capture blob.
 
 ### Implementation bugs
 
-[X] Fixed 〜 log_core.c:817 〜 the drain batch g_batch is sized ring bytes + 16 per record on the claim that a record's rendered text fits its ring footprint, but a deferred record renders at its format width, not its stored size 〜 "%*d" width 4000 holds one 64-byte ring line yet emits ~4016 batch bytes, so one pass over a ~164-record backlog walks blen past g_batchCap (the per-record prefix memcpy and newline are unchecked), the size_t room subtraction underflows and unbounds every later record into a multi-MB heap overwrite on the draining thread 〜 test: anotest_logflood
+[X] Fixed: log_core.c:817: g_batch sized to ring footprint; deferred render width can exceed; room underflow, heap overwrite. test: anotest_logflood
 - size-mismatch
-- fix (2026-07-25) 〜 drain_and_emit flushes the batch before any record with less than one worst-case rendered record of room (prefix reserve + MSG_MAX + newline), so the room subtraction cannot underflow and full width always renders; the cap is now the compile-time ANO_LOG_BATCH_CAP, welded to the reserve by static_assert. Settles the open decision: the contract keeps full width and no drops, the memory profile stays flat, a wide-format flood pays extra file writes 〜 see "Remediation determinations"
+- fix (2026-07-25): flush before worst-case rendered record lacks room; ANO_LOG_BATCH_CAP + static_assert. Full width, no drops.
+
 
 ## Math
 
 ### Interface-level bugs and logic inefficiencies
 
-[X] Fixed 〜 anoptic_math.h:21 〜 the header declares mat4/Vector2/3/4 the canonical std430 types "across render, ECS, and the logic<->render bridge", but `typedef float mat4[4][4]` and the `struct { float v[N]; }` vectors all carry `_Alignof == 4` (measured, clang 22 -std=c23: mat4 size 64 align 4, Vector4 size 16 align 4), while std430/std140 require a 16-byte alignment for both 〜 so the type system enforces nothing and every C struct mirroring a GLSL block agrees with it only by accident of member order; two already disagree: RenderEntity (structs.h:154) puts three uint32_t ahead of its mat4, landing `transform` at offset 12 (sizeof 76) where std430 demands 16 (sizeof 80), and DisplayState (render_bridge.h:47) lands its mat4 at offset 4 〜 latent only because neither is uploaded as a struct today (the GPU reads a separate 8-byte EntityInfo plus a mat4 array at offset 0, and the CullView instances that ARE uploaded put their mat4 first inside mapped device memory), so the day either one is memcpy'd into an SSBO the shader reads every field 4 bytes off; the same missing alignment is also a per-frame cost on the hottest stream 〜 a 64-byte record that may legally start off a cache line makes every element of a CPU-side transform array straddle two lines, doubling line traffic on the million-entity sweep 〜 the fix is `alignas(16)` on the types (an ABI change: it repacks RenderEntity and DisplayState), not a comment 〜 test: pending 〜 a `_Static_assert(_Alignof(mat4) >= 16)` guard TU pins it at compile time, but it cannot fail at runtime and so cannot be a CTest failure until the types change
+[X] Fixed: anoptic_math.h:21: mat4/Vector4 align 4 while std430 wants 16; RenderEntity/DisplayState mat4 offsets wrong. test: pending: Static_assert pins align; no runtime CTest until types change
 - alignment-contract-gap
-- fix (2026-07-24) 〜 mat4 and Vector4 carry the 16-byte std430 alignment (Vector2 8), with static_asserts on the types and on the CullView / RenderEntity member offsets; Vector3 deliberately stays packed as the vertex-stream element, and no block in the tree declares a vec3
+- fix (2026-07-24): alignas(16) on mat4/Vector4 (Vector2 8); static_asserts on types and CullView/RenderEntity offsets; Vector3 stays packed.
+
 
 ## Memory
 
 ### Implementation bugs
 
-[X] Fixed 〜 memalign_linux.c:13 / memalign_macos.c:13 / memalign_win64.c:13 〜 ano_aligned_malloc is a bare one-line forward to mi_malloc_aligned with no zero guard, so size 0 follows malloc's zero-size convention and returns a live non-NULL minimum-size block (mimalloc hands back a unique pointer) against the header's "NULL if size or alignment is 0" contract at anoptic_memory.h:47; only the alignment-0 half holds, via mimalloc's own power-of-two refusal, so the contract is half-implemented and the documented zero-size sentinel never fires 〜 a caller branching on NULL to reject a degenerate count*stride==0 request instead gets success plus a block it believes cannot exist, so its reject path is unreachable and each such call leaks one block under "NULL means nothing was allocated" 〜 test: anotest_memguard
+[X] Fixed: memalign_linux.c:13 / memalign_macos.c:13 / memalign_win64.c:13: ano_aligned_malloc size 0 returned live block against NULL contract. test: anotest_memguard
 - unguarded-delegation
-- fix (2026-07-24) 〜 all three refuse size 0 or alignment 0 with NULL, so the header's documented sentinel fires
+- fix (2026-07-24): all three refuse size 0 or alignment 0 with NULL.
+
 
 ## Mesh
 
 ### Implementation bugs
 
-[X] Fixed 〜 ano_meshoptimizer.c:282 〜 ano_build_meshlets clamps max_vertices/max_triangles only from above and skips the max_vertices < 3 / max_triangles < 1 rejection its sizing twin ano_build_meshlets_bound enforces at :85, so build(indices {0,1,2}, max_vertices 2) returns 1 meshlet with vertex_count 3 where bound() returned 0 〜 a caller sizing buffers from bound() per the header contract hands build zero-length arrays and takes a heap overwrite, and the emitted meshlet breaks the max_vertices promise the meshlet_vertices layout is built on 〜 test: anotest_meshguard
+[X] Fixed: ano_meshoptimizer.c:282: ano_build_meshlets skipped max_vertices<3 / max_triangles<1 reject that bound enforces; buffer sized from bound overruns. test: anotest_meshguard
 - seam-validation
-- fix (2026-07-24) 〜 ano_build_meshlets rejects max_vertices < 3 / max_triangles < 1, the same acceptance domain as ano_build_meshlets_bound
+- fix (2026-07-24): build rejects same acceptance domain as bound.
 
-[X] Fixed 〜 ano_meshoptimizer.c:955 〜 ano_simplify_ex runs the link/tetra collapse-validity exclusion only when the growth guards are on (maxEdge2 != FLT_MAX), and ano_simplify calls it with edge_len_factor 0, so the base public API executes topologically illegal collapses its own guards-on twin rejects: one rim collapse on a 3-triangle cone fan rewrites a surviving triangle onto the remaining rim pair and the output is the same face twice 〜 two coincident opposite-wound triangles, a zero-volume sack that z-fights and rides straight into LOD chains against the header's degenerate-dropping promise 〜 test: anotest_meshsimplifyguard
+[X] Fixed: ano_meshoptimizer.c:955: link/tetra collapse exclusion only when growth guards on; ano_simplify ran illegal collapses. test: anotest_meshsimplifyguard
 - feature-gated-check
-- fix (2026-07-24) 〜 the link/tetra collapse-validity exclusion runs on the guards-off ano_simplify path too
+- fix (2026-07-24): exclusion runs on guards-off path too.
+
 
 ## Music
 
 ### Interface-level bugs and logic inefficiencies
 
-[X] Fixed 〜 music_host.c:193 〜 ano_music_set_override("cadence_policy", v) refuses unknown names but accepts any value, casting (int8_t)v unchecked (the config seam memcpys cadencePolicies just as blind at :65), and policy_of returns the pin verbatim ahead of every other source (music_conductor.c:132), so any value outside {-1..2} indexes the [3]-sized policy tables out of bounds behind guards that only exclude NONE 〜 CADENCE_TARGET[3] (music_harmony.c:119) reads PRE_CADENCE_FUNCTION's 'D' as cadence chord degree 68, ano_chord_symbol then derefs ROMAN[67] == NULL and the engine segfaults on the composing (audio) thread at the first phrase's cadence lookahead; DEGS (music_melody.c:517) and ARRIVE/APPROACH/PNAME (music_verify.c:752) share the one-sided guard, and the raw value is republished to gameplay in AnoMusicMeaning.cadencePolicy against its documented AnoCadencePolicy contract 〜 test: anotest_musiccadenceguard
+[X] Fixed: music_host.c:193: cadence_policy override accepted any value; OOB policy table index; ROMAN NULL deref on compose thread. test: anotest_musiccadenceguard
 - seam-validation
-- fix (2026-07-24) 〜 the cadence_policy pin and the config cycle are validated against AnoCadencePolicy at ingress
+- fix (2026-07-24): cadence_policy pin and config cycle validated against AnoCadencePolicy.
 
-[X] Fixed 〜 music_host.c:194 〜 ano_music_set_override("mode", v) accepts any value, casting (int)v unchecked, and the config seam copies cfg.mode just as blind (:58); the conductor pins either verbatim 〜 the only refusal is exactly ANO_MODE_NONE (music_conductor.c:882-886 per phrase with mapper, :728-731 at init) 〜 and the (uint8_t) casts at :734/:892 launder negatives into 0..255 instead of rejecting, so every bar hands the raw mode to ano_mode_intervals whose `return table[mode]` (music_theory.c:58) indexes a static [7][7] table unchecked: mode 99 gives ano_scale_pcs a pointer ~650 bytes past the 49-byte table, -3 (laundered to 253) ~1.77 KB past, read seven-wide on the composing (audio) thread every bar, and the same raw value is republished to gameplay in AnoMusicMeaning.mode against its documented AnoMode contract (anoptic_music.h:451) and rides AEVT_MUSIC_BAR engine-wide (the HUD consumer at main.c:614 survives only because % 7 of the laundered non-negative int lands in range) 〜 test: anotest_musicmodeguard
+[X] Fixed: music_host.c:194: mode override accepted any value; ano_mode_intervals table OOB every bar. test: anotest_musicmodeguard
 - seam-validation
-- fix (2026-07-24) 〜 the mode pin and the config mode are validated against AnoMode before either reaches ano_mode_intervals
+- fix (2026-07-24): mode pin and config mode validated against AnoMode.
 
-[X] Fixed 〜 music_host.c:66 〜 the config seam copies cadencePolicyCount unvalidated while clamping its sibling motifLibraryCount to ANO_SIG_MAX a few lines below (:101), and ano_engine_init adopts it wholesale (music_conductor.c:702), so any count > 8 sends policy_of's explicit-cycle arm past the int8_t cadencePolicies[8] array (music_conductor.c:147): count 12 makes phrase 8 read the count field's own low byte (12) as its cadence policy, an out-of-enum value that rides the :193 entry's one-sided != NONE guard chain (CADENCE_TARGET at music_harmony.c:119, DEGS at music_melody.c:517, ARRIVE/APPROACH/PNAME at music_verify.c:752) and is republished to gameplay in AnoMusicMeaning.cadencePolicy against its AnoCadencePolicy contract (anoptic_music.h:454), while counts >= 2^31 flip the (int) cast negative so phrase % count returns the raw phrase, an index growing without bound as the piece runs; in practice the count-12 walk segfaults at phrase 8's cadence lookahead (ROMAN NULL deref, music_theory.c:238 via :261) on the composing (audio) thread 〜 test: anotest_musiccadcountguard
+[X] Fixed: music_host.c:66: cadencePolicyCount copied unvalidated; count>8 walks past cadencePolicies[8]. test: anotest_musiccadcountguard
 - seam-validation
-- fix (2026-07-24) 〜 cadencePolicyCount is clamped to the 8-slot cycle array like its motifLibraryCount sibling
+- fix (2026-07-24): cadencePolicyCount clamped to 8-slot cycle like motifLibraryCount.
 
 ### Implementation bugs
 
-[X] Fixed 〜 music_host.c:124 〜 expand() clamps motifLibraryCount to ANO_SIG_MAX but copies each authored motif's n verbatim, and ano_director_init repeats the verbatim copy on the internal AnoEngineConfig path, so a config with n > ANO_MOTIF_MAX reaches the realizers and transforms that iterate n while writing 32-wide buffers 〜 ano_motif_invert (music_motif.c:186), pitches_at (:338), ano_realize_faithful (:399) 〜 on the first ano_music_advance_bar: n = 33 is a one-past stack write, and n is a full uint32_t, so a large value runs to gigabytes; ASan pins the smash in pitches_at at offset 240, one past p[ANO_MOTIF_MAX] 〜 test: anotest_motifboundguard
+[X] Fixed: music_host.c:124: expand copied motif n verbatim; n>ANO_MOTIF_MAX overran 32-wide buffers. test: anotest_motifboundguard
 - fixed-array-overflow
-- fix (2026-07-25) 〜 both ingress seams clamp n to ANO_MOTIF_MAX beside the existing mode/cadence validation; static_asserts weld the rhythm/contour extents and the director library extents to the clamp bound. Identity on every valid input: the CPython-parity digest suite and a 132-fold differential sweep across the full valid domain are byte-identical
+- fix (2026-07-25): both ingress seams clamp n to ANO_MOTIF_MAX; static_asserts weld extents.
 
-[X] Fixed 〜 music_arp.c:102 〜 ano_generate_arp emits one event per meter slot into AnoArpResult.events[ANO_METER_MAX_SLOTS] with no bound, but ano_meter_slots exceeds the 32-slot cap for any meter past 8 quarters (9/4 is 36, 12/4 is 48) and ano_music_create accepts such meters unvalidated, so at noteDensity > 0.65 the loop writes the tail past the stack array inside ano_engine_advance_bar 〜 the 33rd write lands on eventCount itself, recycling the tail into events[0..2] and silently truncating the bar to 3 events on top of the stack stomp 〜 the metric-weights twin at music_ir.c:63 clamps exactly this and the arp does not 〜 test: anotest_musicarpguard
+[X] Fixed: music_arp.c:102: arp emitted past ANO_METER_MAX_SLOTS for meters past 8 quarters. test: anotest_musicarpguard
 - fixed-array-overflow
-- fix (2026-07-24) 〜 arp slot counts are clamped to ANO_METER_MAX_SLOTS, keeping events[] and the u32 skip mask in domain
+- fix (2026-07-24): arp slot counts clamped to ANO_METER_MAX_SLOTS.
 
-[X] Fixed 〜 music_perc.c:121 〜 ano_generate_perc's compound branch writes the grouped-kick pickup kick[slots - 2] into bool kick[ANO_METER_MAX_SLOTS] at noteDensity > 0.75, but ano_meter_slots is 36 for 9/4 (48 for 12/4), so the write lands past the stack array and the sorted-set readback then reads kick[32..35] off the frame as phantom kicks; the same 32-wide shape breaks the hat lane 〜 AnoGroove.hatDrops is a u32 slot bitmask and the shifts at :79 (1u << s) and :154 (hatDrops >> s) are UB for slot ≥ 32, wrapping on x86/arm so mask bits for slots 0..3 silently drop the hats at 32..35 〜 and the widest legal bars overrun the emit buffers outright (9/4 can push ~55 hits into AnoPercResult.events[48], 12/4 ~68 into the Hit hits[64] scratch); reached like the arp twin 〜 music_host.c:56 copies the config meter unvalidated 〜 test: anotest_percmeterguard (pins the :154 wrap deterministically; the :121 stack write executes in the same failing call)
+[X] Fixed: music_perc.c:121: perc kick/hat past ANO_METER_MAX_SLOTS; shift UB for slot>=32; emit buffers overrun. test: anotest_percmeterguard
 - fixed-array-overflow
 - shift-ub
-- fix (2026-07-24) 〜 perc slot counts are clamped to ANO_METER_MAX_SLOTS and the hit scratch and emit buffers are capped
+- fix (2026-07-24): perc slots clamped; hit scratch and emit buffers capped.
 
-[X] Fixed 〜 music_voicing.c:114 〜 ano_voice_chord builds its candidate table in a plain function-scope static (static Cand cands[256], 6 KiB, comment "single-threaded conductor context"), shared across every engine in the process, while the module's own hosting design (ANOPTIC_MUSICGEN.md seek: rebuild a second engine off-thread while the callback-hosted composer keeps advancing the live one) runs two engines through advance_bar -> generate_pad -> ano_voice_chord concurrently; the dedupe scan, cost pass, and final out[] copy read entries the other thread is rewriting, so a wrong pad voicing is selected and enters st->prevVoicing 〜 the anoptic_music.h:481 contract "Same config+seed+bar => byte-identical" breaks the moment any second engine composes concurrently: the off-thread seek snapshot is not the piece linear play would have produced (ACMD_MUSIC_SEEK adopts audibly different music, musicdrive's sample-identical-seek invariant fails), the live bar can sound a foreign chord, and TSan confirms the write-write race on ano_voice_chord.cands from both threads 〜 test: anotest_musicguard
+[X] Fixed: music_voicing.c:114: ano_voice_chord cands[256] function-scope static; concurrent engines race. test: anotest_musicguard
 - shared-mutable-state
-- fix (2026-07-25) 〜 cands is static thread_local, landed after the verify gate proved the buffer call-transient (candCount resets to zero each call and bounds every read, so per-thread instances are observationally identical single-threaded); music_theory.c:48's lazy bake 〜 the module's only other mutable static 〜 is deleted for a const MODE_INTERVALS table measured byte-identical to the bake loop's output and welded to ANO_MODE_COUNT; src/music now holds no mutable file-scope state. TSan runs the guard clean where it confirmed the race pre-fix. Settles the open decision by dissolving it 〜 see "Settled open decisions"
+- fix (2026-07-25): cands thread_local; MODE_INTERVALS const table; no mutable file-scope state in src/music.
 
-[X] Fixed 〜 music_voicing.c:120 〜 ano_voice_chord takes V from cfg->voices with no relation to MAX_VOICES: AnoVoicingConfig is public (music_theory.h:147) and only ano_voicing_config_default's voices = 4 is produced in tree, but a caller constructing voices > 6 overruns options[][MAX_VOICES], the combo walk, Cand.p, and the caller's out[6] at the final copy 〜 the 2026-07-25 _Static_assert pins MAX_VOICES to the signature's extent but cannot constrain a runtime field, so the fix home is a clamp or reject at the function's single ingress 〜 found during the settlement pass; verifying the seam widened it to two siblings at the same ingress: the drop branch filled option rows before trimming, so nine pcs wrote out[count][n] past the 2x6 row extent, and the count==0 fallback blind-copied pcs[0..voices-1] behind pcCount == 0, while voices == 0 walked 256 empty candidates into voicing_cost's cand[-1] read 〜 test: anotest_voicingboundguard
+[X] Fixed: music_voicing.c:120: voices unbound vs MAX_VOICES; options/Cand/out overrun; drop-branch and count==0 siblings. test: anotest_voicingboundguard
 - seam-validation
-- fix (2026-07-25) 〜 the ingress establishes V in [1, MAX_VOICES] or returns the documented 0 (clamp past six, zero voices place nothing); the two siblings landed tier 1 in the same motion 〜 the drop branch bounds its row fill at the write (the same first-voices prefix the post-hoc trim kept, so no pcCount can overrun a row) and the count==0 fallback is deleted (unreachable for pcCount >= 1, and its deletion turns pcCount == 0 from an out-of-bounds read of the caller's array into the documented 0-return); MAX_OCTAVES names the octave cap so the opts extent and its fill bound are one constant. Byte-identical over the valid domain: no clamp fires for voices 1..6, the drop prefix is unchanged, the fallback was dead 〜 anoptic_music's golden vectors and musicdrive stay green. Negative control: pre-fix, ASan pins a stack-buffer-overflow WRITE at music_voicing.c:139 on the voices = 7 trigger and the plain build SIGSEGVs at the same trigger with all three controls green; post-fix all eight checks pass under ASan and plain, suite 56 of 56
+- fix (2026-07-25): V in [1, MAX_VOICES] or return 0; drop row fill bounded; count==0 fallback deleted.
 
 ### Interlink / Composition bugs
 
-[X] Fixed 〜 music_arp.c:106 〜 the arp lane clamps velocity to 1..127 (:87) and then adds its +4 slot accent with no re-clamp (its own header admits "Accented slots add 4 with no re-clamp"), and both inward parameter paths hand it an unclamped velocityCenter: expand() copies the public uint8_t field raw into the internal int (music_host.c:81) and the "velocity_center" override stores and uses the raw double (music_host.c:183, music_conductor.c:599/607 〜 ACMD_MUSIC_OVERRIDE forwards game-supplied values verbatim at ano_synth.c:703), even though the outward bridge clamps velocityCenter to 0..127 (music_ir.c:109), declaring the very domain the inward side never enforces; every other lane clamps its final velocity (bass :62, pad :198, melody velocity_of, counter :253, perc :216, imitation :141) and the arp's default modifier chain is echo-only, which clamps echo copies but not originals, so any velocityCenter >= 140 makes every accented arp slot 〜 slot 0 of every bar, which the skip logic never masks 〜 emit velocity 128..131, violating AnoNoteEvent's documented 1..127 〜 the host copies event cores verbatim into AnoMusicBar (music_host.c:233), music_pump feeds them to ano_synth_live_bar whose one-sided guard (ano_synth.c:429, batch twin :246 〜 tallied Synth-side) stages them, and the voice renders amp = powf(131/127, 1.5) ≈ 1.048 (synth_voices.c:353), above the ceiling any contract-legal velocity can produce, on the downbeat of every bar the arp sounds 〜 in-tree traffic through a plain console override crosses the broken guard, so the music emitter defect and the synth acceptor defect compose end-to-end 〜 test: anotest_musicsynthguard
+[X] Fixed: music_arp.c:106: arp accent +4 after clamp with no re-clamp; velocity 128..131 into synth. test: anotest_musicsynthguard
 - seam-validation
-- fix (2026-07-24) 〜 the arp accent is re-clamped to 1..127, so accented slots cannot emit velocity 128..131
+- fix (2026-07-24): arp accent re-clamped to 1..127.
+
 
 ## Render / Vulkan backend
 
 ### Interface-level bugs and logic inefficiencies
 
-[X] Fixed 〜 shadow_casters.c:97 〜 register_static_shadow used the producer-supplied RenderLightType as a direct index into RendererState.shadowTypeUsed[3] 〜 read at :97, written at :114 〜 while nothing between ano_render_submit (a bare SPSC push) and the array validated it: apply.c:132 forwarded (uint32_t)cmd.light.type raw. rtSingleFree/rtSingleFreeCount/rtPointFree/rtPointFreeCount sit immediately after the array in structs.h, so type 7 aliased rtSingleFreeCount and type 10 rtPointFreeCount: with a drained runtime pool the budget test read that 0, passed, and the += 1 resurrected an empty free-list, handing the next runtime caster a frustum block already owned by a live light; larger types read and wrote arbitrarily far past RendererState, and the same raw value rode ShadowFrustumConfig.lightType and LightData.type to the shaders 〜 test: anotest_shadowtypeguard
+[X] Fixed: shadow_casters.c:97: RenderLightType used as shadowTypeUsed[3] index raw; OOB aliased free-list counts. test: anotest_shadowtypeguard
 - seam-validation
-- fix (2026-07-25) 〜 tier 1 index: `shadow_static_budget()` sole decode; out-of-domain type has no row (NULL, shadowless). Tier 3 weld: `LIGHT_TYPE_COUNT` + `_Static_assert` on `shadowTypeUsed[]` (now light_types.h). Tier 4: `gate_light_type()` at drain ingress for budget, ShadowFrustumConfig.lightType, LightData.type. Delta: out-of-domain CREATE/UPDATE drops light payload only; LIGHT_ATTACH dropped; LIGHT_UPDATE dropped when mask names TYPE. Pinned by anotest_shadowtypeguard
+- fix (2026-07-25): shadow_static_budget sole decode; LIGHT_TYPE_COUNT weld; gate_light_type at drain.
 
-[X] Fixed 〜 render_slots.c:35 〜 logical_reserve covers render_id by growing to need = render_id + 1u, so the module's own sentinel 0xFFFFFFFF (ANO_RENDER_SLOT_UNMAPPED, render_slots.h:16) wraps need to 0, ensure_cap's need <= *cap arm reports success with nothing allocated (:19), the UNMAPPED-init loop runs zero times, and render_slots_alloc consumes a physical slot then stores it at logicalToSlot[0xFFFFFFFF] (:79) 〜 a wild write ~16 GiB past the map, or from a NULL map on a fresh table, on the render master thread, with the reverse map left holding UNMAPPED so the consumed slot is invisible to picking and can never be retired; nothing on the way in excludes the sentinel: render_id is the producer's namespace ("logical name", anoptic_render.h:399), ano_render_submit is a bare ring push (ano_render_bridge.c:102), apply.c forwards cmd.render_id and the RCMD_BULK_CREATE id array raw (:125/:167 〜 the bulk twin hits the same wrap at render_slots.c:92-:93), and the alloc contract's one invariant "render_id unmapped" (render_slots.h:66) is vacuously true of 0xFFFFFFFF, while the resolve twin guards this exact domain edge (:102) 〜 test: anotest_slotsentinelguard
+[X] Fixed: render_slots.c:35: logical_reserve on UNMAPPED sentinel wraps need to 0; wild write at logicalToSlot[0xFFFFFFFF]. test: anotest_slotsentinelguard
 - checked-arithmetic
-- fix (2026-07-24) 〜 the UNMAPPED sentinel is rejected at the alloc/reserve seam, so render_id + 1u can no longer wrap need to 0
+- fix (2026-07-24): UNMAPPED rejected at alloc/reserve seam.
 
-[X] Fixed 〜 apply.c:125 〜 the RCMD_CREATE arm forwards cmd.render_id into render_slots_alloc with no mapped-check on either side of the seam 〜 the alloc contract's one invariant "render_id unmapped" (render_slots.h:66) is enforced by nobody: alloc stores blind (render_slots.c:79-:80), and render_id is the producer's namespace arriving through a bare ring push 〜 so a duplicate CREATE of a live id mints a second physical slot, overwrites the forward map, and leaves the old slot's reverse entry holding the id: the old slot is stranded live forever (not free-listed, not quarantined, unreachable by resolve 〜 retire only ever finds the new slot via render_slots.c:125 and compact's peel loop at :181 never sees it) with its GPU entity entry still staged from the first CREATE so the cull pass draws a permanent undestroyable ghost, and render_slots_render_id_of(oldSlot) keeps answering the id (:120) so the pick readback (profiling.c:174) emits REVENT_PICK_RESULT naming a render_id the ECS may have retired and recycled for a different entity; the bulk twin overwrites identically at render_slots.c:93, and the light sibling on the same bridge guards exactly this shape (light_registry.c:89 refuses double-attach, apply.c:250 drops it) 〜 test: anotest_slotdupguard
+[X] Fixed: apply.c:125: RCMD_CREATE/BULK_CREATE no mapped-check; duplicate id strands old slot as undestroyable ghost. test: anotest_slotdupguard
 - seam-validation
-- fenced (2026-07-25) 〜 one of the seven resource-management entries the remediation campaign deliberately left open: the render-slot ledger's custody chain cannot be settled a call site at a time, and every round's RCMD_CREATE / RCMD_BULK_CREATE arm is byte-identical by fence. anotest_slotdupguard stays red on purpose.
-- fix (2026-07-25) 〜 tier 4 at the drain ingress, consumer-side where the light sibling's refusal lives: RCMD_CREATE refuses a render_id render_slots_resolve reports live and drops the command with an ANO_ERROR naming it (the light sibling drops silently; this seam names the offender because the producer's namespace is the one thing the diagnostic can still say), placed ahead of ensureEntityCapacity so a duplicate never triggers growth; RCMD_BULK_CREATE validates the whole batch up front and drops it whole through free_owned_bulk 〜 batch-atomic, a partial spawn being the partial-publish defect by another road. Tier 1 declined: a duplicate cannot be made unrepresentable while render_id arrives by bare ring push; tier 2 declined for the same transport reason the shadowtype fix recorded. Layered backstop table-side: alloc_range now refuses any mapped id mid-walk (see render_slots.c:92), covering callers without the pre-screen and the intra-batch duplicate no consumer-side scan sees cheaply. Formerly pinned by anotest_slotdupguard, red through the campaign and removed in the 2026-07-25 suite consolidation; verified by review and green suites, not a red-to-green flip
-- amended (2026-07-26) 〜 the consumer pre-screen collapsed once the table became self-defending: bulk_ids_mapped is deleted, the RCMD_BULK_CREATE arm hears alloc_range's [[nodiscard]] return and indexes slots as base + e, so a refused batch never reaches the staging loop and every refusal cause 〜 live id, intra-batch duplicate, sentinel, capacity, OOM 〜 drops loudly through one arm; free_owned_bulk is deleted for ano_render_command_release, the documented sole decode point it duplicated. The single-CREATE refusal hoisted to the drain head ahead of gate_light_domain, so a dropped duplicate logs one true ERROR instead of two with one false. The bulk arm now follows the allocator-refuses / consumer-hears pattern the original comment had miscited
+- fenced (2026-07-25): resource-management entry left open; anotest_slotdupguard stayed red on purpose.
+- fix (2026-07-25): CREATE refuses live render_id; BULK validates batch-atomic; alloc_range refuses mapped mid-walk.
+- amended (2026-07-26): consumer pre-screen collapsed; bulk hears alloc_range; free_owned_bulk deleted for ano_render_command_release.
 
 ### Implementation bugs
 
-[X] Fixed 〜 swapchain.c:428 〜 createImageView returned an indeterminate local on failure: `VkImageView imageView;` was passed to vkCreateImageView, whose failure arm only logged before `return imageView`, and Vulkan leaves output parameters undefined when a command fails, so callers received stack bytes as a live VkImageView. Ten sites stored that value into live render state, createImageViews reported unconditional success, and cleanupSwapChain fed the garbage to vkDestroyImageView 〜 an invalid-handle VUID breach, with the attachments-side VK_NULL_HANDLE teardown gates comparing against garbage and passing 〜 test: anotest_imageviewguard
+[X] Fixed: swapchain.c:428: createImageView returned indeterminate local on failure; garbage VkImageView stored. test: anotest_imageviewguard
 - no-abort
-- fix (2026-07-25) 〜 tier 1: return driver's out-param only on success; error arm returns VK_NULL_HANDLE (initializer layered). Failure propagates through createImageViews / recreateSwapChain / depth / Hi-Z. Success unchanged. Pinned by anotest_imageviewguard, anotest_attachviewguard
+- fix (2026-07-25): return out-param only on success; else VK_NULL_HANDLE.
 
-[X] Fixed 〜 commands.c:201 〜 stagingTransfer's copy-failure arm was dead code: copyBuffer manufactured `return true` and neither single-time-command helper looked at a VkResult, so a host-to-VRAM staging copy that never executed reported success to ano_vk_text_init's ok-chain and the overlay sampled device-local curve/glyph buffers the data never reached; a failed vkAllocateCommandBuffers additionally rode its undefined out-param handle through vkBeginCommandBuffer, vkCmdCopyBuffer and vkQueueSubmit as invalid-handle VUID breaches 〜 test: anotest_stagingcopyguard
+[X] Fixed: commands.c:201: stagingTransfer copy-failure arm dead; false success; invalid CB handles on alloc fail. test: anotest_stagingcopyguard
 - no-abort
-- fix (2026-07-25) 〜 tier 1, top of the pyramid: the status flows out of the chain that produced it 〜 each helper reports what its own call returned instead of a caller re-deriving it 〜 and stagingTransfer gained a single discharge point so the newly live failure arm cannot orphan anything. Changing endSingleTimeCommands from void to bool was declined: eight unmodifiable guard files define the void signature as a link seam, so the richer entry point is a suffixed checked variant with a thin void face, mirroring createImage/createImageShared already in tree. Custody consequence recorded rather than designed around: arming the arm made the pre-existing orphan in its body reachable, so the vkDestroyBuffer now dominates both arms. Two further deltas 〜 a rejected submit is no longer waited on (the old vkWaitForFences with UINT64_MAX on a fence the queue never received was an unbounded hang), and a failed begin frees its command buffer. Not pinned: the CB/fence ledger balance across the new arms. Pinned by anotest_stagingcopyguard, whose triggers demand a failing submit and a failing allocation both surface as failure with the staging buffer discharged and no poisoned handle consumed
+- fix (2026-07-25): helpers report own VkResult; stagingTransfer single discharge; checked endSingleTimeCommands variant.
 
-[X] Fixed 〜 texture.c:415 〜 createTextureImage discarded createDataBuffer's bool and consumed the out-params regardless, so a refused staging acquire produced a memcpy of texWidth*texHeight*4 bytes through NULL (the arena-exhaustion arm) or through an indeterminate stack pointer (the vkCreateBuffer arm), and the run-on recorded vkCmdCopyBufferToImage from an invalid buffer handle; the sibling createTextureImageFromPixels repeated the shape 〜 test: anotest_texacquireguard
+[X] Fixed: texture.c:415: createTextureImage ignored createDataBuffer bool; memcpy through NULL/indeterminate. test: anotest_texacquireguard
 - no-abort
-- fix (2026-07-25) 〜 tier 1 on both sides of the seam: the callee's out-params became total, so "refused" is a representable, readable state rather than an indeterminate one, and the caller's consumption sits on the branch that performed the write. A tier-2 proof-token minted only by a successful acquire was declined 〜 the mapped pointer and the VkBuffer are consumed by memcpy and vkCmdCopyBufferToImage, which take raw types, so the unwrap becomes the new unchecked site; [[nodiscard]] is the tier-3 weld that makes the compiler remember the remaining call sites. Behaviour delta: a refused acquire returns false from both upload paths with nothing acquired, written or destroyed, and the file path releases its stbi decode buffer on the new arm. The fix sits strictly before acquisition, so the fenced custody span at texture.c:426 is untouched and neither implemented nor foreclosed. Pinned by anotest_texacquireguard, whose pre-fix failure signal was dying in the memcpy
+- fix (2026-07-25): callee outs total; consumption on write branch; [[nodiscard]] weld.
 
-[X] Fixed 〜 scene_buffers.c:35 〜 createMaterialBuffer logged ANO_FATAL on a failed vkCreateBuffer and fell through 〜 ano_log never aborts 〜 so vkGetBufferMemoryRequirements was fed the failed call's out-param handle (undefined on error), gpu_alloc sized VRAM from the resulting garbage, the dead handle was bound, and the creator returned true, publishing a per-frame buffer set into every material descriptor write; createTransformBuffer repeated the shape on the transform lane and createCullingBuffers discarded all six of its create results with no test at all, while the file's own siblings proved the intended contract by returning false on the identical check 〜 test: anotest_scenebufferguard
+[X] Fixed: scene_buffers.c:35: createMaterialBuffer/Transform/Culling logged FATAL and fell through; published dead handles. test: anotest_scenebufferguard
 - no-abort
-- fix (2026-07-25) 〜 tier 1: the status is already produced by the API, so putting the read on the branch that performed the write needs no new predicate 〜 in the two log-and-fall-through arms the branch existed and only the exit was missing. The stronger tier-1 variant of folding all fourteen sites into one create+alloc+bind helper was declined and recorded as a refine follow-up rather than landed unverifiable: the sites differ in usage, memory properties and mapping. No higher rung exists. Behaviour delta: unchanged on every success path; a refused buffer aborts its creator with false, which ano_vk_create_scene_resources' && chain already turns into an initVulkan unwind. Pinned by anotest_scenebufferguard (9 failures to 0), whose whole-run ledger asserts no buffer is destroyed twice or destroyed unminted
+- fix (2026-07-25): refused buffer returns false; creator abort into initVulkan unwind.
 
-[X] Fixed 〜 texture.c:437 〜 generateMipmaps' status was discarded while its only failure arm 〜 the driver reporting no SAMPLED_IMAGE_FILTER_LINEAR for the format 〜 returned before recording a single barrier or blit, so on such a driver the upload returned true with the image parked in TRANSFER_DST_OPTIMAL and mips 1..N-1 never written, while the bindless descriptor pins SHADER_READ_ONLY_OPTIMAL: a wrong-layout sample of undefined content on every draw, plus the fallback whole-chain transition sitting commented out beneath the call 〜 test: anotest_texmipchainguard
+[X] Fixed: texture.c:437: generateMipmaps status discarded; unfilterable format published half-written wrong layout. test: anotest_texmipchainguard
 - no-abort
 - feature-gated-check
-- fix (2026-07-25) 〜 tier 1: the mip count and the blit capability are decided by one query at one point, so "a chain longer than the format can produce" is unreachable by construction, and the generator's requirement was narrowed to the case that actually records blits, which is what makes the clamp deliver a working single-mip texture instead of a failed load. The tier-5 shape 〜 check the bool and return false 〜 was declined: it would fail loads on formats the engine can still render. [[nodiscard]] on generateMipmaps plus the checked call site are the welds that keep "true return implies published chain" compiler-enforced. Behaviour delta: on a filterable format (every desktop driver for the two formats in use) nothing changes at all; on an unfilterable one the texture loads with a single mip and an ANO_WARN instead of being published half-written 〜 which is what the flag16 TODO's 16-bit formats will need. Pinned by anotest_texmipchainguard
+- fix (2026-07-25): mip count and blit capability decided together; unfilterable loads single mip + WARN.
 
-[X] Fixed 〜 vulkanMaster.c:505 〜 initVulkan's createDepthResources and createHiZResources arms logged ANO_FATAL "Quitting init" and fell through with no unInitVulkan and no return, so a failed depth or Hi-Z creation kept initializing: layouts and pipelines built against a depthFormat never set, updateHiZDescriptorSets wrote never-created views into live per-mip sets, the hizValidOrdinal warmup gate stayed 0 so the cull trusted a pyramid that does not exist from the first frame, and initVulkan returned true, handing main a "healthy" renderer with no depth attachment 〜 while five sibling arms in the same function prove the intended contract with unInitVulkan(); return false 〜 test: anotest_initdepthguard
+[X] Fixed: vulkanMaster.c:505: depth/Hi-Z FATAL fall-through; initVulkan returned true with no depth. test: anotest_initdepthguard
 - no-abort
-- fix (2026-07-25) 〜 tier 1, structural, nothing above it: the remainder of init is put on the branch that actually created the resource, adopting the shape the five siblings already prove. No lower tier was needed 〜 a runtime seam or a per-consumer guard would have to re-derive, at each of about twenty downstream steps, a fact the failing call already knows. Behaviour delta: a failed depth/Hi-Z creation tears down and returns false from initVulkan into main's existing init-failure path; the success path is unchanged and no per-frame cost is added. Pinned by anotest_initdepthguard, which compiles the real vulkanMaster.c TU and asserts, per injected arm, that init does not report success, that no descriptor write consumes the absent resources, and that init does not run to completion
+- fix (2026-07-25): failed depth/Hi-Z tears down and returns false like sibling arms.
 
-[X] Fixed 〜 slot_upload.c:221 〜 ensureEntityCapacity grew eight buffer groups through an && chain in which every arm published as it succeeded: slot_upload_grow_device destroyed the SlotUpload's old VkBuffer and swapped in the replacement, growBufferSet did the same per frame, while every re-point of the descriptor sets naming those handles ran only after the whole chain. A mid-chain OOM therefore returned false with the prefix arms' old VkBuffers destroyed and four descriptor writes still naming them, SlotUpload.capacity already at newCap and the slots ceiling still at oldCap; the ANO_FATAL is plain logging and both callers drop the spawn and keep recording frames, so the next frame bound destroyed buffers under exactly the memory pressure that caused the failure 〜 test: anotest_entitygrowguard
+[X] Fixed: slot_upload.c:221: ensureEntityCapacity mid-chain OOM published destroyed buffers under live descriptors. test: anotest_entitygrowguard
 - partial-publish
-- fix (2026-07-25) 〜 tier 1, commit-last: construction and installation are now separate total and partial halves 〜 build every replacement first, and only once all eight groups plus the host mover arrays exist does the epilogue install them and destroy what they replace; on failure the built replacements are discharged and the function returns with buffers, capacities and descriptor sets bit-identical to entry. No higher tier exists and no lower one was needed: nothing is checked at the fault site, the bad state is simply not constructible. gpu_alloc is a bump arena with no per-allocation free, so building ahead of destroying costs arena bytes on the failure path by design, not as a leak. ensureEntityCapacity gained [[nodiscard]] so the refusal cannot be dropped. Behaviour delta: a refused growth is a no-op the caller can safely keep rendering through. Pinned by anotest_entitygrowguard, and the rollback itself pinned a round later by anotest_growrollbackguard across all nine capacity faces
+- fix (2026-07-25): commit-last; build all replacements then install; failure discharges built replacements.
 
-[X] Fixed 〜 descriptors.c:39 〜 createDescriptorPool's COMBINED_IMAGE_SAMPLER budget enumerated tonemap/view, four shadow, Hi-Z pyramid+depth per mip, cull binding 11 per view and one unlabeled text-overlay sampler, but had no term for the binding-13 Hi-Z sampler layouts.c adds to each of the six global sets when taskCull is on: measured demand with the shipped constants was 216 against a 219 budget with taskCull off and 222 against 219 with it on, so on exactly the mesh+task hardware where taskCull defaults on the pool's last consumer 〜 the text overlay's sets 〜 took VK_ERROR_OUT_OF_POOL_MEMORY and the overlay, with the UI riding those sets, was silently disabled 〜 test: anotest_descpoolguard
+[X] Fixed: descriptors.c:39: COMBINED_IMAGE_SAMPLER budget missed binding-13 Hi-Z sampler under taskCull; overlay OOM. test: anotest_descpoolguard
 - feature-list-drift
-- fix (2026-07-25) 〜 tier 1: both binding-13 sites go through `global_set_samplers()` mirroring the layout predicate. Shared demand table with layouts.c declined (fenced). Delta: taskCull on → overlay/UI allocate (222 of 225). Pinned by anotest_descpoolguard
+- fix (2026-07-25): binding-13 via global_set_samplers(); taskCull on allocates overlay.
 
-[X] Fixed 〜 window.c:214 〜 initWindow guarded glfwInit's failure but took glfwCreateWindow's result unchecked into eleven GLFW entry points that each require a live window handle 〜 an assert under a debug GLFW, a straight NULL deref in release. Because the function never returned, the caller's correct NULL arm (FATAL + unInitVulkan) never ran, so boot died inside GLFW instead of unwinding, on exactly the configurations that produce a NULL: a headless or dead display (GLFW_PLATFORM_ERROR) and a 0x0 configured resolution (GLFW_INVALID_VALUE) 〜 test: anotest_windowcreateguard
+[X] Fixed: window.c:214: glfwCreateWindow unchecked; NULL into eleven GLFW calls. test: anotest_windowcreateguard
 - no-abort
-- fix (2026-07-25) 〜 tier 4 at ingress: refused window logs GLFW error and returns NULL; init unwinds through unInitVulkan. Success path byte-identical. Pinned by anotest_windowcreateguard
+- fix (2026-07-25): refused window logs and returns NULL; init unwinds.
 
-[X] Fixed 〜 commands.c:82 〜 every per-view/per-frame camera UBO was minted VK_SHARING_MODE_EXCLUSIVE and then bound into lightcullSet binding 0, which the async light-cull dispatch consumes on the compute queue whenever asyncLc is on. No ownership transfer exists anywhere 〜 every barrier in the tree passes VK_QUEUE_FAMILY_IGNORED 〜 so the compute family's reads of view/proj/near/far/clusterDims were spec-undefined, while every sibling binding in the same set already got buffer_share_async_compute. The miss was structural rather than a forgotten branch: the entry point had no parameter to arm 〜 test: anotest_uboshareguard
+[X] Fixed: commands.c:82: camera UBO EXCLUSIVE while async light-cull reads on compute; no ownership transfer. test: anotest_uboshareguard
 - feature-list-drift
-- fix (2026-07-25) 〜 tier 1: `createDataBufferShared` owns family list; `createDataBuffer` is EXCLUSIVE face. Delta: asyncLc on → camera UBO CONCURRENT {graphics, compute}; else byte-identical. Pinned by anotest_uboshareguard
+- fix (2026-07-25): createDataBufferShared owns family list; asyncLc on → CONCURRENT.
 
-[X] Fixed 〜 compute.c:83 〜 ano_vk_init_compute discarded createShaderModule's NULL failure sentinel at all nine mint sites and handed the dead handle to vkCreateComputePipelines as stage.module, with no maintenance5 chained anywhere: on a permissive driver init reported healthy with the update/scatter/cull/Hi-Z/tpsort/lightcull/lightsetup/shadowsetup pipelines minted from a module that was never created, and on a validating one the dispatches are undefined. The sentinel was real (pipeline.c:89) but undocumented at the declaration and honored only by ano_pipeline_task_stage 〜 test: anotest_shadermodguard
+[X] Fixed: compute.c:83: createShaderModule NULL discarded; dead module into vkCreateComputePipelines. test: anotest_shadermodguard
 - no-abort
-- fix (2026-07-25) 〜 tier 1: `ano_pipeline_stage` sole writer of `.module` (grep-verified). Refused mint aborts compute init. Hi-Z module selection bound to `depthMaxResolve` capability, not resolve handle. NULL contract + [[nodiscard]] layered. Pinned by anotest_shadermodguard, anotest_hizresolveguard
+- fix (2026-07-25): ano_pipeline_stage sole .module writer; refused mint aborts compute init.
 
-[X] Fixed 〜 flat.c:90 〜 every graphics-side pipeline builder discarded createShaderModule's NULL sentinel and baked the dead handle into VkPipelineShaderStageCreateInfo.module for vkCreateGraphicsPipelines 〜 twenty-one mints across flat.c (three, feeding all three boot lanes), additive.c, transmission.c, tonemap.c, shadow_pipe.c (six) and text_raster.c (five), against exactly one guarded mint in the tree 〜 test: anotest_gfxshadermodguard
+[X] Fixed: flat.c:90: twenty-one graphics shader mints discarded NULL sentinel. test: anotest_gfxshadermodguard
 - no-abort
-- fix (2026-07-25) 〜 tier 1, same sole-decode gate as compute twin. Refused module aborts builder → initVulkan unwind. Depth-prepass minted complete at the gate; text_raster.c:796 checks createImageView VK_NULL_HANDLE. Pinned by anotest_gfxshadermodguard
+- fix (2026-07-25): same sole-decode gate; refused module aborts builder.
 
-[X] Fixed 〜 record.c:29 〜 recordCommandBuffer was void and called for its side effects only, so the vkBeginCommandBuffer check could only log: every vkCmd* from the query-pool reset to the present barrier, and all five sub-recorder handoffs, landed on a command buffer that may never have entered RECORDING (VUID-vkCmd*-commandBuffer-recording), the trailing vkEndCommandBuffer was a second state breach, and ano_frame_submit handed that buffer to vkQueueSubmit regardless. The asyncLc split repeated the shape twice 〜 a failed prelude end was logged and the prelude submitted anyway, and a failed main begin was logged 〜 while the same module's submit twin already proved the intended contract by returning false on its own failing call 〜 test: anotest_recordbeginguard
+[X] Fixed: record.c:29: recordCommandBuffer void; failed begin still submitted never-recorded CB. test: anotest_recordbeginguard
 - no-abort
-- fix (2026-07-25) 〜 tier 1 welded with tier 3, nothing above it: each of the four command-buffer state-machine calls returns false, which puts the entire vkCmd* stream on the branch that actually put its target buffer into RECORDING and puts drawFrame's submit and present behind the recording status; the weld is the [[nodiscard]] bool signature plus the failure contract documented at the declaration, so the channel cannot be silently dropped the way the void return forced it to be. All four conditions already existed, only their bodies changed, so record.c gains no test and drawFrame gains one predictable branch. Behaviour delta: a refused begin or end skips this frame's submit and present 〜 frame-time bounded degradation, the same shape as the two in-tree twins 〜 instead of submitting a never-recorded buffer; timelineOrdinal is not advanced, so the next frame retries the same ordinal with no timeline desync, and both command buffers are reset at the top of the next drawFrame. Pinned by anotest_recordbeginguard, whose stubs hold a per-CB INITIAL/RECORDING/EXECUTABLE state machine; the signature change required a one-line link-stub retype in anotest_initdepthguard and a discard idiom in the guard's own call, no CHECK touched
+- fix (2026-07-25): begin/end return bool [[nodiscard]]; submit/present behind recording status.
 
-[X] Fixed 〜 slot_upload.c:277 〜 entity growth recreated the per-frame live-transform SSBOs (growBufferSet destroys each old VkBuffer) and re-pointed descriptors through updateUboDescriptorSets alone, but the shadowsetup compute set's binding 1 is that same SSBO and its only writer, updateShadowDescriptorSets, runs once at init 〜 so from the first growth onward every frame's shadowsetup.comp dispatch read world transforms through a descriptor naming a destroyed buffer, deriving shadow-frustum viewProjs from whatever the driver had reused: shadows permanently detach from their lights, or the device faults, after the first CREATE that pushes slotHighWater past INITIAL_ENTITY_CAPACITY 〜 test: anotest_vkguard
+[X] Fixed: slot_upload.c:277: growth re-pointed UBOs but not shadowsetup binding 1; dispatch read destroyed TransformSSBO. test: anotest_vkguard
 - missed-repoint
-- fix (2026-07-25) 〜 tier 1, one function as the sole re-point point: every descriptor set naming the per-frame TransformSSBO 〜 global/view, cull, update, scatter, lightsetup and now shadowsetup binding 1 〜 is written by updateUboDescriptorSets, so the single call growth already makes covers all of them and a set cannot be left behind. updateShadowDescriptorSets still writes the same handle from the same field at init, so its set stays complete if it is ever re-run after a set reallocation: one source of truth and two idempotent writers, not two sources. The alternative the guard also accepts 〜 having ensureEntityCapacity call updateShadowDescriptorSets 〜 is foreclosed by anotest_entitygrowguard, which links slot_upload.c against exactly one stubbed descriptor seam, and that link-seam constraint is worth carrying: any future "growth must also re-run updateShadowDescriptorSets / updateClusterDescriptorSets / updateHiZDescriptorSets" fix has to land inside updateUboDescriptorSets or that guard stops linking. Behaviour delta: after growth the shadowsetup dispatch reads the live transform buffer. Pinned by anotest_vkguard
+- fix (2026-07-25): updateUboDescriptorSets sole re-point for all TransformSSBO consumers including shadowsetup.
 
-[X] Fixed 〜 texture.c:435 〜 createTextureImage's mip-0 upload passes texture.texWidth as BOTH extents of the buffer->image copy (its sibling createTextureImageFromPixels at :377 passes width, height), so every non-square texture file uploads wrong: landscape (w > h) submits a copy region w rows tall against an h-row image and reads w*(w-h)*4 bytes past the w*h*4 staging buffer (VUID breach on both the image bound and the buffer bound, device-lost territory), portrait (w < h) uploads only w rows and leaves the rest of mip 0 undefined for generateMipmaps to smear down the whole chain; reached from every glTF texture upload (ano_GltfParser.c:270) 〜 test: anotest_texuploadguard
+[X] Fixed: texture.c:435: createTextureImage copy used texWidth for both extents; non-square upload wrong/OOB. test: anotest_texuploadguard
 - copy-paste-error
-- fix (2026-07-24) 〜 copyBufferToImage is handed texHeight as its second extent
+- fix (2026-07-24): copyBufferToImage handed texHeight as second extent.
 
-[X] Fixed 〜 device.c:663 〜 createLogicalDevice's transfer-queue fetch is armed by indices->computePresent 〜 a copy-paste of the compute block directly above it 〜 instead of transferPresent, and the queue-create loop at :537 feeds uniqueQueueFamilies from transferFamily with no presence check at all, so on a device whose families advertise GRAPHICS|COMPUTE without TRANSFER_BIT (spec-legal: the transfer capability graphics/compute imply is optional to report) findQueueFamilies hands back transferPresent=false / transferFamily=UINT32_MAX and createLogicalDevice both creates a queue on family UINT32_MAX inside vkCreateDevice and calls vkGetDeviceQueue(UINT32_MAX) 〜 a VUID breach twice over at engine boot; the converse arm (compute absent, transfer present) would skip the fetch and leave ctx->transferQueue NULL for every geometry_pool_upload submit (geometry.c:339), unreachable today only because graphics implies a compute-capable family 〜 test: anotest_transferqueueguard
+[X] Fixed: device.c:663: transfer-queue fetch armed by computePresent; UINT32_MAX family into vkCreateDevice. test: anotest_transferqueueguard
 - copy-paste-error
-- fix (2026-07-24) 〜 the transfer-queue fetch is armed by transferPresent, the queue-create loop skips absent families instead of passing UINT32_MAX to vkCreateDevice, and transfer falls back to the graphics queue rather than staying NULL
+- fix (2026-07-24): armed by transferPresent; skip absent families; transfer falls back to graphics.
 
-[X] Fixed 〜 record_views.c:302 〜 ano_record_composite places each aux-view inset at y = H - margin - (insetH + margin)*(idx + 1) + margin in uint32 arithmetic before the int32 cast, so swapchain height H ≤ 22 wraps y negative (H=22 gives -1, H=2 gives -14) and the value rides verbatim into vkCmdSetScissor offset.y 〜 a VUID-vkCmdSetScissor-x-00595 breach (scissor offsets must be ≥ 0, UB on real drivers) on every composited frame, with H ≤ 2 additionally emitting a zero-height inset viewport against VUID-VkViewport-height-01772; reachable because the composite runs unconditionally for ANO_VIEW_COUNT 2, imageExtent adopts the surface currentExtent 〜 the raw Win32 client size (swapchain.c:73/:167) 〜 and recreateSwapChain's only floor is the 0x0 wait loop (swapchain.c:340-:345), so while Win32's minimum tracking size protects the sibling x at :301 the client height drags freely into [1,22] 〜 test: anotest_insetscissorguard
+[X] Fixed: record_views.c:302: aux inset y in uint32 wraps negative for small H; scissor VUID breach. test: anotest_insetscissorguard
 - checked-arithmetic
-- fix (2026-07-24) 〜 an aux-view inset that does not fit is skipped instead of wrapping the scissor and viewport origin negative
+- fix (2026-07-24): inset that does not fit is skipped.
 
-[X] Fixed 〜 window.c:192 〜 initWindow's in-bounds monitor arm called glfwGetMonitors(NULL) 〜 GLFW 3.4 asserts count non-NULL then stores *count = 0 unconditionally (external/glfw/src/monitor.c:304-313), a NULL write in release and an abort in debug 〜 and the bound it checked came from a different call at a different time: enumerateMonitors runs at vulkanMaster.c:320, before the only glfwInit() at window.c:173, so its query fails with GLFW_NOT_INITIALIZED and monitors->monitorCount is a permanent 0. The two defects shielded each other: the dead bound made the NULL call unreachable while silently sending every configured fullscreen index down the windowed fallthrough, and fixing the ordering alone would have armed the NULL write 〜 test: anotest_windowcreateguard (selection and provenance cases)
+[X] Fixed: window.c:192: glfwGetMonitors(NULL) plus pre-init enumerateMonitors left monitorCount 0. test: anotest_windowcreateguard
 - two-source-of-truth
-- fix (2026-07-25) 〜 one post-glfwInit query serves both the bound and the array, so the index can never outrun the list, the bad call ceases to exist, and the fullscreen arm is reachable for the first time; the stale Monitors snapshot no longer gates window creation
+- fix (2026-07-25): one post-glfwInit query serves bound and array.
 
-[X] Fixed 〜 gpu_alloc.c:12 〜 findMemoryType probes typeFilter & (1 << i) with i walking to memoryTypeCount - 1, and the legal domain is VK_MAX_MEMORY_TYPES == 32 with the count adopted raw from vkGetPhysicalDeviceMemoryProperties, so a device exposing all 32 memory types evaluates 1 << 31 on the probe of the last type 〜 a signed int shifted into its sign bit, UB under the C23 the build mandates (CMakeLists.txt:26; 6.5.7 kept the C17 "representable in the result type" wording, and this tree's own clang in -std=c23 traps "left shift of 1 by 31 places cannot be represented in type 'int'") 〜 device-gated in consequence: common codegen wraps to INT_MIN and the & happens to select bit 31 correctly, so the live arms are any sanitized build and an optimizer entitled to treat the i == 31 iteration as unreachable 〜 dropping exactly the probe of a device whose only matching type is index 31 into the UINT32_MAX fall-through; the twin at commands.c:173 duplicates the loop verbatim on every createDataBuffer/stagingTransfer type probe, so one fix must land twice 〜 test: anotest_memtypeshiftguard (real gpu_alloc.c TU compiled -fsanitize=shift so the abstract-machine UB is a deterministic halt; an uninstrumented build passes the functional proxy by the very wrap that keeps the bug latent)
+[X] Fixed: gpu_alloc.c:12: 1<<i signed shift UB at i==31 in memory-type probe (commands.c twin). test: anotest_memtypeshiftguard
 - shift-ub
-- fix (2026-07-24) 〜 1u << i in both memory-type probes, so the i == 31 iteration is no longer a signed shift into the sign bit
+- fix (2026-07-24): 1u << i in both probes.
 
-[X] Fixed 〜 ano_GltfParser.c:30 〜 parseGltf goes from cgltf_parse_file/cgltf_load_buffers straight to per-element cgltf_accessor_read_float (:80) and cgltf_accessor_read_index (:96) without ever calling cgltf_validate, the library's only accessor-vs-bufferView and bufferView-vs-buffer byte-range gate; those helpers compute buffer->data + view->offset + accessor->offset + stride*index with no bounds check, and load_buffers only verifies the .bin/base64 payload reaches the declared byteLength, never the accessor math, so a file whose accessor count*stride (or view offset+size) overruns the loaded buffer walks off the end of the heap block 〜 a truncated or hostile asset is read out of bounds during init (a large claimed count reads gigabytes past the block and faults the loader), garbage vertices and out-of-range index values flow into geometry_pool_upload_chain and the GPU index buffer, and parseGltf returns a non-NULL "successfully parsed" asset instead of the NULL its own :25/:31 error paths establish for bad files 〜 test: anotest_gltfguard
+[X] Fixed: ano_GltfParser.c:30: no cgltf_validate before accessor reads; hostile asset OOB; sixteen unchecked callocs. test: anotest_gltfguard
 - seam-validation
-- fix (2026-07-25) 〜 cgltf_validate gates the parse immediately after load_buffers, shaped like the two existing reject arms, so every accessor read downstream is in-contract; in the same motion the sixteen unchecked per-site callocs collapsed into one persistent bump block and one scoped mi_heap scratch block, both sized from post-validate counts and carved at the mat4-mandated 16-byte grain 〜 fourteen failure points retired structurally, and the loader now honors the arena rule
+- fix (2026-07-25): cgltf_validate after load_buffers; one bump + one scratch heap.
 
-[X] Fixed 〜 swapchain.c:110 〜 initSwapChain consumes the by-value SwapChainSupportDetails querySwapChainSupport returns 〜 two arrays calloc'd at :33/:38 (formats, presentModes) 〜 and returns on both arms (:157 failure, :178 success) without freeing either; the struct is a discarded local and no other backend code references the pointers (the only mentions in the tree are the alloc sites, the two choose* consumers, and the struct declaration), so the boot call (vulkanMaster.c:449) orphans both blocks and every resize recreation (recreateSwapChain, swapchain.c:353) orphans two more 〜 formatCount*8 + presentModesCount*4 bytes accrue per recreation without bound under window-drag resize storms 〜 test: anotest_swapleakguard
+[X] Fixed: swapchain.c:110: querySwapChainSupport calloc'd arrays never freed; leak per boot/resize. test: anotest_swapleakguard
 - ownership-leak
-- fenced (2026-07-25) 〜 resource-management entry deliberately left open by the remediation campaign; querySwapChainSupport's two calloc'd arrays and initSwapChain's by-value consumption are byte-identical after four rounds of renderer work in the same file. anotest_swapleakguard stays red on purpose.
-- fix (2026-07-25) 〜 tier 1: freeSupportDetails is the sole discharge point for the two arrays a query result owns 〜 NULL-safe, idempotent (pointers nulled after free), called on both of initSwapChain's exits, which inspection confirms are the only two. Allocator pairing verified: bare calloc under the TU-wide mimalloc override, freed with the file's existing idiom. querySwapChainSupport has exactly one caller repo-wide, so no other owner exists to disturb; recreateSwapChain inherits leak-freedom by construction. Formerly pinned by anotest_swapleakguard (red through the campaign, its interposition counting the orphaned blocks), removed in the suite consolidation; verified by review and green suites
-- amended (2026-07-26) 〜 tier 1 above the tier 1: querySwapChainSupport is now static, module-private and total 〜 every VkResult checked, enumeration into clamped stack arrays (formats[64], modes[16]), a zero-format surface failing closed, a present-mode refusal degrading to spec-guaranteed FIFO 〜 and both selections happen inside it, so it returns a values-only SwapChainSupport {capabilities, format, presentMode}. freeSupportDetails is deleted: a discharge point exists only while ownership escapes the query, and no owned pointer survives in the type, so the leak is now unrepresentable rather than discharged. Two adjacent hazards the audit had flagged close structurally in the same motion 〜 the uninitialized details struct consumed after an unchecked query failure, and the unguarded availableFormats[0] read on a zero-format surface. Query-path heap traffic is zero, and the surface contracted to the module: SwapChainSupportDetails left structs.h and the declaration left instanceInit.h.
+- fenced (2026-07-25): resource-management entry left open; anotest_swapleakguard stayed red.
+- fix (2026-07-25): freeSupportDetails sole discharge on both initSwapChain exits.
+- amended (2026-07-26): query total into stack arrays; values-only SwapChainSupport; freeSupportDetails deleted.
 
-[X] Fixed 〜 render_slots.c:92 〜 render_slots_alloc_range publishes each element's mapping as it walks the batch (logicalToSlot[id] = base+i at :93, slotToLogical[base+i] = id at :94) but advances slotHighWater only in the epilogue (:96), so the mid-batch logical_reserve OOM return at :92 reports UNMAPPED while the already-walked prefix stays mapped into the un-owned high-water region 〜 the one OOM arm in a module that otherwise preserves its invariants explicitly ("Leaves *arr/*cap untouched on OOM" :16, "Quarantine OOM: leak the slot" :132, free-list OOM keeps quarantined :154); the caller cannot hear it (apply.c:167 discards the return and the RCMD_BULK_CREATE resolve loop at :170 stages GPU uploads, base poses and shadow tracking for the phantom prefix slots, all at or past slotHighWater so culling and animation never dispatch them), the next RCMD_CREATE re-hands slot base to a different render_id (:75 highWater++) so two live ids alias one physical slot, and a destroy of the stale id retires the live owner's slot through quarantine into the free-list (:128-:138, :156) while stripping its reverse mapping 〜 the slot is handed out a third time while still owned, exactly the double allocation the frame-gated quarantine exists to prevent 〜 test: anotest_slotrangeguard
+[X] Fixed: render_slots.c:92: alloc_range published mid-batch then OOM; phantom mapped prefix, alias on next CREATE. test: anotest_slotrangeguard
 - partial-publish
-- fenced (2026-07-25) 〜 resource-management entry deliberately left open; the render-slot ledger is one custody chain with apply.c:125 and both are held together. anotest_slotrangeguard stays red on purpose.
-- fix (2026-07-25) 〜 tier 1 for the rollback, tier 4 for the domain: alloc_range_rollback unpublishes the walked prefix in both map directions (the module's own UNMAPPED sentinel, matching retire and init) on every failure arm, restoring the stated OOM discipline; slotHighWater never moved, so nothing else needs undoing. In the same walk, a post-reserve pre-publish check refuses any id already mapped 〜 the walk being the only publisher, that is either a live id from a caller without the seam screen or a duplicate earlier in the same batch, the hole the consumer-side scan cannot see 〜 and the ordering is load-bearing: logical_reserve is what makes the index in-bounds, and its growth path already seeds new entries to the sentinel, verified before the check landed. Formerly pinned by anotest_slotrangeguard, red through the campaign, removed in the suite consolidation; verified by review, the render_slots suite's three in-contract alloc_range call sites, and green suites
-- amended (2026-07-26) 〜 the sentinel pre-pass is deleted (logical_reserve rejects it and the rollback makes the mid-walk refusal indistinguishable, removing an O(count) pass from the success path); reserve and mapped-check fused into one short-circuited arm whose || order carries the in-bounds guarantee; render_slots_alloc gained the same one-line refusal, placed after reserve and before the slot pick so a refusal maps nothing and takes nothing; the header contract now states what the .c enforces, and [[nodiscard]] on alloc_range makes the heard return permanent
+- fenced (2026-07-25): held with apply.c:125; anotest_slotrangeguard stayed red.
+- fix (2026-07-25): alloc_range_rollback unpublishes prefix; mid-walk refuses already-mapped id.
+- amended (2026-07-26): sentinel pre-pass deleted; reserve+mapped fused; alloc same refusal; [[nodiscard]].
 
-[X] Fixed 〜 flat.c:244 〜 flat_init_with_cull discharges its three ano_aligned_malloc'd shader-code buffers (loadFile mints, pipeline.c:55) and minted VkShaderModules only in the success epilogue (:301-:309), so every failure return after the first acquisition orphans whatever is live 〜 :79 strands geomShaderCode, :88 both geometry buffers, :101 all three buffers plus the three modules minted at :90-:92, and the pipeline-create arms :244/:261/:296 strand three buffers plus three-to-four modules (taskModule rides on task lanes) 〜 all stack locals no code outside the function can reach: ano_pipeline_flat_cleanup never sees them and the boot caller returns false without even calling it (pipeline.c:128-:141), the author's own TODO names the missing "garbo removers for the shader buffers and modules" (pipeline.c:122), shadow_pipe.c:160-:161 shares the shape (returns false leaving geomCode/fragCode and geomModule/fragModule/taskModule live), and the :52 unchecked implementations calloc deref'd blind at :244 rides beside the family (text_raster.c:338 checks its identical calloc, proving intent) 〜 reached on all three boot lanes flat/twosided/masked by exactly the host-OOM / missing-or-corrupt .spv arms the returns exist to handle, orphaning memory under the very pressure that made them fire 〜 test: anotest_flatorphanguard
+[X] Fixed: flat.c:244: failure arms after shader acquire orphaned buffers/modules; shadow_pipe same shape. test: anotest_flatorphanguard
 - ownership-leak
-- fenced (2026-07-25) 〜 resource-management entry deliberately left open, and the head of the SPIR-V orphan family now tallied at compute.c:80. The campaign twice declined a tier-1 load+mint+free acquisition helper in this builder precisely because it would have implemented half of this entry inside a shader-module fix; the gate it landed instead sits on neither loadFile nor vkCreateGraphicsPipelines, so nothing here is foreclosed. anotest_flatorphanguard stays red on purpose.
-- fix (2026-07-25) 〜 tier 1: labelled unwind 〜 every buffer and module inert at declaration, every post-acquisition arm exits through fail:, which discharges unconditionally (mi_free ignores NULL, vkDestroyShaderModule ignores VK_NULL_HANDLE); pipelines and layout stay with ano_pipeline_flat_cleanup. The landing widened the entry: flat.c's three-stage mint gate and shadow_pipe's entire outer depth phase 〜 the widest leak in that function 〜 were arms the census never tallied, and shadow_pipe took two labels because its acquisition phases are disjoint. One hazard neutralized en route: loadFile left a refused buffer dangling (see pipeline.c:63), so each refused load re-inerts before unwinding 〜 harmless now the callee is total, kept as defense. Formerly pinned by anotest_flatorphanguard, red through the campaign, removed in the suite consolidation; verified by review and green suites
-- amended (2026-07-26) 〜 the duplicated success/failure discharge lists merged single-exit: flat's one done: label owns the discharge for both paths (ok = true falls through, per docs/gotos.md naming), shadow_pipe's blur phase returns blurOk through blur_done: with both labels adjacent at the tail, and the depth-phase discharge carries the written positional invariant 〜 fail: is unreachable below it and its nine locals are not re-inerted, so no goto fail may be added there
+- fenced (2026-07-25): SPIR-V orphan family head; anotest_flatorphanguard stayed red.
+- fix (2026-07-25): labelled unwind; inert at declaration; fail: discharges unconditionally.
+- amended (2026-07-26): single-exit done:/blur_done: merges success/failure discharge.
 
-[X] Fixed 〜 compute.c:80 〜 the SPIR-V orphan family flat.c:244 names in passing, tallied in its own right: every pipeline builder acquires ano_aligned_malloc'd shader code and VkShaderModules early and discharges them only on the success tail, so each early return between an acquisition and its tail abandons whatever is live 〜 ano_vk_init_compute holds eight code buffers and eight modules across seven later loadFile refusals, eight pipeline-create refusals and (since 2026-07-25) eight module gates, discharging only at :101-102/:170-171/:226-227/:296-302/:351-352/:403-404/:460-461/:495-496; shadow_pipe.c:157-163 vs :172-175 and :209-215 vs :257-260, tonemap.c:52-56, additive.c:63-80, transmission.c:67-87 and text_raster.c:341-344/:371-380/:481-490 all repeat the acquire-early / discharge-on-success-only layout 〜 the round-2 and round-3 calloc arms were deliberately placed BEFORE the first acquisition so they could not join this family, which is the measure of how carefully it has been left alone 〜 logged 2026-07-25 (rounds 1 and 3) 〜 test: pending 〜 anotest_flatorphanguard pins the flat.c head only; the family needs one discharge decision, not seven
+[X] Fixed: compute.c:80: SPIR-V orphan family across compute/tonemap/additive/transmission/text_raster builders. test: pending: family needs one discharge decision
 - ownership-leak
-- fix (2026-07-25) 〜 tier 1, the family's one discharge decision resolved as the local labelled unwind per builder: ano_vk_init_compute (nine blob/module pairs hoisted inert, 42 arms converted, one unconditional label made safe by each stage tail nulling its pair after its own discharge), tonemap, additive, transmission, and text_raster's three builders, same idiom; arms before the first acquisition stay plain returns. A shared cross-file helper was declined again for the reason the campaign recorded 〜 the discharge pattern is the resource manager's to centralize, and the local idiom neither implements nor forecloses it; it just stops orphaning meanwhile. Verified by review and green suites; the family never had a runnable gate beyond anotest_flatorphanguard's head pin
-- amended (2026-07-26) 〜 ano_vk_init_compute's per-stage tails deleted for the merged out: label: the nine pairs live in one sh[SH_COUNT] blob/module array, bool ok is the status, and a single discharge loop runs at most once 〜 the null-after-discharge obligation the tails maintained ceases to exist, at the accepted cost of blobs and modules living to function exit (one-shot init, under a megabyte). text_raster's overlay/world builders merged into text_build_blend_pipeline, eight knobs with the depth block collapsed into the VK_FORMAT_UNDEFINED sentinel; equivalence proven by byte-identical create-info dumps old-vs-new and a pixel-exact overlay capture, the world lane visually confirmed (wall-clock yaw forbids pixel compare). gotos.md re-anchored on both new shapes; the parked loadFile comments and re-inerts carried through verbatim
+- fix (2026-07-25): labelled unwind per builder; arms before first acquisition stay plain returns.
+- amended (2026-07-26): compute merged out: with sh[SH_COUNT]; text_build_blend_pipeline merges overlay/world.
 
-[X] Fixed 〜 pipeline.c:63 〜 loadFile was total on no failure arm: the openEngineFile refusal returned with *buffer untouched (callers declare the struct uninitialized, so data and size were indeterminate), the allocation refusal left size indeterminate beside its NULL data, and the short-fread arm freed the block then returned with data dangling non-NULL 〜 so every unwinding caller had to know which arm fired to know what it held; the free itself was plain free() on an ano_aligned_malloc block, correct today only because the TU-wide mimalloc override textually rewrites it to mi_free 〜 one configuration change (the override dropped, the include made conditional) from a genuine cross-allocator free 〜 surfaced independently by both unwind reviews of the 2026-07-25 trivial-fix wave, whose callers re-inert refused buffers defensively 〜 logged and fixed 2026-07-25 〜 test: none (boot path; the callers' unwinds are the observable)
+[X] Fixed: pipeline.c:63: loadFile left *buffer indeterminate/dangling on failure arms; free() vs ano_aligned_malloc. test: none: boot path; callers' unwinds are the observable
 - partial-out-param
-- fix (2026-07-25) 〜 tier 1: a prologue zeroes *buffer once, so every arm inherits the inert {NULL, 0} state instead of re-establishing it, and the short-read arm discharges through ano_aligned_free 〜 the matching deallocator by name, not by macro accident. The unguarded ftell stays a lead: its -1 now degrades into arms that are total. The whole surface is a temporary workaround: loadFile is the load-side antipattern the resource manager retires (shader bytes via ano_res_load), and this patch plus every caller-side re-inert is deleted with it 〜 see "The 2026-07-25 remediation" below
+- fix (2026-07-25): prologue zeroes *buffer; short-read via ano_aligned_free. Temporary until ano_res_load.
 
-[X] Fixed 〜 texture.c:426 〜 createTextureImage acquires its staging buffer at :415 and discharges it only in the success epilogue 〜 :445 hands it to outStagingBuffer or destroys it 〜 so both failure returns (:426 image creation, :432 layout transition) orphan the live VkBuffer, and no caller can recover it: *outStagingBuffer is written only at :445, so the glTF loop's calloc'd slot stays VK_NULL_HANDLE while stagingCount++ has already consumed it (ano_GltfParser.c:274) and the destroy loop at :296 no-ops on the hole 〜 one buffer object bound into the shared staging arena orphans per failed texture load, the reachable arm being createImage refusing under device memory pressure (gpu_alloc's 256 MiB block grab or vkCreateImage itself), exactly the pressure a loading spree produces; the sibling createTextureImageFromPixels orphans identically on its :368/:374/:382 arms (reached with NULL out from scene_buffers.c:479), and the :432 arm additionally strands the just-created textureImage plus its texture-arena allocation since the caller ignores the out-params on failure 〜 test: anotest_texstagingguard
+[X] Fixed: texture.c:426: createTextureImage failure after staging acquire orphaned VkBuffer; sibling FromPixels same. test: anotest_texstagingguard
 - ownership-leak
-- fenced (2026-07-25) 〜 resource-management entry deliberately left open. The campaign fixed the acquisition side of this seam twice around it (texture.c:415's unnoticed refusal at round 1, the staging-refusal arms' out-param totality at round 4) and each time stopped strictly before the acquisition, so the custody span is unchanged and unforeclosed. anotest_texstagingguard stays red on purpose.
-- amended (2026-07-26) 〜 settled by the 2026-07-26 texture-custody retirement shared by texture.c:426/:486, ano_GltfParser.c:277, and components.c:72: destroy Vulkan objects, total the outs, leave arena spans to teardown; ano_vk_register_texture becomes [[nodiscard]] bool
-- fix (2026-07-26) 〜 both constructors answer AnoTextureResult over a TexturePackage out-param: every output is totalled before the first acquisition and published only in the success epilogue, and one labelled unwind discharges every staging buffer, image and view the call acquired. VkBuffer* outStagingBuffer collapsed to bool keepStaging, which dissolves rather than guards the conditional escape gotos.md:109 named. Acquisition was reordered ahead of every vkCmd*, so no failure arm destroys an image a borrowed command buffer already references. Arena spans stay consumed until allocator teardown, as ruled 〜 test: anotest_texunwindguard (six arms per face, each asserting its result code, plus the mixed second-view refusal that discharges an already-live srgbView)
+- fenced (2026-07-25): custody span left open; anotest_texstagingguard stayed red.
+- amended (2026-07-26): settled with texture.c:486 / glTF / components texture-custody retirement.
+- fix (2026-07-26): AnoTextureResult + TexturePackage; labelled unwind; keepStaging bool. test: anotest_texunwindguard
 
-[X] Fixed 〜 texture.c:486 〜 every createTextureImage arm past the staging acquisition 〜 createImage (:486-490), transitionImageLayout (:493-497), copyBufferToImage (:499-503), generateMipmaps (:506-510), createTextureImageView (:513-517) 〜 returns false with *textureImage and *textureImageAlloc published and live but *textureImageView never written, and every arm above :512 additionally leaves the staging VkBuffer live with *outStagingBuffer unwritten, so the parser's calloc'd stagingBuffers slot stays VK_NULL_HANDLE while stagingCount++ has already consumed it and the discharge loop no-ops on the hole; createTextureImageFromPixels carries the twin at :411-427 〜 totalling these arms means deciding the staging discharge and the image's fate on the same lines, which is the texture.c:426 entry plus ano_GltfParser.c:277, so the campaign added no discharge, no zeroing and no comment on any of them 〜 logged 2026-07-25 (round 4) 〜 test: anotest_texstagingguard (the fenced red covers the staging half)
+[X] Fixed: texture.c:486: post-staging failure arms published live image/alloc with view/staging unwritten. test: anotest_texstagingguard
 - partial-out-param
 - ownership-leak
-- fix (2026-07-26) 〜 closed with texture.c:426: the post-staging arms are the same labelled unwind, and the domain gate went accept-form so a usage mask naming no view refuses instead of publishing a record with nothing to destroy 〜 test: anotest_texunwindguard
+- fix (2026-07-26): closed with texture.c:426 labelled unwind; usage mask accept-form. test: anotest_texunwindguard
 
 ### Interlink / Composition bugs
 
-[X] Fixed 〜 ano_render_bridge.c:204 〜 ano_render_ui_set's validator ui_prim_valid bounds every block-local reference the header enumerates 〜 clipRef, paintRef, GLYPHS windows, the full PATH curve walk 〜 but never a paint's stop window [stopFirst, +stopCount) against ui->stopCount, and no later layer recovers: apply.c:325 adopts the block blind, ui_compose rebases pa.stopFirst += ns unchecked (ui_raster.c:123), and the GPU evaluator's only guard is stopCount != 0 (uicoverage.glsl:176) though its own comment claims the out-of-range window "fails CLOSED. Mirrors ano_ui_ref_paint" 〜 the mirror's range check exists solely in the CPU ref (ui_raster_ref.c:229), so a hand-built block with stopFirst past its stop table sails through the seam whose stated purpose is that hand-built blocks cannot run the GPU walker past a stream, and ui_stop_color indexes the stop SSBO out of bounds on every painted pixel (a large stopFirst reads past the whole uiFrameBuffer binding 〜 robustness-dependent garbage or device-lost); the lone ref guard itself wraps in uint32, so stopFirst near UINT32_MAX slips even it 〜 test: anotest_uistopguard
+[X] Fixed: ano_render_bridge.c:204: ui_prim_valid never checked paint stop window vs stopCount; GPU OOB. test: anotest_uistopguard
 - seam-validation
-- fix (2026-07-24) 〜 ui_prim_valid rejects a paint whose stop window falls outside the block stop table, checked without uint32 wrap
+- fix (2026-07-24): reject stop window outside block table without uint32 wrap.
 
-[X] Fixed 〜 ano_render_bridge.c:313 〜 ano_render_publish_view stored any caller pose into the latest-wins viewState seqlock unvalidated, and lookAt (vertex.c:104) is branch-free 〜 a coincident eye/center, a zero or parallel up, or any non-finite field NaN-poisons the entire view matrix, and nothing downstream catches it: invertMat4's det == 0.0f test is false for NaN, so the "degenerate camera placeholder" fallbacks are dead code for exactly their named case, and every frustum/cull compare is NaN-false, drawing everything with NaN clip coords 〜 a silently black frame the latest-wins lane keeps black. No in-tree producer degenerates (the live camera's forward is unit by construction, pitch clamped), so the exposure is exactly the public seam 〜 test: anotest_cameraposeguard
+[X] Fixed: ano_render_bridge.c:313: publish_view stored any pose; degenerate lookAt NaN-poisons frame. test: anotest_cameraposeguard
 - seam-validation
-- fix (2026-07-25) 〜 one accept-form predicate at the publish seam (|d×up|² > eps²·|d|²·|up|² plus a fovY window, no sqrt, no divide) rejects every degenerate and non-finite pose in a single compare; reject holds the last accepted pose and warns once per bridge, lookAt stays branch-free per frame, and _Static_asserts pin the field types and extents the totality argument depends on
+- fix (2026-07-25): accept-form pose predicate at publish seam; reject holds last accepted pose.
 
-[X] Fixed 〜 ano_render_bridge.c:92 〜 ano_render_bridge_destroy tears the commands ring down through ano_spsc_destroy (:51), which frees only ring->buffer, so every RenderCommand still enqueued is discarded without honoring bulk_owned: the mi_malloc'd render-owned copies the submit helpers packed and pointed cmd.text/cmd.ui/cmd.update/cmd.destroy at (ano_render_text_set :152, ano_render_ui_set :246, producer.c :56/:90) lose their last reference with the ring 〜 the producer relinquished them at push per the header's copy-at-submit/render-frees contract (anoptic_render.h:435), and every other drop path frees the copy (full-ring reject at submit, replace/registry-full/clear at adoption), only the in-ring-at-destroy window frees nothing 〜 main.c stops draining at its last drawFrame before setting g_logicShouldStop, then joins and calls unInitVulkan (vulkanMaster.c:89) with no drain between, so the final logic ticks' TEXT_SET/UI_SET blocks (per-tick HUD and music-panel submissions, up to ~384 KiB per text block) land exactly in that window and leak every shutdown; an embedder cycling initVulkan/unInitVulkan on device loss or level reload, or any bridge-owning harness, accumulates them unbounded 〜 test: anotest_bridgeguard
+[X] Fixed: ano_render_bridge.c:92: destroy freed ring buffer without discharging bulk_owned payloads; shutdown leak. test: anotest_bridgeguard
 - ownership-leak
-- fix (2026-07-25) 〜 ano_render_command_release is the sole decode point for what a command owns (kind-total switch, no default, honors bulk_owned); the four full-ring reject paths route through it and ano_render_bridge_destroy pops and discharges every command still enqueued before ano_spsc_destroy, under the join edge main.c already provides 〜 the transport stays payload-agnostic, and RenderEvent is wholly inline so the events ring needs no drain. Settles the open decision: owner drains 〜 see "Settled open decisions"
+- fix (2026-07-25): ano_render_command_release sole decode; destroy pops and discharges enqueued commands.
 
-[X] Fixed 〜 shadow_casters.c:151 〜 static shadow release deactivates a block but never returns its region entries: shadowFrustumNext is monotonic and there is no static free-list, accepted by ruling for the revoke and same-footprint rebuild paths, which consume zero region 〜 the residual is footprint churn on one row (point -> spot -> point ...), where each shape change strands the previous block and bumps a fresh one, so roughly 26 shape changes across a scene exhaust ANO_SHADOW_STATIC_FRUSTUM_COUNT and every later static caster degrades silently to shadowless; bounded and non-corrupting (the region check at :154 holds and stranded blocks are active=0, costing nothing per frame) but permanent for the process 〜 logged 2026-07-25 (round 2) 〜 test: anotest_shadowreregguard pins the release and the same-footprint reuse, not the churn
+[X] Fixed: shadow_casters.c:151: static shadow release never returned region entries; shape churn exhausted budget. test: anotest_shadowreregguard / tests/anotest_vk_shadow.c
 - ownership-leak
-- fix (2026-07-26) 〜 exact-footprint free lists, one per block shape (point 6, dir/spot 1), mirroring the runtime pair: release retires every block except the one held back for the in-place rewrite, register pops an exact fit before bumping the cursor, and the budget-full refusal now retires the held-back block it used to discard 〜 a second strand path live today (dir → spot with spot saturated), closed in scope because the region bound is not provable without it. Region-full is unreachable while budgets hold: 2·1 + 4·6 = 26 = ANO_SHADOW_STATIC_FRUSTUM_COUNT, lists sized at the region bound so the double-book heal stays lossless. Single-thread-owned on the render thread like the runtime pair 〜 no atomics added. The entry's ~26-flip estimate was optimistic: a point↔spot cycle burns 7 entries, exhaustion at flip 6 pre-fix. The cited anotest_shadowreregguard never survived the 3047e1c guard cull; coverage is now tests/anotest_vk_shadow.c 〜 module suite, behavioral oracle over shadowCfgMirror, churn at 8× region size 〜 falsified against HEAD (5 pre-fix failures, ruled paths pass on both sides). One recovered guard assertion, a revoked block must not fund a later caster, is superseded by the reclamation ruling
+- fix (2026-07-26): exact-footprint free lists; register pops fit before bump; budget-full retires held-back block.
 
-[X] Fixed 〜 components.c:72 〜 ano_vk_register_texture is the only route a loaded texture's ownership takes into the teardown registry 〜 cleanupVulkan walks primitives.textureBuffers and nothing else destroys the loaded views/images (cleanup.c:64-:71) 〜 yet it returns void and its realloc-failure arm logs ANO_ERROR and drops the TextureData record (:76-:78), so the glTF caller cannot hear the refusal and proceeds to bindless-register and draw the view (ano_GltfParser.c:282-:288) whose VkImage/VkImageView/GpuAllocation now orphan permanently: still resident, still sampled every frame, unreachable at shutdown, one whole texture per refused growth under exactly the loading-spree memory pressure that makes realloc refuse; the mesh twin ano_vk_register_mesh (:44) shares the void-drop shape and has no production caller at all 〜 dead code 〜 test: anotest_texregisterguard
+[X] Fixed: components.c:72: ano_vk_register_texture void-drop on realloc fail; texture orphans permanently. test: anotest_texregisterguard
 - ownership-leak
-- fenced (2026-07-25) 〜 resource-management entry deliberately left open: the registration channel is the adoption half of the parser's custody chain and moves with ano_GltfParser.c:277. anotest_texregisterguard stays red on purpose.
-- fix (2026-07-26) 〜 ano_vk_register_texture is [[nodiscard]] bool, true only once the record is stored; the parser hears the refusal, discharges the package it still owns and latches haltLoad. cleanupVulkan destroys each live view once and the shared image once. ano_vk_register_mesh keeps its void-drop shape and its own dead-code note 〜 still no production caller 〜 test: anotest_texregisterguard
+- fenced (2026-07-25): adoption half of parser custody; anotest_texregisterguard stayed red.
+- fix (2026-07-26): [[nodiscard]] bool; parser hears refusal and discharges package.
 
-[X] Fixed 〜 ano_GltfParser.c:277 〜 parseGltf hears createTextureImage's false and discharges nothing: the callee's post-create failure arms return false with the just-created VkImage and texture-arena allocation already written through the out-params into loadedImages[t]/loadedAllocs[t] (texture.c:429-:433 transition arm 〜 its strand half noted under texture.c:426 〜 plus the :446-:450 view arm that today cannot fire only because createTextureImageView swallows its own failure, the tallied swapchain.c:428 family, and the arm the texture.c:437 fix adds), yet the parser's failure route is textureLoaded[t] = false and continue (:276) 〜 adoption into the teardown registry is success-only (ano_vk_register_texture at :282, the sole route cleanupVulkan ever walks), no failure arm destroys the image or frees the allocation, and :619-:621 free the host arrays holding the only copies of the handles 〜 one whole device texture image plus arena allocation orphans permanently per failed load, armed by exactly the fixes the tallied callee entries demand, so repairing texture.c's arms without a parser-side discharge converts today's staging leak into a full texture leak 〜 test: anotest_gltftexleakguard
+[X] Fixed: ano_GltfParser.c:277: parseGltf heard createTextureImage false and discharged nothing; device image orphan. test: anotest_gltftexleakguard
 - ownership-leak
-- fenced (2026-07-25) 〜 resource-management entry deliberately left open, and the reason the campaign's four texture rounds all stopped before the acquisition: the entry's own warning held, so the arms it names are unchanged and the failure route still adopts nothing. The round-4 bindless-full latch landed in the same function without touching them (anotest_gltflatchguard is green beside the red). anotest_gltftexleakguard stays red on purpose.
-- fix (2026-07-26) 〜 construct, adopt, then bindless, with the discharge deferred to the epilogue past endSingleTimeCommands: destroying at the point of refusal would invalidate the batch command buffer the copy and blits were recorded into, so the work order's literal "destroy on refused adoption" landed as one pending TexturePackage that the haltLoad latch bounds at one. A refused construction hands back nothing to discharge, since the callee already unwound 〜 test: anotest_gltftexleakguard, which asserts the destroys land after the submit rather than merely that they happen
+- fenced (2026-07-25): arms unchanged through campaign texture rounds; stayed red.
+- fix (2026-07-26): construct, adopt, bindless; discharge deferred past endSingleTimeCommands via pending package.
 
-[X] Fixed 〜 ano_GltfParser.c:435 〜 the texture loop uploads each glTF texture exactly once (:413-:437) and picks its colour space from textureSrgb[t], a per-texture cell (:209) the material walk only ever sets true 〜 baseColor (:302), emissive (:320), specular colour (:356), sheen colour (:363), diffuse-transmission colour (:394) 〜 and never clears, while every slot that must stay linear sets only textureNeeded (metallicRoughness :304-:307, normal :309-:312, occlusion :313-:316, clearcoat :322-:335, transmission :336-:341, thickness :342-:347, specular :348-:352, sheen roughness :365-:368, iridescence :370-:379, anisotropy :380-:385, diffuse transmission :386-:390), so one image reached by both domains is created, transitioned, mipped and viewed as VK_FORMAT_R8G8B8A8_SRGB (texture.c:467 selecting the format used at :500, :507, :520 and the view at :527) and every data read of it returns sampler-decoded 〜 a stored roughness 0.5 samples as 0.214 at flat.frag:234-:237, which does `roughness *= orm.g; metallic *= orm.b;` with no inverse transfer (transmission.frag:247-:248 the same) 〜 the conflict is never detected, never logged and has no refusal channel, and the material bake hands the single bindless index (:450-:453) to both usages alike (:520 baseColor vs :536 metallicRoughness, :547 normal), so nothing downstream can tell the two apart 〜 sharing an image across a colour and a data slot is legal glTF 2.0 and routine exporter output, reachable through parseGltf's live file ingress (render_api.c:137/:141/:146), the same ingress the cgltf_validate gate was landed for; no in-tree caller compensates, and the three shipped assets happen to share no texture across the two domains, so the corruption needs an asset the tree does not yet ship 〜 logged 2026-07-26 〜 test: pending
+[X] Fixed: ano_GltfParser.c:435: sticky textureSrgb; shared colour/data image created SRGB only; data samples wrong. test: pending then anotest_gltftexdomainguard, anotest_vk_texdomain
 - silent-drop
-- amended (2026-07-26) 〜 settled by the 2026-07-26 mixed-domain texture retirement at ano_GltfParser.c:435: mutable-format image, separate SRGB/UNORM views, separate bindless indices
-- fix (2026-07-26) 〜 a per-image usage mask replaces sticky textureSrgb[t]. The mask is the union of the roles of every texture naming that image, and construction is keyed by image: colour-only takes an SRGB view, data-only a UNORM view, and mixed use one VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT image with an attached VkImageFormatListCreateInfo carrying both views over one allocation and one mip chain. Keying by texture instead 〜 which a first pass did 〜 consolidates only when a single texture carries both roles, and still splits the ordinary shape of two textures naming one image, so it does not close this entry. A mixed image carries a single mip level: vkCmdBlitImage filters in the base format's space, so every minified level would be exact through one view and wrong through the other, and one level is the only depth at which both interpretations of a byte stay exact. Bindless indices are keyed by image too, minted the moment the registry adopts it and read by every texture naming that image, so an image is one colour slot and one data slot however many textures reach it 〜 the array is bump-only with no release, so a duplicate is a permanent loss. Every descriptor names the engine's one rendererState.textureSampler; a second pass's per-texture sampler cache was removed (honouring tex->sampler is a separate feature). colorIndex[] and dataIndex[] replace the single bindlessIndices[], are sized and seeded 0xFF over images_count so a refusal cannot alias onto slot 0, and the bake maps each cgltf_texture through its image before reading them 〜 the colour index in the five colour slots, the data index in the fourteen data slots, ANO_BINDLESS_NONE for a missing image or an interpretation its image does not carry 〜 so a refusal in one interpretation never reaches the other. Proven on device, not asserted: a stored 128 samples 0.21582 through the SRGB view and 0.50196 through the UNORM view, with alpha linear in both 〜 test: anotest_gltftexdomainguard, anotest_vk_texdomain
+- amended (2026-07-26): settled by mixed-domain texture retirement.
+- fix (2026-07-26): per-image usage mask; mutable-format + dual views for mixed; colorIndex[]/dataIndex[].
+
 
 ## Strings (including strings_utf.h)
 
 ### Implementation bugs
 
-[X] Fixed 〜 ano_strings_ops.c:86 〜 anostr_join sizes its result as sep.len * (count-1) plus part lengths in uint64, so sep.len near UINT32_MAX with count ≈ 2^32+3 wraps the product to ≤ UINT32_MAX and slips the :89 oversize guard that exists to reject exactly this; the write loop then streams ~2^64 bytes into the ~4 GiB allocation 〜 the cheapest trigger needs a 64 GiB parts array (2^32+3 16-byte anostr_t entries), far past any engine caller but constructible on a large-memory host 〜 test: pending 〜 needs a 64 GiB parts array
+[X] Fixed: ano_strings_ops.c:86: anostr_join sep.len*(count-1) wraps; oversize slips guard; write streams huge. test: pending: needs a 64 GiB parts array
 - checked-arithmetic
-- fix (2026-07-24) 〜 anostr_join sizes its result without wrapping (divide-before-multiply on the separator term, per-part headroom check), so an oversize join is rejected
+- fix (2026-07-24): size without wrapping; oversize join rejected.
 
-[X] Fixed 〜 ano_strings_collate.c:75 〜 ce_push_rune consults the decomp table before the CE table, and the generated tables disagree about coverage: U+01EF (ǯ, ezh-caron, Skolt Sami) and U+0374 (Greek numeral sign) carry correct direct CE listings ([270B.020.02]+[0000.028.02] and [04F2.020.02] in ano_collate_tables.h) that are unreachable because their decomp entries redirect through U+0292 / U+02B9, both trimmed out of the CE table, so ce_push_cp falls to UCA implicit weights (primary 0xFBC0, the after-every-listed-script band); the uppercase sibling U+01EE decomposes through U+01B7, which the trim kept, so only the lowercase form is poisoned 〜 the case pair the module itself maps (anorune_to_lower(U+01EE) == U+01EF) splits across the whole collation space: anostr_collate puts Ǯ before あ but ǯ after it, anostr_eq_base(Ǯ, ǯ) is false while every healthy decomposing pair (Ǒ/ǒ) holds, anostr_sort places "Ǯ" in the Latin band right after z (prefix key 270B…) and "ǯ" past kana among the Han implicits (FBC0.8292…), and base-letter search cannot match ǯ words 〜 test: anotest_strguard
+[X] Fixed: ano_strings_collate.c:75: decomp redirects for U+01EF/U+0374 hit CE-trimmed targets; case pair splits collation. test: anotest_strguard
 - table-coverage-gap
-- fix (2026-07-25) 〜 the generator closes both trims 〜 a decomposition whose NFD reaches a CE-unlisted code point is dropped for the direct listing, a case delta whose target left the shipped table returns identity 〜 and assert_trim_closure fails generation before any file is written if either invariant breaks; tables regenerated from UCD 17.0.0, byte-identical across independent runs. U+01EF and U+0374 reach the direct listings they always had, and the case closure swept 26 broken round trips. The measurement dissolved the direction decision: the divergence set is empty 〜 see "Settled open decisions"
+- fix (2026-07-25): generator drops broken decomp for direct CE; assert_trim_closure; tables from UCD 17.0.0.
 
-[X] Fixed 〜 gen_unicode_tables.c:481 〜 build_tables deduped case records with memcmp over record_t, whose three bytes of tail padding are unspecified in the compared temporaries, so a pristine build of the committed generator emitted 97 records against the committed 96 〜 a duplicate identity record minted from padding garbage that shifted every later stage2 index 〜 making "regenerate the tables" an undefined operation and masking that the committed headers had drifted from generator output (their comment blocks were hand-edited after generation, against their own do-not-edit banner) 〜 found 2026-07-25 while landing the collate closure 〜 test: anotest_strguard regeneration path, plus the determinism check (independent working directories, byte-identical output)
+[X] Fixed: gen_unicode_tables.c:481: case-record dedup memcmp'd padding; non-deterministic regenerate; headers drifted. test: anotest_strguard regeneration path
 - padding-compare
-- fix (2026-07-25) 〜 the dedup compares field-wise, and the emitted comment text lives in the generator's format strings again, so the committed headers are reproducible from the tool
+- fix (2026-07-25): field-wise dedup; comment text from generator format strings.
+
 
 ## Synth
 
 ### Interface-level bugs and logic inefficiencies
 
-[X] Fixed 〜 ano_synth.c:227 〜 ano_synth_score_tempo validates only bpm and hands straight to clock_add, which unconditionally dereferences the last anchor (:157), but the anchor array exists only after score_begin/live_begin 〜 on a fresh synth anchors is NULL and anchorMask 0, so the documented-order misuse (anoptic_synth.h:80) that every sibling entry point reports with false (score_bar/score_event via their zero-cap checks, score_end via barCount, live_bar via !live, score_frames/time_at via scoreReady) is a deterministic NULL deref on the logic thread; the same unguarded path called after score_end silently mutates the tempo map the notes were already frame-stamped against 〜 test: anotest_synthtempoguard
+[X] Fixed: ano_synth.c:227: score_tempo deref'd NULL anchors before begin / after end. test: anotest_synthtempoguard
 - seam-validation
-- fix (2026-07-24) 〜 score_tempo rejects calls before begin and after end instead of dereferencing a NULL anchor array
+- fix (2026-07-24): rejects before begin and after end.
 
-[X] Fixed 〜 ano_synth.c:202 〜 score_begin sizes the anchor array as tempoCount + 1u for the implicit beat-0 seed, so tempoCount UINT32_MAX wraps anchorCap to 0 before the sizing 〜 no huge allocation needed 〜 and the zero-count mi_heap_calloc returns a non-NULL minimal block (malloc(0) semantics) that passes the :211 NULL guard, so :213 writes the 24-byte seed anchor s->anchors[0] out of bounds and begin returns true against the header's begin-counts-size-allocations contract (anoptic_synth.h:81); the surviving anchorCap 0 then makes clock_add's :164 fullness check reject the very first tempo point the begin just promised room for, a deterministic functional proxy even where the heap overwrite lands silently 〜 test: anotest_synthbeginguard
+[X] Fixed: ano_synth.c:202: tempoCount UINT32_MAX wraps anchorCap to 0; seed write OOB; begin returns true. test: anotest_synthbeginguard
 - checked-arithmetic
-- fix (2026-07-24) 〜 score_begin rejects tempoCount UINT32_MAX instead of wrapping anchorCap to 0
+- fix (2026-07-24): rejects tempoCount UINT32_MAX.
 
 ### Implementation bugs
 
-[X] Fixed 〜 ano_synth.c:246 〜 the score_event guard rejects velocity == 0 but never the documented upper bounds (velocity 1..127, pitch 0..127 per AnoNoteEvent), so an event with velocity 200 or pitch 130 returns true and enters the schedule; the voice then renders at powf(v/127, 1.5) ≈ 2x the contract's amplitude ceiling, and merge_ties keys chains on pitch & 0x7F so an out-of-range pitch aliases a different in-range pitch's tie chain and silently merges two different-pitch notes into one 〜 the live twin at :429/:431 has the same one-sided filter 〜 test: anotest_synthguard
+[X] Fixed: ano_synth.c:246: score_event/live_bar rejected velocity==0 only; pitch/velocity upper unbound. test: anotest_synthguard
 - seam-validation
-- fix (2026-07-24) 〜 score_event and the live_bar twin reject pitch > 127 and velocity > 127 per the AnoNoteEvent contract
+- fix (2026-07-24): reject pitch>127 and velocity>127.
+
 
 ## Text
 
 ### Interface-level bugs and logic inefficiencies
 
-[X] Fixed 〜 text_gpos.c:304 〜 ano_gpos_extract_kerns resolves subtable offsets with unchecked uint32 arithmetic 〜 the type-9 Extension unwrap does so += innerOff where innerOff is a raw 32-bit extensionOffset (:299), and the fmt-2 class matrix indexes off + 16 + (c1*c2n+c2)*rec with c1n/c2n up to 0xFFFF and rec up to 32 (:186) 〜 so a malformed table whose offset overflows uint32 lands the resolved offset back INSIDE the buffer at a different structure; every g16/g32 read then stays in bounds, the malformation is never caught, and the function returns 0 (success) against its header contract "Bounds-checked. Malformed -> nonzero with dense possibly partial. 0 = success including 'no kerns'." (text_internal.h:89) 〜 a caller feeding a corrupt or hostile GPOS cannot tell it from a well-formed table with no kerns, so the nonzero false arm it needs to fall back (legacy 'kern' table, warn, refuse) never fires and text lays out with silently wrong or dropped spacing 〜 pattern class A (unchecked add/multiply offset wrap) at a documented contract boundary 〜 test: anotest_gposwrapguard
+[X] Fixed: text_gpos.c:304: GPOS offset math unchecked uint32 wrap; malformed returns success. test: anotest_gposwrapguard
 - checked-arithmetic
-- fix (2026-07-24) 〜 checked gadd/gmul on every offset resolution and on the fmt-2 class matrix; a wrapping or out-of-table offset now returns the documented nonzero
+- fix (2026-07-24): checked gadd/gmul; wrap/OOB returns documented nonzero.
 
-[X] Fixed 〜 text_raster_ref.c:92 〜 ano_text_window_sum fetches pts[g->pointOffset] unconditionally BEFORE the curveCount loop that owns the stream walk, and its contract states no curveCount > 0 precondition (text_internal.h:96 "Unclamped coverage sum ... Pure, any thread"; docs/text/font-render.md:444 drives it directly as the offline shader-compare harness) while the bake mints exactly the entry that breaks the fetch: a zero-curve glyph 〜 MISSING codepoint or blank outline like space, both documented output (anoptic_text.h:82 "Missing -> blank", :48 "0 = blank") 〜 keeps pointOffset = stream.count as assigned before load (text_bake.c:565) with nothing pushed after, so a zero-curve TAIL glyph has pointOffset == pointCount and the fetch reads one uint32 past the points blob, and an all-blank bake (stream empty, points NULL 〜 text_bake.c:639) NULL-derefs outright; the fetched value is then discarded (the loop never runs, the sum is 0.0 regardless), so the defect is the read itself 〜 silent on plain heap, a deterministic crash at a page edge, under ASan, or on the NULL stream 〜 and every in-tree consumer compensates with its own curveCount guard (text_raster_ref.c:122, text_shape.c:98, textcoverage.glsl:142, textraster.comp:55, textworld.vert:42), unanimity that proves the guard belongs inside the documented boundary and keeps the hole latent for the next direct caller 〜 pattern class D 〜 test: anotest_textblanksumguard
+[X] Fixed: text_raster_ref.c:92: ano_text_window_sum fetched pts[pointOffset] before curveCount==0 guard; blank glyph OOB/NULL. test: anotest_textblanksumguard
 - seam-validation
-- fix (2026-07-24) 〜 ano_text_window_sum returns 0.0 for curveCount 0 before touching the point stream
+- fix (2026-07-24): returns 0.0 for curveCount 0 before touching stream.
 
-[X] Fixed 〜 text_shape.c:126 〜 layout_core sets the final-line step from runs[runCount-1].sizePx unconditionally and ano_text_measure_runs (:195) returns penY + that step, but anoptic_text.h:113 promises "byteCount 0 is a no-op"; a trailing byteCount-0 run is at once a no-op and runs[runCount-1], so its sizePx sets the measured height though it styles nothing, while a leading/middle no-op run stays transparent (skipped by the run-advance loop) 〜 a caller that appends an empty trailing style span (a per-span run list ending on a zero-width style/cursor) gets a text box sized to that empty span's sizePx, not the last rendered line's: measure_runs("AA", [{2,32px},{0,64px}]) reports height 64 where the unsplit [{2,32px}] reports 32 〜 test: anotest_textguard
+[X] Fixed: text_shape.c:126: final-line step from trailing byteCount-0 run; measure_runs honors no-op as height. test: anotest_textguard
 - noop-not-honored
-- fix (2026-07-24) 〜 the final-line step comes from the last run that styled a codepoint, not from a trailing no-op run
+- fix (2026-07-24): final-line step from last run that styled a codepoint.
 
-[X] Fixed 〜 text_bake.c:507 〜 ano_text_font_bake_ranges zeroes *out at :523 then mints its result blobs on the caller's heap 〜 glyphs (:525) and map (:526) 〜 and returns ENOMEM/EIO from nine arms between that acquisition and the :649 publish (:528 half-pair, :532 scratch heap, :539 slot arrays, :593 load, :595 decompose, :619 pack, :629 stream push, the bake_kerns propagation at :636, :643 points) with the blobs unpublished, so the caller holds nothing to discharge and they strand on a heap that outlives the call; the :643 arm compounds it 〜 bake_kerns has already published out->kerns (:497) as a live caller-heap blob into an out the zeroed contract says failure leaves empty 〜 the scratch temps self-clean (LOCALHEAPATTR), which is why the survivors are exactly the caller-heap blobs 〜 surfaced by the gotos.md sweep, verified at source 〜 logged 2026-07-26 〜 test: pending
+[X] Fixed: text_bake.c:507: bake failure arms left caller-heap glyphs/map/kerns stranded after zeroed-out contract. test: pending
 - ownership-leak
 - partial-out-param
-- fix (2026-07-26) 〜 tier 1, commit-last: bake_kerns rebuilt total on {outPairs, outCount} and never touches *out 〜 the caller publishes kerns beside every other field in the one epilogue, so zeroed-on-failure holds by construction rather than by a compensating write. Single fail: label discharges the four caller-heap blobs (mi_free any-heap + NULL contract verified at mimalloc source); scratch stays attribute-owned and hoisted to first acquisition 〜 a goto over a LOCALHEAPATTR initializer is ill-formed 〜 and memset(out) hoisted above validation so the post-guard EINVAL arms honour the contract. Fourteen exit paths walked; anoptic_text green with the ref-raster oracle unchanged
+- fix (2026-07-26): bake_kerns total on locals; single fail: discharges four caller-heap blobs; publish in one epilogue.
+
 
 ## Threads
 
 ### Implementation bugs
 
-[X] Fixed 〜 threads_macos.c:79 〜 the Darwin barrier gap-fill sampled `generation` before incrementing `arrived` and let the closing thread clear the tally with a plain store, so the two things that define a round 〜 which phase a thread joined, and how many have joined it 〜 were decided by two separate atomic operations. Under reuse by exactly `count` threads that is provably safe (every peer is parked in the spin during the reset), but under the over-subscribed reuse POSIX defines, where more than `count` threads share the barrier cohort by cohort, both halves break: an arrival landing between the closer's increment and its store is erased outright, and a thread delayed across a round compares its stale phase against the bumped one and returns without ever waiting 〜 so an over-subscribed ano_thread_barrier_wait rendezvous releases threads on macOS before count peers have arrived and a waiter consumes partner data that was never written, while the identical caller code is correct on linux/win64. Measured pre-fix: 9 threads over a count-3 barrier gave 611 early releases and 4662 of 20000 cohorts never closed; 16 threads over a count-5 barrier deadlocked permanently 〜 test: anotest_barriercohortguard
+[X] Fixed: threads_macos.c:79: Darwin barrier phase/arrivals split across atomics; over-subscribed early release/deadlock. test: anotest_barriercohortguard
 - odd-sibling-out
-- fix (2026-07-25) 〜 tier 1: `arrived` packed [phase:16][arrivals:16], one CAS admits arrival and opens next phase on count-th. Waiters spin on phase half. Tier 3 welds: _Static_asserts on packing / lock-free; init EINVAL on count 0 or > 65535; [[nodiscard]]. `generation` removed from public header. Delta: exact-count unchanged; over-subscribed exact cohorts (180000 arrivals, zero early releases). Pinned by anotest_barriercohortguard; TSan clean
+- fix (2026-07-25): arrived packed [phase:16][arrivals:16]; one CAS; generation removed from public header.
 
-[X] Fixed 〜 threads_macos.c:107 〜 the waiter left by that rewrite spun bare on the phase half with no relax, yield or park, so a barrier 〜 a primitive whose entire contract is an unbounded block 〜 held its core for a full scheduler quantum while the very peers it waited on sat runnable behind it. Free while cores outnumber waiters, which is why the on-host verification read clean; ruinous the moment they do not, because every cohort that still needs a descheduled thread then costs one preemption instead of a few loads, and the waiters are the ones denying it. Correctness was never touched 〜 cohorts stay exact, no early releases 〜 the barrier just stops advancing at wall-clock speed, which is indistinguishable from a hang to anything watching a timer. macos-latest is precisely that shape: 3 CPUs with ctest running three suites at once, so anoptic_threads shares them with anoptic_synth and anoptic_musicdrive and gets ~1 core for its 16 spinning threads. Observed in CI: 7185 of 8000 rendezvous in 29s (~4ms each) in the count-4 section, and 630 of 12000 cohorts in the count-5 one 〜 test: anoptic_threads
+[X] Fixed: threads_macos.c:107: barrier waiter bare spin starved peers on undersubscribed CI; looked like hang. test: anoptic_threads
 - unbounded-spin
-- fix (2026-07-27) 〜 tier 1: the waiter escalates by spin tally 〜 1024 relax iterations (arm64 `yield`, x86 `pause`), then 64 sched_yield, then a 1us nanosleep park. Both calls are hints: sched_yield cannot fail here and an EINTR-shortened park just re-tests the phase. Delta on a 3-CPU-pinned reproduction of the algorithm: count-4 section 262.52s -> 0.13s, all four sections 0.34s total with exact serials and zero early releases; unpinned 32-CPU timings unchanged, so the bounded relax tier absorbs the uncontended path. anotest_threads' watchdog retargeted off its 30s wall-clock budget onto a 10s frozen-tally stall, since a budget that expires cannot tell slow from wedged 〜 it reported this one as `barrier deadlocked` with the tallies still climbing. pthread_spin_lock takes the same relax hint and stays a bare spin: it is a spinlock, so no yield and no park. Measured 3-CPU, best of 5, ns/acquire at 2/3/4/8/16 threads: 13.1/25.8/32.0/32.3/54.3 -> 10.3/23.5/29.3/31.2/37.6. Test-and-test-and-set was measured beside it and lost at every width but 16, so the loop shape is untouched
+- fix (2026-07-27): escalate relax → yield → 1us park; watchdog on frozen tally not wall clock.
+
 
 ## Time
 
 ### Implementation bugs
 
-[X] Fixed 〜 time_win64.c:148 〜 ano_timestamp_ticks returned raw __rdtsc in TSC mode with no re-anchor across power transitions: S3 sleep and S4 hibernate drop the core power domain and firmware restarts the counter near zero, while the invariant-TSC bit covers P/C/T states only, the election is frozen for the process, and ano_ticks_to_ns is a pure function of the frozen cachedTscHz 〜 so the first post-resume stamp landed below every pre-sleep stamp and every held u64 delta wrapped toward 2^64 (log_core.c's anchor math, frame pacing, the audio watchdog), breaking the header's monotonic promise exactly on the machines that elected the fast path 〜 test: pending 〜 needs a real S3/S4 resume on Windows x64, and the clock mode is a TU-private static with no injection hook
+[X] Fixed: time_win64.c:148: TSC stamps not re-anchored across S3/S4; post-resume deltas wrap. test: pending: needs real S3/S4 resume on Windows x64
 - clock-not-reanchored
-- fix (2026-07-25) 〜 tier 4 at sole tick producer: count = `__rdtsc() + g_tscBias`, valid while raw ≥ `g_tscAnchorRaw`. Small drop clamps (skew); large drop re-anchors. Gap via QueryUnbiasedInterruptTimePrecise (exclude-suspend). Bias-before-anchor release/acquire; CAS serialises re-anchors. Delta: resume advances with one awake-only delta; no resume unchanged. Inspection-verified; checklist under "Platform verification posture"
+- fix (2026-07-25): count = __rdtsc() + bias; large drop re-anchors via QueryUnbiasedInterruptTimePrecise.
 
-[X] Fixed 〜 time_linux.c:132 〜 ano_sleep's failure path perrors and returns errno, but clock_nanosleep reports errors in its return value without setting errno, so a real failure returns stale errno 〜 possibly 0, i.e. success 〜 instead of the status the loop already holds in sleepStatus; latent, the non-EINTR path needs a kernel-level failure today's argument conversion cannot produce 〜 test: pending 〜 linux-only and needs a clock_nanosleep failure injection seam
+[X] Fixed: time_linux.c:132: ano_sleep failure returned errno though clock_nanosleep never sets it. test: pending: linux-only, needs failure injection
 - wrong-error-source
-- fix (2026-07-24) 〜 returns clock_nanosleep's own status instead of an errno the call never set
+- fix (2026-07-24): returns clock_nanosleep's own status.
 
-time_win64.c:310 〜 ano_sleep computes target_ns = us * 1000 in uint64, so us > UINT64_MAX/1000 (a ~585000-year request) wraps target_ns near zero and the call returns success almost immediately against the header's "sleep for us microseconds"; the macos twin has the same wrap at time_macos.c:168, while time_linux.c splits us into tv_sec/tv_nsec and is immune 〜 test: pending 〜 a correct sleep of that length cannot be awaited by a test
+time_win64.c:310: ano_sleep us*1000 wraps for absurd us; near-instant success. test: pending: correct sleep of that length cannot be awaited
 - checked-arithmetic
-- wontfix (2026-07-25) 〜 the guard landed on 2026-07-24 and was removed: ano_sleep is a hot path, the rejected domain begins around 585000 years, and an early return there is no better than the wrap
+- wontfix (2026-07-25): guard removed; hot path; rejected domain ~585000 years.
 
-[X] Fixed 〜 time_win64.c:337 〜 the no-timer fallback casts coarse_ns/1e6 to DWORD, so a ≥49.7-day sleep truncates its coarse stage and the spin tail then busywaits the missing weeks at 100% core instead of yielding, and a request landing exactly on 4294967295 ms becomes Sleep(INFINITE), a permanent hang; needs the hi-res waitable timer unavailable or SetWaitableTimer failing plus a multi-week argument 〜 test: pending 〜 no timer-failure seam and the correct behavior is a weeks-long wait
+[X] Fixed: time_win64.c:337: coarse Sleep cast to DWORD; multi-week truncates or Sleep(INFINITE). test: pending: no timer-failure seam
 - truncating-cast
-- fix (2026-07-24) 〜 the coarse Sleep is chunked, so a multi-week stage neither truncates in a DWORD nor lands on INFINITE
+- fix (2026-07-24): coarse Sleep chunked.
 
-[X] Fixed 〜 time_win64.c:252 〜 ano_busywait's loop guard tests startTime != 0 && endTime != 0 while the module's clock error sentinel is UINT64_MAX (ano_sleep at :312 checks the right one), so the guard is dead: a persistently failing clock returns UINT64_MAX twice, the delta stays 0 and busywait spins forever instead of erroring, and a legitimate 0 timestamp ends the wait early as success; latent 〜 QPC cannot fail on XP+ per the comment at :40 〜 and the linux/macos busywaits carry no sentinel check at all 〜 test: pending 〜 no clock-failure injection seam
+[X] Fixed: time_win64.c:252: busywait tested !=0 sentinel while module uses UINT64_MAX; dead clock spins. test: pending: no clock-failure injection
 - wrong-error-source
-- fix (2026-07-24) 〜 ano_busywait tests the module's UINT64_MAX clock sentinel instead of 0, and refuses rather than spinning on a garbage delta
-- amended (2026-07-25) 〜 that fix kept the 0 test and only flipped its polarity, so a legitimate 0 stamp still ended the wait early, reporting failure instead of success; the 0 disjunct is now gone from both loops and only the UINT64_MAX arm remains 〜 see "Removed guards"
-- amended (2026-07-25, second) 〜 the kept UINT64_MAX arms tested a value that cannot arrive: a failed QPC read's sentinel does not survive ano_ticks_to_ns (at 10 MHz it exits as UINT64_MAX − 99) and every producer branch is unreachable on supported platforms 〜 QPC/QPF cannot fail on XP+, mach_absolute_time and vDSO clock_gettime have no failure modes. The module's whole sentinel convention is deleted on all three platforms; the timebase is validated once at init and aborts on the impossible failure, and the three busywait loops are now textually identical 〜 see "Remediation determinations"
+- fix (2026-07-24): tests UINT64_MAX sentinel.
+- amended (2026-07-25): 0 disjunct removed; only UINT64_MAX remained.
+- amended (2026-07-25, second): whole sentinel convention deleted on all three platforms; timebase validated at init.
+
 
 ## UI
 
 ### Implementation bugs
 
-[X] Fixed 〜 ui_raster_ref.c:334 〜 ano_ui_ref_eval_tiled decoded each caller-supplied entry word into a 31-bit prim index twice and indexed s->prims unchecked both times 〜 shade_entry's solid branch and the loop's blend select at :362 〜 while ano_ui_ref_shade, clip_cov and ano_ui_ref_paint all bound-check the same domain and the header promises out-of-range refs fail closed (anoptic_ui.h:275); a fabricated or stale stream (tiles built from one scene, evaluated against a smaller one) reads up to ~192 GB past the table; the entry word is frozen GPU ABI, so no handle type can carry validity 〜 test: anotest_uitileentryguard
+[X] Fixed: ui_raster_ref.c:334: tiled eval indexed s->prims unchecked twice; OOB on stale stream. test: anotest_uitileentryguard
 - seam-validation
-- fix (2026-07-25) 〜 shade_entry is the sole entry decode: validates once, fails closed to transparent OVER, and returns the blend mode so the loop never re-indexes 〜 the second read retired structurally. Bit-identical for in-domain streams, measured: a 23 MB differential dump over 40 scenes is cmp-identical, and a static_assert welds the index mask and solid bit as disjoint and total
+- fix (2026-07-25): shade_entry sole decode; fail closed to transparent OVER.
 
-[X] Fixed 〜 ui_path.c:99 〜 ano_ui_path_fill guards its quad budget (qn at :95/:122/:139) but never the contour counter (cn), so every MOVE writes cstart[cn++] into the fixed 513-entry stack array cstart[UI_PATH_MAX_QUADS + 1] unchecked and the :151 seal adds one more; a path with more than 512 empty contours 〜 legal input the contract promises ANO_UI_REF_NONE for ("the path is empty") 〜 sprays cstart past its end over the live quad buffer q[] sitting just above it, and the emit pass reads the corrupted geometry back out and faults 〜 test: anotest_uipathguard
+[X] Fixed: ui_path.c:99: contour counter cn unbounded; MOVE overran cstart into q[]. test: anotest_uipathguard
 - fixed-array-overflow
-- fix (2026-07-24) 〜 the contour counter cn is bounded like the existing quad budget, so cstart cannot overrun into q[]
+- fix (2026-07-24): cn bounded like quad budget.
 
-[X] Fixed 〜 ui_build.c:236 〜 paint_push's fullness guard adds b->stopCount + stopCount in uint32, so once any stops are resident a stopCount near UINT32_MAX wraps the sum under stopCap, the guard passes, and the :239 copy loop writes ~2^32 32-byte stops past the caller's array 〜 reached from the public ano_ui_paint_linear/radial/conic and a direct breach of the header's "full array -> ANO_UI_REF_NONE, no mutation" promise at anoptic_ui.h:121; absurd-argument territory, but the guard is defeated rather than the input rejected 〜 test: anotest_uipaintguard
+[X] Fixed: ui_build.c:236: paint_push stopCount sum wraps; copy past caller array. test: anotest_uipaintguard
 - checked-arithmetic
-- fix (2026-07-24) 〜 paint_push tests free stop slots by subtraction instead of a wrapping sum
+- fix (2026-07-24): free stop slots by subtraction.
 
-[X] Fixed 〜 ui_tiles.c:66 〜 ano_ui_tile_build computes nTiles = tilesX * tilesY and guards nTiles + 1 > offsetsCap in uint32, so 65536 x 65536 wraps nTiles to 0, the cap guard passes, *ok stays true for a 2^32-tile grid the buffers cannot hold, and any prim in the scene scatters pass-1 counts into offsets[] far past offsetsCap; tilesX = UINT32_MAX with tilesY = 1 wraps nTiles+1 to 0 instead and the :73 zero-fill writes 2^32 offsets out of bounds 〜 absurd tile counts, but "*ok false if a cap is too small" is exactly the promise the wrap defeats 〜 test: anotest_uitileguard
+[X] Fixed: ui_tiles.c:66: tilesX*tilesY wraps; cap guard passes; offsets[] OOB. test: anotest_uitileguard
 - checked-arithmetic
-- fix (2026-07-24) 〜 the tile-count cap is checked by division before tilesX * tilesY is formed
+- fix (2026-07-24): cap checked by division before product.
 
-[X] Fixed 〜 ui_raster_ref.c:229 〜 ano_ui_ref_paint's stop-window reject arm computes pa->stopFirst + pa->stopCount in uint32, so stopFirst near UINT32_MAX wraps the sum under s->stopCount, the guard passes, and ui_stop_color reads s->stops[stopFirst] ~137 GB past the table on its first comparison 〜 a direct breach of the header's "Out-of-range ref fails CLOSED (transparent)" promise (anoptic_ui.h:275) in the CPU mirror the GPU evaluator cites as its fail-closed reference, and the exact wrap shape the bridge entry (ano_render_bridge.c:204) shows no upstream layer catches, so the last line of defense crashes on the block it exists to reject; the plain non-wrapping out-of-range window fails closed correctly 〜 test: anotest_uirefstopguard
+[X] Fixed: ui_raster_ref.c:229: stopFirst+stopCount wraps; fail-closed paint reads OOB. test: anotest_uirefstopguard
 - checked-arithmetic
-- fix (2026-07-24) 〜 the stop-window range check uses subtraction, so a wrapping stopFirst fails closed
+- fix (2026-07-24): range check by subtraction.
+
 
 ## Engine
 
 ### Interlink / Composition bugs
 
-[X] Fixed 〜 main.c:391 〜 music_world_start bounds its telemetry handshake at 200 tries x 5 ms (:388-390) and then seeds ano_synth_transport_start((t.blockIndex + 8u) * t.blockFrames) unconditionally, but the acquire contract returns false with *out untouched until the mixer's first publish (anoptic_audio.h:375 documents "false before first mixer publish"; audio_bridge.h:144 bails before writing a byte of out while the version is 0), so exhausting the retries is indistinguishable from success and the AnoAudioTelemetry t declared at :388 is consumed uninitialized 〜 two indeterminate stack words multiply into the absolute worldFrame 〜 every other bounded wait in the function has a handled false path, and this one falls through to logging "composing live" and returning true instead of the documented false -> silent run; the telemetry readout at :917 and anotest_audiotone's wait_telemetry both check this same call's return, only the boot path drops the false arm 〜 a mixer thread that publishes nothing for ~1 s after ano_audio_init returns true (loaded box, sanitizer-grade slowdown, wedged device period; starvation on that scale is documented reality on the 2-core sanitizer CI runners) starts the transport at a garbage frame: far-future / huge garbage parks the "few blocks ahead of playhead" start effectively forever as permanent silence reported as a healthy music world, past-frame / small garbage opens with a genLate storm, and the read is UB either way 〜 confirmed in source by two passes; no deterministic field trigger headless (the composition pins all generator hooks to ano_synth_*, a fresh mixer publishes telemetry in its first loop pass before any device pull, music_world_start is a static in src/engine/main.c, and the field trigger itself is OS starvation of a live mixer) 〜 test: anotest_boottelemetryguard (tentative) 〜 compiles the real main.c TU and forces the false arm with a contract-faithful acquire shim at the seam; the field trigger is not reachable deterministically
+[X] Fixed: main.c:391: music_world_start seeded transport from uninitialized telemetry after retry exhaust. test: anotest_boottelemetryguard
 - retry-exhaustion
-- fix (2026-07-25) 〜 the read moved onto the branch that performed the write: a haveTelem flag tracks acquire success, exhaustion warns and returns false 〜 the function's own documented silent-run arm 〜 with acquire/sleep counts preserved exactly. `= {0}` was rejected as a laundering non-fix: zero blockFrames seeds frame 0, which reads as a running transport and converts the rare garbage path into a certain genLate storm; the guard test was written to fail that shape and is now green. (Its ASan-config run still aborts in a pre-existing startup crash inside the crash-arm allocator, identical at HEAD 〜 unrelated.)
+- fix (2026-07-25): haveTelem tracks acquire; exhaustion warns and returns false.
 
-[X] Fixed 〜 main.c:350 〜 music_world_start acquires in sequence 〜 the g_synth/g_music pair (:355-356), the audio world (ano_audio_init :377), the telemetry handshake (:390) 〜 and none of its four failure arms discharges anything: :358 strands whichever of the pair was created, :360 strands both, :378 strands both with audio down, and :396 returns false with the audio world up 〜 mixer thread live, synth attached and generating silence 〜 for the rest of the process, since the caller's arm (main.c:1044) only logs "running silent" and music_world_stop runs solely on the logic-thread-spawn arm (:1052) and at shutdown (:1069); a retry would compound it, :355 overwriting the still-live globals 〜 surfaced by the gotos.md sweep, verified at source 〜 logged 2026-07-26 〜 test: pending
+[X] Fixed: main.c:350: music_world_start failure arms discharged nothing; partial worlds leaked. test: pending
 - ownership-leak
-- fix (2026-07-26) 〜 single fail: label with music_world_stop as the one discharge owner, proven total from every partial state at source (ano_audio_shutdown no-ops on g_mixer NULL and ano_audio_init is itself total via fail_heap:, both destroys take NULL, transport-stop guarded); the stop gained a bool drain discriminator and failure arms drop the 50 ms drain 〜 no arm reaches the label with a transport running. Owner ruled full teardown on the :396 telemetry arm: after any refused start the process is indistinguishable from never-started, anoAudioBridge() NULL 〜 g_mixer cleared before heap destroy 〜 making the :758 and :1044 caller comments true. A retry no longer overwrites live globals. anoptic_blackbox failure proven load flake (isolated pass + second full run 23/23)
+- fix (2026-07-26): single fail: via music_world_stop; drain discriminator on stop.
 
-[X] Fixed 〜 main.c:691 〜 the logic thread's four one-shot HUD spins (:691, :699, :707, :715) retry hud_text_submit until it answers true and test nothing else 〜 not g_logicShouldStop (:41), which main sets at :1065 immediately before the join at :1066, and not why the false came back: ano_render_text_set answers false for an mi_malloc refusal as well as for a full ring (ano_render_bridge.c:188-191, its own definition comment saying "alloc fail or ring full" at :178) while the public contract these loops are written against says "Backpressure: false == ring full" (anoptic_render.h:489) 〜 so a refused ~6 KiB block (RenderTextBlock + up to HUD_TEXT_CAP 128 48-byte glyphs, main.c:175/:180, anoptic_render.h:334) spins the engine's sole render-command producer at 1 ms forever with no diagnostic, before it ever reaches its tick loop (:745), leaving camera, input, menu, music panel and every steady-state resubmit dead; and because main's draw loop has already stopped draining the ring at :1058-1062, a window close during the spin makes the join permanent 〜 main stops calling glfwPollEvents, the window goes unresponsive, and unInitVulkan (:1071) never runs 〜 the ring-capacity inlet is NOT the live one: ano_render_submit and ano_render_light_attach are bare pushes that fail only when full (ano_render_bridge.c:139, :149) and spawn_scene bounds the startup burst at 4 x SPAWN_ASSET_MAX_PRIMS + 12 = 1036 commands (main.c:54/:60, :108-:164) against a 4096-slot ring (vulkanMaster.c:683), so :49 and :162 cannot spin today; the steady-state submits compensate correctly, retrying next tick instead of spinning (:874, :889, :946, :966, :983) 〜 logged 2026-07-26 〜 test: pending
+[X] Fixed: main.c:691: HUD submit spins forever on bool false (OOM==backpressure); close during spin hangs join. test: pending then anotest_render_bridge, anotest_rendersubmitguard
 - unbounded-spin
-- amended (2026-07-26) 〜 the console-setup submit loop inside music_world_start joins the arm list: the same unbounded `while (!ano_audio_submit(...)) ano_sleep(1000)` shape, on the main thread during init, surfaced during the :350 unwind
-- amended (2026-07-26) 〜 settled by the 2026-07-26 render-submission retirement at main.c:691: AnoRenderSubmitResult on the text/UI/bulk endpoints (include/anoptic_results.h); callers switch on result.code; no bool wrapper; shutdown-aware submit_blocking. Stayed open while the tree still returned bool and spun on it
-- fix (2026-07-26) 〜 the six owned-payload endpoints answer AnoRenderSubmitResult (include/anoptic_results.h), so an allocation refusal is no longer spelled as backpressure. The four startup HUD spins retry BACKPRESSURE alone and only while !g_logicShouldStop, so a close during a spin ends the logic thread and the join completes; OOM and INVALID omit the block. The notice clear commits on ACCEPTED alone, the camera readout defers to its next scheduled refresh, and menu, music and bar hold dirty through backpressure while backing off on OOM. submit_blocking observes the stop flag, as does the light-attach spin beside it, and music_world_start's console-setup retry is bounded through its existing unwind. The two bulk endpoints moved from producer.c into the bridge TU, which ends producer.c reaching a foreign module's private header and makes all six reachable from the suite 〜 test: anotest_render_bridge, anotest_rendersubmitguard
+- amended (2026-07-26): console-setup submit loop in music_world_start joined the arm list.
+- amended (2026-07-26): settled by AnoRenderSubmitResult retirement.
+- fix (2026-07-26): six endpoints answer AnoRenderSubmitResult; spins retry BACKPRESSURE while !g_logicShouldStop.
+
 
 ## Removed guards
 
-Second census, 2026-07-25, opposite direction: checks deleted for costing without paying.
+Second census, 2026-07-25: checks deleted that cost without paying. Frivolous only when input cannot arise under reasonable API use and the prevented effect is contained. ~1650 sites across sixteen modules. Eleven clean. Thirteen findings in five, plus ano_sleep wontfix. Suite after: same five pre-existing failures, later settled under Settled open decisions.
 
-Frivolous only when both hold: input cannot arise under reasonable API use, and the prevented effect is contained (early return / wrong-but-bounded; no OOB, UB, leak, or unrelated corruption). Either condition alone acquits. Severity scaled with branch heat.
-
-~1650 guard sites across sixteen modules. Eleven clean. Thirteen findings in five, plus the `ano_sleep` `wontfix` above. Suite after: same five pre-existing failures, all since settled under "Settled open decisions".
-
-### Why these existed
-
-Four shapes account for all thirteen.
-
-Arithmetic artifacts. Someone traced a wrap or a sentinel and guarded the input that triggers it, without asking whether that input can occur or whether its effect matters. `ano_sleep` (~585000 years), `audio_mixer.c:187` (~12.2 million years), `frame.h:94` (71.6 minutes). The tell is platform divergence: `time_linux.c` never carried the `ano_sleep` guard, because splitting `us` into `tv_sec`/`tv_nsec` never forms the product that wraps. A constraint that is real appears in every sibling, or in the header. None of these appear in either.
-
-Invariant distrust. A counter's decrement is guarded against underflow while the matching increment in the same function is not. If the invariant holds neither test is needed; if it does not, the increment is equally wrong. The asymmetry is the argument.
-
-Prototype transliteration. `max(1, ...)` carried across from the Python prototype, where slice semantics gave it meaning. In C it is inert.
-
-Redundant re-checks of a callee's own bound, or of a bound the type already enforces.
+Four shapes: arithmetic artifacts on absurd domains; invariant distrust (guard decrement without matching increment); prototype max(1,...) transliteration; redundant re-checks.
 
 ### Removed
 
-`src/audio/audio_mixer.c:187` 〜 `if (s->remaining != UINT64_MAX) s->remaining--;`. Guarded the play-until-STOP sentinel against being consumed, which takes 2^64 frames: ~12.2 million years at 48 kHz. Per-sample per-voice in `source_render`, ~3M evaluations/second at 64 voices. The decrement is now unconditional; an unbounded voice counts down from `UINT64_MAX` instead of sitting pinned at it, and the sole reader (`:117`, `remaining == 0 && state == PLAYING`) cannot observe the difference in any real runtime.
+`src/audio/audio_mixer.c:187`: remaining!=UINT64_MAX before decrement. Unbounded voice countdown now unconditional; reader cannot observe difference in real runtime.
 
-`src/audio/dsp/delay.h:54-55` 〜 `if (delay < 1u) delay = 1u; if (delay > d->cap) delay = d->cap;`. Dead at all four call sites, each of which reads a line with the value it was allocated with. The index is masked by `& d->mask` regardless, so a violating delay reads a different in-buffer slot rather than out of bounds. Twelve dead compares per sample on a bus running reverb. The doc comment promised the clamp and was corrected; the file header now says only the fractional read clamps. `ano_dsp_delay_read_frac`'s clamps at `:62-63` were left 〜 they stop a negative or huge float reaching `(uint32_t)delay`, which is UB, so they fail the containment condition.
+`src/audio/dsp/delay.h:54-55`: dead delay clamps at four call sites. Index masked anyway. Fractional-read clamps kept (float→uint32 UB). Doc corrected.
 
-`src/time/time_win64.c:251` 〜 `if (startTime == 0 || startTime == UINT64_MAX) return -1;` in `ano_busywait`. The `do`/`while` body runs before the loop condition, so the first `endTime` read hits the identical test one line later and returns the same `-1`. A dead clock now costs one extra `ano_timestamp_raw()` before the same result. The three-line comment above it was removed with it: it described a sentinel pair that no longer exists.
+`src/time/time_win64.c:251`: busywait startTime 0/UINT64_MAX pre-check. Body hits same test one line later.
 
-`src/time/time_win64.c:319` 〜 `if (start == 0 || start == UINT64_MAX) return EIO;` in `ano_sleep`. `start` is used only in `elapsed = now - start`, which the spin stage's own check already gates with the same `EIO`. The coarse stage is clock-independent, so on a dead clock `ano_sleep(100000)` now blocks ~99 ms before erroring rather than failing instantly. Same return value, later.
+`src/time/time_win64.c:319`: sleep start 0/UINT64_MAX pre-check. Spin stage already gates EIO; coarse stage clock-independent.
 
-`src/time/time_win64.c:257` and `:357` 〜 the `== 0` disjunct of `if (endTime == 0 || endTime == UINT64_MAX)` and of `if (now == 0 || now == UINT64_MAX)`. The `== UINT64_MAX` arms were kept: they are the only thing terminating either loop on a dead clock, and an unbounded spin is not contained.
+`src/time/time_win64.c:257` and `:357`: ==0 disjuncts of endTime/now tests. Correctness: legitimate 0 ns stamp must not early-exit. See time_win64.c:252 entry.
 
-These two are a correctness fix, not dead weight. The entry above for `time_win64.c:252` reported that the pre-fix loop tested `endTime != 0` while the module's sentinel is `UINT64_MAX`, so a legitimate 0 ns stamp ended the wait early reporting success. The 2026-07-24 fix kept the 0 test and flipped its polarity, so a legitimate 0 ended the wait early reporting failure 〜 the same wrong branch on the same valid input, telling a different lie. 0 is a valid nanosecond stamp. A 0 stamp now falls through to the elapsed comparison and the wait runs its full duration.
+`src/vulkan_backend/frame/frame.h:94`: dt>UINT32_MAX clamp on cosmetic frametime_pct_ms only.
 
-`src/vulkan_backend/frame/frame.h:94` 〜 `(dt > UINT32_MAX) ? UINT32_MAX : (uint32_t)dt`. A clamp on 71.6 minutes between two presented frames. `dtUs[]` feeds only `frametime_pct_ms()`, one cosmetic number in a `[frametime]` log line; `fps` and `ms wall` come from an unclamped uint64 span. Unsigned narrowing is well-defined. Clock failure would trip the clamp, but that path poisons `prevUs` too, so the next frame underflows regardless 〜 the clamp bounded garbage without correcting it.
+`src/vulkan_backend/shadow/shadow_cache.c:150` and `:239`: counter-- guarded while matching ++ unguarded. Flag selects which counter; underflow guards deleted.
 
-`src/vulkan_backend/shadow/shadow_cache.c:150` and `:239` 〜 `if (mb->unbounded && st->moverUnboundedCount) ...--` and `else if (st->motionActiveCount) ...--`. Each counter is the population count of a flag the enclosing condition has already established, and each matching increment in the same function is unguarded. `mb->unbounded` and the bare `else` were kept 〜 they select which counter to touch and prove the flag went 1 to 0. The invariants were re-verified against the growth path in `slot_upload.c` and the zeroing in `createMotionBuffer`: no mid-life reset can desync either counter. Per-entity on the bridge command drain, so they rode batch destroys.
+`src/vulkan_backend/instance/window.c:190,195`: monitorIndex>=0 tautology on uint32_t. else if → else.
 
-`src/vulkan_backend/instance/window.c:190,195` 〜 `monitorIndex >= 0` in both the `if` and the `else if`. `getChosenMonitor()` returns `uint32_t`, so both are constant-true and already folded. They also misled: they read as `-1` checks while the actual windowed sentinel `(uint32_t)-1` is tested eleven lines later. The `else if` collapsed to `else`; the sentinel still lands in the primary-monitor arm and is still reverted at `:209`, verified at `monitorCount` 0, 1 and 3.
+`src/vulkan_backend/vulkanConfig.c:111`: same monitorIndex>=0 tautology.
 
-`src/vulkan_backend/vulkanConfig.c:111` 〜 the same `monitorIndex >= 0` tautology, in `updateWindowParameters`. `WindowParameters.monitorIndex` is `uint32_t` (`structs.h:205`) despite its own comment reading "-1 for windowed". Found by grep after the module reader reported the `window.c` pair, which is the argument for grepping the shape across the tree once it has a name. The enclosing `!= -1` at `:107` already filters the sentinel, so the remaining `< count` is unchanged. Note both surviving comparisons put a `uint32_t` against an `int` count and are correct only while the count is non-negative.
+`src/text/text_shape.c:33`: kern slot>=glyphCount guard. Function never indexes glyphs[]; search already returns 0. Behaviour above 65536: truncated key may hit real pair.
 
-`src/text/text_shape.c:33` 〜 `leftSlot >= bake->glyphCount || rightSlot >= bake->glyphCount` in `ano_text_kern`. The function never indexes `glyphs[]`; it binary-searches `kerns[]` bounded by `kernCount`, so no slot value reaches out of bounds. Keys pack as `s1 << 16 | s2` with both halves below `glyphCount`, capped at 4096, so an out-of-range slot below 65536 decodes to a key no entry holds and the search already returns the guard's own `0.0f`. Per adjacent glyph pair in the shaper. `bake == NULL` and `kernCount == 0` were kept.
+`src/music/music_melody.c:304` and `src/music/music_imitation.c:22`: k<1 max(1,...) on uint32_t (n+1)/2. Inert at n==0.
 
-Behaviour did change above 65536, where the packed key truncates: `ano_text_kern(b, 65569, 39)` now returns the real advance for pair `(33, 39)` rather than `0.0f`. Contained, no out-of-bounds read. `text_internal.h:62` documented "0 if absent or out of range" and gained a precision note. `anotest_text.c:616` asserts the out-of-range contract and still passes: against the 95-glyph ASCII bake, key `0x03E80000` sorts past every real key (max `0x005E005E`) and key `0x000003E8` falls between the `s1==0` and `s1==1` strata, so both return `0.0f` from the search itself. Checked against the full 9025-element key space, a superset of the 2891 real keys.
-
-`src/music/music_melody.c:304` and `src/music/music_imitation.c:22` 〜 `if (k < 1) k = 1;`. `k` is `uint32_t` computed as `(n + 1) / 2`, so the branch fires only at `n == 0` (or `n == UINT32_MAX`, where `n + 1` wraps). At `n == 0` the guard sets `k = 1` and the next line `if (k < frag.n)` evaluates `1 < 0`, false, so `frag.n` stays 0 either way. A `max(1, ...)` transliterated from the prototype. `ANOPTIC_MUSICGEN.md` requires output parity, not source-shape parity, and names one edit prohibition (`ano_mapping_table_default()`) which this is not; the deleted branch consumes no RNG and mutates no state, so it cannot affect the parity contract.
-
-At `n == UINT32_MAX` the two paths differ, and the finding refines the framing rather than excusing it: at these two sites neither path overruns, since the guard caps the fragment at 1 and removal caps it at 0. The overrun is guaranteed on the other lifecycle stages of the same motif, which pass it whole to `mel_place` and `ano_realize_faithful`. The guard was never a safety property here; at `UINT32_MAX` it only selected which of two outputs preceded an unbounded stack write.
-
-`src/mesh/ano_meshoptimizer.c:966` 〜 the `bestnb != v` conjunct of `if (best < FLT_MAX && bestnb != v)`. `bestnb` is written only inside `if (cost < best)`, and the inner loop skips `nb == v`, so any write sets both conjuncts together and neither can hold without the other. Per-vertex inside the candidate scan, up to `ANO_SIMPLIFY_MAX_PASSES` times. The `bestnb = v` initialiser at `:944` went with it, having lost its only reader; no uninitialized warning appears under gcc 15.2 or clang at `-O0` through `-Os` with `-Wall -Wextra`. Clang's opt-in `-Wconditional-uninitialized` does flag it and is not enabled in this repo; restoring `= v` is the one-token fix if that changes. The golden hash from the 2026-07-24 refactor lock holds at `c04ba505deb2b98b` across `-O0`, `-O1`, `-O2`, `-O3` and ASan+UBSan.
+`src/mesh/ano_meshoptimizer.c:966`: bestnb!=v conjunct; written only when both hold. Golden hash holds.
 
 ### Found while removing, not yet verified
 
-Reader notes only; not yet census. (2026-07-25: all but `music_motif.c:472` chased same day; dispositions under "Remediation determinations".)
+Reader notes (2026-07-25). All but music_motif.c:472 chased same day; dispositions under Remediation determinations.
 
-- `log_core.c` 〜 `g_batch` overflows from ordinary API use. Provisioning assumes a record's batch footprint tracks its ring footprint, but a deferred record's ring cost is its capture blob while its batch cost is the rendered text (`"%4000d"`: 14 bytes against 4000). `room = g_batchCap - blen` then underflows and `format_deferred` writes past the allocation. Reachable with a legal compiler-checked format string.
-- `time_win64.c` 〜 the clock-failure sentinel does not survive `ano_ticks_to_ns`, so the `UINT64_MAX` checks that remain in `ano_busywait` and `ano_sleep` cannot detect the failure they name. `ano_timestamp_ticks` returns `UINT64_MAX` on a `QueryPerformanceCounter` failure, but `ano_timestamp_raw` converts it arithmetically: at 10 MHz, `largePart * 1000000000ULL` overflows and wraps to an arbitrary value. Only the `freq == 0` early return actually yields the sentinel.
-- `window.c:192` 〜 `glfwGetMonitors(NULL)`. GLFW does `assert(count != NULL); *count = 0;`, so this is a null dereference in release and an assert in debug, on the fullscreen path whenever a valid monitor index is configured.
-- `music_host.c:124` 〜 `expand()` clamps `motifLibraryCount` to `ANO_SIG_MAX` but copies each motif's `n` verbatim. Any `n > ANO_MOTIF_MAX` from a caller overruns the fixed `int p[ANO_MOTIF_MAX]` buffers in `pitches_at`, `pick_base`, `ano_realize_faithful` and `mel_place`. Same shape as the `music_perc.c:121` `fixed-array-overflow` entry. This is the guard the removed `max(1, ...)` resembled without being.
-- `ano_GltfParser.c` 〜 sixteen unchecked `calloc`s, and no `cgltf_validate` before per-element accessor reads. `tests/anotest_gltfguard.c` already expects the malformed-accessor case to be rejected and it is not.
-- `delay.h:63` 〜 `(float)(d->cap - 1u)` wraps to ~4.295e9f if a line is initialised with `maxDelay == 0`, making the subsequent `(uint32_t)` conversion UB 〜 the exact failure that clamp exists to prevent. `audio_fx.c:134`'s `fs * 0.0337f` reaches 0 below ~30 Hz.
-- `time_linux.c` and `time_macos.c` 〜 `ano_busywait` has no exit at all if the clock fails. The platform divergence cuts both ways: Win64 was over-guarded here, the other two carry the hang.
-- `main.c:614` (`PC_NAMES[keyTonic % 12]`, signed `%` on an `int32_t` payload field, while the adjacent `ROMAN[]` index is checked), `main.c:389` (uninitialized `AnoAudioTelemetry` read after a bounded spin), `ui_raster_ref.c:334,362` (unchecked `s->prims[idx]` in the solid branch while the sibling branch bounds-checks it), `vertex.c:104` (`normalize()` on an unchecked length in `lookAt`), `music_motif.c:472` (`uint32_t want = m->n - 1` with no `n > 0` test).
+- log_core.c: g_batch overflows from ordinary wide-format use.
+- time_win64.c: UINT64_MAX sentinel does not survive ano_ticks_to_ns.
+- window.c:192: glfwGetMonitors(NULL).
+- music_host.c:124: motif n unclamped.
+- ano_GltfParser.c: sixteen unchecked callocs; no cgltf_validate.
+- delay.h:63: (float)(cap-1u) wrap at maxDelay==0.
+- time_linux.c / time_macos.c: busywait no clock-fail exit.
+- main.c:614 / :389, ui_raster_ref.c:334,362, vertex.c:104, music_motif.c:472 leads.
 
 
 ## Remediation determinations
 
-Third pass, 2026-07-25, over the notes above. Eleven determinations: five tier 1, six tier 4, zero tier 5. `music_motif.c:472` stayed out of scope.
+Third pass, 2026-07-25, over the notes above. Eleven determinations: five tier 1, six tier 4, zero tier 5. music_motif.c:472 stayed out of scope.
 
-`src/time/` 〜 confirmed, tier 1. Sentinel arithmetic misses: failed QPC at 10 MHz exits `ano_ticks_to_ns` as `UINT64_MAX - 99`. All sentinel producers unreachable on supported platforms. Delete the sentinel convention on all three platforms; init points `abort()` on impossible branches. Three `ano_busywait` loops become identical. Bonus: `ano_timestamp_ms` `UINT32_MAX` error collides with a real stamp every ~49.7 days.
+`src/time/`: delete sentinel convention on all three platforms; init abort on impossible branches; three busywait loops identical.
 
-`log_core.c` `g_batch` 〜 confirmed, tier 4 + tier-3 assert. Flush before each record when room < one worst-case rendered record; `_Static_assert` on batchCap. Full width, no drops; flood pays file writes. Settles the open decision.
+`log_core.c` g_batch: flush before worst-case room shortfall; Static_assert on batchCap. Full width, no drops.
 
-`music_host.c` motif `n` 〜 confirmed, tier 4. Clamp `n` to `ANO_MOTIF_MAX` in `expand()` (and optionally `ano_director_init`). No-op on authorable inputs; Python parity holds.
+`music_host.c` motif n: clamp to ANO_MOTIF_MAX in expand() (and ano_director_init).
 
-`ano_GltfParser.c` 〜 confirmed. `cgltf_validate` after `cgltf_load_buffers` (tier 4); collapse sixteen callocs into one persistent bump + one scoped scratch heap (tier 1). Image-URI path traversal filed separately.
+`ano_GltfParser.c`: cgltf_validate after load_buffers; collapse callocs into bump + scratch.
 
-`window.c:192` 〜 partial, tier 1. One post-init `glfwGetMonitors(&monitorCount)` serves bound and array; deletes the NULL call. Pre-init `enumerateMonitors` vestige files separately.
+`window.c:192`: one post-init glfwGetMonitors(&monitorCount).
 
-`ui_raster_ref.c:334,362` 〜 confirmed, tier 4. `shade_entry` sole decode, `idx < primCount`, fail closed. `:362` retires in the fold. PATH `aux1` unchecked remains a lead.
+`ui_raster_ref.c:334,362`: shade_entry sole decode, fail closed.
 
-`vertex.c:104` `lookAt` 〜 confirmed at public seam, tier 4. Accept-form pose predicate at `ano_render_publish_view`; reject holds last valid pose. `lookAt` stays branch-free.
+`vertex.c:104` lookAt: accept-form pose at ano_render_publish_view.
 
-`main.c:614` `PC_NAMES` 〜 refuted as OOB (`uint8_t` tonic). Residual: normalize at `music_host.c:78` + `static_assert` on extent. Unsigned tonic rejected (`wander_target` needs signed).
+`main.c:614` PC_NAMES: refuted as OOB (uint8_t tonic). Residual: normalize at music_host.c:78 + static_assert.
 
-`main.c:389` telemetry 〜 confirmed, tier 1. Read only on acquire success; timeout warns and returns false. `= {0}` rejected as laundering.
+`main.c:389` telemetry: read only on acquire success; timeout returns false.
 
-`delay.h:61-62` 〜 confirmed reachable, tier 1. Ceiling from `mask`; delete `cap`. Accept-form clamps close NaN. Rate-seam policy filed separately.
+`delay.h:61-62`: ceiling from mask; delete cap.
 
 ### Implemented
 
-All eleven landed 2026-07-25. Five structural, six seam invariants, zero fault-site guards; each with compile-time welds. Per-fix negative controls (UBSan/ASan/pose/window) plus bit-exact UI and music measurements. Suite after: headless debug four failures (remaining open decisions); four new guards green.
+All eleven landed 2026-07-25. Five structural, six seam invariants, zero fault-site guards. Suite after: headless debug four failures (remaining open decisions); four new guards green.
 
 
 ## Settled open decisions
 
-Five contract forks settled and implemented on 2026-07-25. The final campaign dispositions are recorded under "Campaign closeout" below.
+Five contract forks settled and implemented on 2026-07-25. Final dispositions under Campaign closeout.
 
-### log_core.c:817 〜 size-mismatch (bucket 2, anotest_logflood)
+### log_core.c:817: size-mismatch (bucket 2, anotest_logflood)
 
-Deferred record renders at format width, not ring footprint. `"%*d"` width 4000: one 64-byte ring line, ~4016 batch bytes.
+Deferred record renders at format width, not ring footprint. Settled: full width, no drops, flat memory; mid-pass flush; flood pays file writes. anotest_logflood green.
 
-Settled 2026-07-25: full width, no drops, flat memory. Drain flushes mid-pass when less than one worst-case rendered record of room remains; flood pays file writes. anotest_logflood green. Details under "Remediation determinations".
+### ano_render_bridge.c:92 and ano_audio.c:204: ownership-leak (bucket 4, anotest_bridgeguard, anotest_audioshutguard)
 
-### ano_render_bridge.c:92 and ano_audio.c:204 〜 ownership-leak (bucket 4, anotest_bridgeguard, anotest_audioshutguard)
+Both destroy paths tore down rings without discharging payloads. Settled: owner drains; transport payload-agnostic; destroy frees adopted audio blocks; rides-home gains teardown clause.
 
-Both destroy paths tore down rings without discharging enqueued payloads.
+### music_voicing.c:114: shared-mutable-state (bucket 6, anotest_musicguard)
 
-Settled 2026-07-25: drain belongs to the owner; transport stays payload-agnostic. Destroy frees adopted audio blocks outright; rides-home gains a teardown clause. `anoring_spsc` migration: transports move bytes, owners discharge payloads.
+Function-scope static cands; concurrent engines. Settled: thread_local; const MODE_INTERVALS; no mutable file-scope state in src/music. TSan clean.
 
-### music_voicing.c:114 〜 shared-mutable-state (bucket 6, anotest_musicguard)
+### ano_strings_collate.c:75: table-coverage-gap (bucket 5, anotest_strguard)
 
-6 KiB function-scope static candidate table; hosting design runs a second engine off-thread. TSan confirmed the race.
-
-Settled 2026-07-25: `thread_local` (buffer is call-transient; candCount resets each call). Lazy bake deleted for const `MODE_INTERVALS`. No mutable file-scope state in src/music. TSan clean.
-
-### ano_strings_collate.c:75 〜 table-coverage-gap (bucket 5, anotest_strguard)
-
-CE and decomp tables disagreed on coverage; U+01EF / U+0374 unreachable behind trimmed redirects.
-
-Settled 2026-07-25: invariant in the generator via `assert_trim_closure`. Divergence set measured empty; smaller closure landed. Case-pair closure fixed 26 broken round trips. Padding-memcmp dedup surfaced as its own entry.
+CE/decomp coverage disagree. Settled: assert_trim_closure in generator; smaller closure; 26 case round trips fixed; padding-memcmp surfaced separately.
 
 ### Implemented
 
-All four landed 2026-07-25. Headless debug green 55/55 (56/56 with voicingboundguard). Render suite 26 → 22 failures. TSan clean on touched modules. Weld negative controls and bit-exact table measurements recorded.
+All four landed 2026-07-25. Headless debug green 55/55 (56/56 with voicingboundguard). Render suite 26 → 22 failures. TSan clean on touched modules.
 
 
-## The 2026-07-25 remediation 〜 campaign chronology
+## The 2026-07-25 remediation: campaign chronology
 
-Condensed from the former BUG-HUNT campaign narrative. Fix bodies live in the module sections and the stray-fix section below.
+Condensed campaign narrative. Fix bodies live in module sections and stray-fix section below.
 
-Starting board: 50 fixed of 77 tallied (26 open + 1 wontfix). Round 1: 15 renderer census entries + four platform singletons (`audio_win64.c:589`, `filesystem_win64.c:137`, `threads_macos.c:79`, `time_win64.c:148`). Seven custody entries were fenced; four closed in the trivial-fix wave (`apply.c:125`, `render_slots.c:92`, `swapchain.c:110`, `flat.c:244`), while three plus the post-acquisition twin (`texture.c:426`, `components.c:72`, `ano_GltfParser.c:277`, and `texture.c:486`) were still open at that checkpoint and retired in later waves.
+Starting board: 50 fixed of 77 tallied (26 open + 1 wontfix). Round 1: 15 renderer census + four platform singletons (audio_win64.c:589, filesystem_win64.c:137, threads_macos.c:79, time_win64.c:148). Seven custody entries fenced; four closed in trivial-fix wave (apply.c:125, render_slots.c:92, swapchain.c:110, flat.c:244); three plus texture.c:426/:486, components.c:72, ano_GltfParser.c:277 retired later.
 
-Rounds 2-4: 44 stray fixes (41 source, 3 test-side) → 110 of 128. Rounds 5-6: six in-scope residuals + four strays → 120 of 132. Trivial-fix wave: five decision-free opens → 126 of 133. Later 2026-07-26 waves were tallied in the then-active `docs/BUGS.md`; their retirements are under the module headings and campaign closeout here.
+Rounds 2-4: 44 stray fixes (41 source, 3 test-side) → 110 of 128. Rounds 5-6: six in-scope residuals + four strays → 120 of 132. Trivial-fix wave: five decision-free opens → 126 of 133. Later 2026-07-26 waves tallied in then-active docs/BUGS.md; retirements under module headings and campaign closeout here.
 
-Method: five-tier hierarchy; contract forks adjudicated below. Platform singletons without a host runner are inspection-grade under Platform verification posture. `loadFile` (`pipeline.c:63`) made total as temporary workaround; resource manager retires it via `ano_res_load`.
+Method: five-tier hierarchy; contract forks adjudicated below. Platform singletons without host runner are inspection-grade under Platform verification posture. loadFile (pipeline.c:63) made total as temporary workaround; resource manager retires via ano_res_load.
 
 
-## The 2026-07-25 remediation 〜 stray fixes
+## The 2026-07-25 remediation: stray fixes
 
-Rounds 2-4: strays surfaced beside round-1 fixes. Forty-four landed (41 source, marked Fixed in the then-active `docs/BUGS.md`; 3 test-side, no tally line). Form: anchor, shape, tier, fix line, guard. Round named on each bullet.
-
-Rounds 5-6: reversed round 4's deferral on six in-scope ledgered entries. Eleven more in the same form. Six move Fixed only; four enter already fixed; one is test-side.
-
-Ten contract questions adjudicated below; implementing fixes cite the ruling.
+Rounds 2-4: strays beside round-1 fixes. Forty-four landed (41 source, 3 test-side). Rounds 5-6: eleven more. Ten contract questions adjudicated below.
 
 ### Render / Vulkan backend
 
-[X] Fixed 〜 vulkanMaster.c:220 (with :253, :279, :282, :303, :170-182, :323) 〜 pending-semaphore-signal and a mis-booked in-flight ledger: the acquire signals a binary semaphore only the graphics submit waits, so the record and submit refusals returned without submitting and without advancing the slot and the next frame re-signalled a signalled semaphore (VUID-vkAcquireNextImageKHR-semaphore-01779) every frame the refusal lasted, while the present arm booked a submitted frame as idle so the next visit to that slot skipped its fence wait and reset an executing command buffer
-- fix (2026-07-25, round 2) 〜 tier 1: one discharge door for every unsubmitted exit (empty wait batch plus queue idle), and the in-flight ledger and slot advance now ride the submit rather than the presentation. Pinned by the new anotest_acquirerecycleguard, whose stubs carry a binary-semaphore state model that counts a breach on any acquire handed a signalled semaphore
+[X] Fixed: vulkanMaster.c:220 (with :253, :279, :282, :303, :170-182, :323): unsubmitted acquire left semaphore signalled; present booked submitted frame idle. test: anotest_acquirerecycleguard
+- fix (2026-07-25, round 2): one discharge door for unsubmitted exits; in-flight ledger rides submit.
 
-[X] Fixed 〜 attachments.c:207 (with instanceInit.h:76-81, vulkanMaster.c:532, swapchain.c:371) 〜 no failure channel: createColorResources was void with an in-tree TODO, so four createImageView refusals (VK_NULL_HANDLE since round 1) and four createImage refusals were published into live per-view state and init proceeded to build pipelines and tonemap/descriptor sets against attachments that do not exist
-- fix (2026-07-25, round 2) 〜 tier 3, the settled suffixed-variant idiom: [[nodiscard]] createColorResourcesChecked with the real refusal contract plus a void face keeping the old symbol for the guard TUs; both call sites consume it and the layout transitions refuse like the sibling depth builder. Guard: compile-time for the consumption half; the publication half is the shape anotest_attachviewguard pins for the sibling builders in the same TU, extending it needs new CHECK lines the round was not authorized to add
+[X] Fixed: attachments.c:207 (with instanceInit.h:76-81, vulkanMaster.c:532, swapchain.c:371): createColorResources void; refused images/views published live. test: anotest_attachviewguard (sibling shape)
+- fix (2026-07-25, round 2): createColorResourcesChecked [[nodiscard]] + void face.
 
-[X] Fixed 〜 vulkanMaster.c:354 (with :103-108) 〜 never-set ledger field: vulkanGarbage.window was read by unInitVulkan but assigned nowhere in the tree, so shutdown and every init unwind leaked the GLFW window and left GLFW initialized
-- fix (2026-07-25, round 2) 〜 tier 1: ownership transfers at the mint site and teardown destroys-then-clears under the NULL check, with an unconditional glfwTerminate beside it so the window-refusal unwind is covered too. Pinned by anotest_acquirerecycleguard's teardown tail (destroyed exactly once, second teardown destroys nothing, refusal unwind still terminates GLFW)
+[X] Fixed: vulkanMaster.c:354 (with :103-108): vulkanGarbage.window never assigned; shutdown leaked GLFW window. test: anotest_acquirerecycleguard teardown tail
+- fix (2026-07-25, round 2): ownership at mint; teardown destroys-then-clears; unconditional glfwTerminate.
 
-[X] Fixed 〜 vulkanMaster.c:667-673 〜 unchecked sentinel: initVulkan's one-shot buffer zero-fill consumed beginSingleTimeCommands without testing its documented VK_NULL_HANDLE refusal and recorded three vkCmdFillBuffer calls into nothing
-- fix (2026-07-25, round 2) 〜 tier 4, tested at the sentinel's ingress with the sibling FATAL + unInitVulkan + return false unwind. Pinned by anotest_acquirerecycleguard's init tail, whose vkCmdFillBuffer seam additionally fails the run if handed a null command buffer
+[X] Fixed: vulkanMaster.c:667-673: init zero-fill ignored beginSingleTimeCommands NULL; filled into nothing. test: anotest_acquirerecycleguard init tail
+- fix (2026-07-25, round 2): test sentinel at ingress; FATAL + unInitVulkan + return false.
 
-[X] Fixed 〜 swapchain.c:442-468 〜 publish-before-construct: createImageViews published viewCount before the array existed and never tested the malloc, so an OOM left a NULL array with a live count for the next dereference and for cleanupSwapChain's teardown walk
-- fix (2026-07-25, round 2) 〜 tier 1, commit-last: build into a local, publish (views, viewCount) only when every slot is live, false with both fields cleared otherwise. Guard: anotest_imageviewguard's controls pin the published pair and its trigger pins the refusal arm; the malloc-refusal arm is not injectable in that harness, and commit-last makes the partial state unreachable rather than merely detected
+[X] Fixed: swapchain.c:442-468: createImageViews published viewCount before array; OOM left NULL+live count. test: anotest_imageviewguard
+- fix (2026-07-25, round 2): commit-last; publish only when every slot live.
 
-[X] Fixed 〜 vulkanMaster.c:489 (with instanceInit.h:54-55) 〜 discarded status re-derived from state: initVulkan dropped createImageViews' bool and inferred failure from rendererState.views == NULL, a sniff that agrees with the contract only by accident
-- fix (2026-07-25, round 2) 〜 tier 3: the call site consumes the bool with the sibling unwind and the declaration carries [[nodiscard]]. Guard: compile-time, and anotest_imageviewguard already consumes the bool in both control and trigger
+[X] Fixed: vulkanMaster.c:489 (with instanceInit.h:54-55): createImageViews bool dropped; failure sniffed from views==NULL. test: anotest_imageviewguard
+- fix (2026-07-25, round 2): consume bool; [[nodiscard]] on declaration.
 
-[X] Fixed 〜 beginSingleTimeCommands sentinel family 〜 texture.c:57/:150/:258, slot_upload.c:207, shadow_resources.c:92, ano_GltfParser.c:404 〜 round 1's refusal contract (VK_NULL_HANDLE, nothing allocated) was established at the mint but not inherited: six recording sites across four files took the handle straight into vkCmdPipelineBarrier / vkCmdCopyBufferToImage / vkCmdBlitImage, and parseGltf ran vkEndCommandBuffer on it
-- fix (2026-07-25, round 2) 〜 tier 4, cleared uniformly at each function's mint, the dominating ingress. copyBufferToImage, which had no channel, was welded to [[nodiscard]] bool with both file-local callers consuming it; parseGltf, the one consumer that never records, brackets its discharge by ownership and falls back to the per-op mint path the sentinel already means downstream, per the VK_NULL_HANDLE borrow ruling. Guard: anotest_texuploadguard, anotest_texacquireguard and anotest_texmipchainguard all still pass; anotest_texstagingguard stays red with its two fenced failures intact
+[X] Fixed: beginSingleTimeCommands sentinel family: texture.c:57/:150/:258, slot_upload.c:207, shadow_resources.c:92, ano_GltfParser.c:404: six sites used handle without testing NULL. test: anotest_texuploadguard, anotest_texacquireguard, anotest_texmipchainguard
+- fix (2026-07-25, round 2): clear at each mint; copyBufferToImage [[nodiscard]] bool; parseGltf brackets by ownership.
 
-[X] Fixed 〜 slot_upload.c:212 〜 dropped submit status: the entity-growth preserve copy submitted [0, oldCap) through the status-dropping void face, so a rejected vkQueueSubmit or a failed fence wait produced a replacement device buffer whose preserved prefix was garbage while ensureEntityCapacity reported success 〜 every live entity's transform/motion/instance data silently zeroed or stale under exactly the device pressure that caused the rejection
-- fix (2026-07-25, round 2) 〜 tier 3: switched to the [[nodiscard]] endSingleTimeCommandsChecked face and refused the build; round 1's commit-last epilogue makes the refusal total. Pinned by the new anotest_growrollbackguard arms 3 and 4, discrimination verified by building the guard against a copy with line 212 reverted (8 failures on exactly those arms)
+[X] Fixed: slot_upload.c:212: growth preserve copy used void endSingleTimeCommands; refused submit reported success with garbage prefix. test: anotest_growrollbackguard
+- fix (2026-07-25, round 2): endSingleTimeCommandsChecked; commit-last makes refusal total.
 
-[X] Fixed 〜 compute.c:77/:144/:187/:242/:314/:371/:426/:459 and flat.c:52 〜 unchecked calloc: nine mint sites stored calloc's result into PipelinePrototype.implementations and consumed it as the out-param address `&implementations[k].pipeline` inside vkCreate{Compute,Graphics}Pipelines, so an allocator refusal is a NULL + offsetof write inside the driver call
-- fix (2026-07-25, round 2) 〜 tier 4, a runtime seam at the mint, matching the already-settled text_raster.c contract, placed ahead of every SPIR-V acquisition in the same stage so no refusal creates a new orphan. Pinned by the new anotest_pipelineallocguard, whose triggers assert init reports false with zero loadFile calls, zero module mints, zero pipeline creates and no live module stranded
+[X] Fixed: compute.c:77/:144/:187/:242/:314/:371/:426/:459 and flat.c:52: nine calloc results unchecked into PipelinePrototype.implementations. test: anotest_pipelineallocguard
+- fix (2026-07-25, round 2): runtime seam at mint ahead of SPIR-V acquisition.
 
-[X] Fixed 〜 scene_buffers.c:34 and every creator in the file 〜 undefined-slot residue: round 1 closed what a failed create must return; this closes what it leaves behind. A refused vkCreateBuffer left the RendererState slot holding driver-undefined bytes, and the gpu_alloc arms destroyed the buffer while leaving the dead handle in the slot 〜 both read as live by cleanup.c's `if (buffer[i])` gate, i.e. a destroy of a handle the engine does not own on every init-failure unwind
-- fix (2026-07-25, round 2) 〜 tier 1: twelve independent mint sites collapse into one total-out-param helper (mint into a local, commit last, clear both out-params up front), so "slot holds a handle the engine does not own" is not constructible in the file; [[nodiscard]] layered as the tier-3 weld. Deliberately not routed through createDataBufferShared 〜 anotest_scenebufferguard link-stubs vkCreateBuffer and gpu_alloc directly and does not link commands.c. Pinned by the new anotest_scenebufferslotguard, which runs cleanup.c's own sweep and requires zero unknown destroys, zero double destroys, zero live remaining
+[X] Fixed: scene_buffers.c:34 and every creator: refused create left undefined/dead handles in RendererState slots. test: anotest_scenebufferslotguard
+- fix (2026-07-25, round 2): one total-out-param helper; commit-last; [[nodiscard]].
 
-[X] Fixed 〜 shadow_casters.c:103-127 (call site apply.c:160-162) 〜 double-book: register_static_shadow was a write-only registrar over a bump allocator with no free-list and no owner index, so re-registering one static light_index minted a second budget row and a second frustum block and stranded the first active=1 forever 〜 an unreachable duplicate shadow map still rendered and still mover-tested, parented to a slot about to be recycled, and a handful of scene rebuilds went permanently shadowless
-- fix (2026-07-25, round 2) 〜 tier 1, per the static-region ruling: acquisition releases everything the row owns first, so "one static row, two live blocks" is unreachable; matching footprints are rewritten in place, making rebuild budget- and region-stable, and the release sweep loops the whole region so books made before this landed heal themselves. Budget decrements route through the existing shadow_static_budget sole decode on the released block's own type, making underflow unrepresentable. Pinned by the new anotest_shadowreregguard; anotest_shadowtypeguard stays green
+[X] Fixed: shadow_casters.c:103-127 (call site apply.c:160-162): re-register static light double-booked budget/region. test: anotest_shadowreregguard
+- fix (2026-07-25, round 2): acquisition releases row first; matching footprints rewrite in place.
 
-[X] Fixed 〜 shadow_casters.c:77-87 (call site apply.c:177-187) 〜 stale-binding, half refuted: static palette rows and their shadow registrations are scene-lifetime and caller-owned by design (monotonic init-only allocator, runtime-scoped cascade, caller-chosen light_index), and entity-follow is not honestly implementable in the module 〜 SlotUpload keeps no CPU mirror inverting slot to light_index. The real hazard the report surfaced, an enabled=1 row and an active=1 volume chasing a recycled slot, was the caller's rewrite tool being broken, not the lifetime choice
-- fix (2026-07-25, round 2) 〜 tier 1, completing the lifecycle at its sole ingress: stage_command_fields revokes the row's static shadow when the payload it writes does not cast, so row and binding move together, and backend.h states the contract, turning the remaining failure mode (destroy without rewrite) from an undocumented haunting into a documented caller error with two correct spellings. DESTROY arms untouched, no destroy-time sweep, frame path unchanged. Pinned by anotest_shadowreregguard's revoke half
+[X] Fixed: shadow_casters.c:77-87 (call site apply.c:177-187): enabled row chased recycled slot when rewrite omitted revoke. test: anotest_shadowreregguard
+- fix (2026-07-25, round 2): stage_command_fields revokes static shadow when payload does not cast; backend.h states contract.
 
-[X] Fixed 〜 swapchain.c:378-384 〜 discarded status re-derived from state, second instance: recreateSwapChain dropped createDepthResources' bool and tested `frames[0].views[0].depthView == NULL`, but the builder fills frame 0 / view 0 first and returns early on any later refusal, so the sniff answers healthy for every refusal except the first and the resize path resumed rendering with missing depth attachments
-- fix (2026-07-25, round 3) 〜 tier 3: createDepthResources is now [[nodiscard]] bool matching its two siblings, both live call sites consume it, and the discard cannot be reconstructed at any call site
+[X] Fixed: swapchain.c:378-384: recreateSwapChain sniffed depthView==NULL after createDepthResources. test: compile-time [[nodiscard]]
+- fix (2026-07-25, round 3): createDepthResources [[nodiscard]] bool; both sites consume.
 
-[X] Fixed 〜 vulkanMaster.c:680 〜 discarded rich status beside a settled checked variant: the init light/shadow zero-fill took the void face of endSingleTimeCommands, so a failed one-shot submit left the light palette, shadow config and shadow info device buffers with undefined contents while initVulkan reported success and nothing downstream inspects buffer contents
-- fix (2026-07-25, round 3) 〜 tier 4, selecting the face the caller's failure policy demands; the void face survives for callers whose policy is degradation. Guard: anotest_initdepthguard already pins the init-arm contract and compiles this TU, so its coverage now spans this arm (one stub addition, no CHECK)
+[X] Fixed: vulkanMaster.c:680: init light/shadow zero-fill used void endSingleTimeCommands face. test: anotest_initdepthguard
+- fix (2026-07-25, round 3): checked face selected by failure policy.
 
-[X] Fixed 〜 vulkanMaster.c:351 vs window.c:173 〜 ordering: enumerateMonitors ran before the tree's only glfwInit, which lives inside initWindow, so the query raised GLFW_NOT_INITIALIZED and answered NULL/0 and monitorCount was permanently 0 for the whole run 〜 a total, silent, permanent empty answer rather than an error, because GLFW's not-initialized path returns rather than refusing
-- fix (2026-07-25, round 3) 〜 tier 1, the reorder, with the dependency stated at the call site so the next mover sees it. Guard: none honest 〜 the invariant is a pure ordering fact between two calls in one function, and no render guard links real GLFW
+[X] Fixed: vulkanMaster.c:351 vs window.c:173: enumerateMonitors before sole glfwInit; permanent empty monitor list. test: none honest
+- fix (2026-07-25, round 3): reorder; dependency stated at call site.
 
-[X] Fixed 〜 vulkanMaster.c:176-181, :225-228, :314-317 〜 unrecoverable-state continuation: the frame loop's only exit was the window's should-close flag and no failure arm below the acquire could reach it, so every arm's only choice was log-and-carry-on 〜 honest degradation for a recoverable fault and undefined behaviour for an unrecoverable one, since the discharge-refusal arm exits with a pending semaphore signal the very next acquire consumes
-- fix (2026-07-25, round 3) 〜 tier 1, per the terminal-latch ruling: one file-scope latch, three arms that set it once with an ANO_FATAL naming the VkResult and close the window, and a single early-out at the top of drawFrame; the OUT_OF_DATE/SUBOPTIMAL recreate arms are untouched and unwind rides the settled shutdown order. Escalate-after-N was rejected as healing nothing in this class 〜 the only recovery in tree cures staleness, and a counter merely defers the identical latch while the UB window stays open. Pinned by the new anotest_renderlatchguard
+[X] Fixed: vulkanMaster.c:176-181, :225-228, :314-317: unrecoverable frame faults logged and continued; next acquire ate pending signal. test: anotest_renderlatchguard
+- fix (2026-07-25, round 3): file-scope terminal latch; three FATAL arms close window; early-out at drawFrame top.
 
-[X] Fixed 〜 texture.c:25-31 (consumed at ano_GltfParser.c:433-436 and scene_buffers.c:437) 〜 sentinel inside the value domain: bindless_register_texture answered 0 both for "array full" and as the index of the first successful registration, and the glTF loader baked the answer into the material SSBO at 25 read sites gated only on textureLoaded[], so every texture past the device's update-after-bind ceiling silently sampled slot 0
-- fix (2026-07-25, round 3) 〜 tier 2, moving the refusal out of the index domain: ANO_BINDLESS_NONE is the same word MaterialData and every fragment shader already read as "no texture", so a refusal propagates through the bake into the SSBO as absent with no branch added at any read site. A grant is < maxTextures <= UINT32_MAX and can never spell the refusal 〜 the weld is arithmetic, not asserted. Pinned by the new anotest_texcontractguard scenario 1
+[X] Fixed: texture.c:25-31 (consumed at ano_GltfParser.c:433-436 and scene_buffers.c:437): bindless_register_texture answered 0 for full and for first slot. test: anotest_texcontractguard
+- fix (2026-07-25, round 3): ANO_BINDLESS_NONE out of index domain.
 
-[X] Fixed 〜 texture.c:431 and :369 〜 narrow product before wide assignment: both staging sizes were computed in the operand type before the VkDeviceSize assignment 〜 signed-overflow UB on the int32 stbi dims, a defined 2^32 wrap on the uint32 caller dims 〜 and the wrapped size sized the staging buffer while createImage still received the true extent, leaving mip 0 partly undefined for the chain to blit from
-- fix (2026-07-25, round 3) 〜 tier 2, widening the leftmost operand; the oversize case now reaches createDataBuffer's existing refusal with its true byte count. Pinned by anotest_texcontractguard scenario 4 (uint32 twin observed at 65536x16384; the int32 twin is inspection-verified, not harness-reachable)
+[X] Fixed: texture.c:431 and :369: staging size computed narrow then widened; wrap undersized staging vs true extent. test: anotest_texcontractguard
+- fix (2026-07-25, round 3): widen leftmost operand.
 
-[X] Fixed 〜 texture.c:212-216 〜 partial out-param contract: createImageShared's vkCreateImage arm returned false leaving *image whatever the driver wrote and *imageAlloc never assigned, while its sibling memory arm one block down cleared the handle, so a caller publishing straight into render state owned an indeterminate VkImage teardown would destroy
-- fix (2026-07-25, round 3) 〜 tier 4, totalizing both out-params on the arm using `(GpuAllocation){0}`, verbatim what gpu_alloc answers on refusal, so "empty" has one spelling. Pinned by anotest_texcontractguard scenarios 2 and 3 with poisoned out-params
+[X] Fixed: texture.c:212-216: createImageShared failure left *image indeterminate, *imageAlloc unassigned. test: anotest_texcontractguard
+- fix (2026-07-25, round 3): total both outs on arm with (GpuAllocation){0}.
 
-[X] Fixed 〜 texture.c:227 〜 status-dropped sibling: createImageShared bound its image memory with the VkResult discarded, one line below an allocation whose own failure was checked, so a refused bind returned true with the image created but unbacked
-- fix (2026-07-25, round 3) 〜 tier 4: the bind is checked and its refusal arm mirrors the memory arm above it 〜 destroy the image this call minted, total both out-params, return false 〜 with no reclamation invented for the monotonic arena span. Pinned by anotest_texcontractguard scenario 3
+[X] Fixed: texture.c:227: vkBindImageMemory VkResult discarded; unbacked image returned true. test: anotest_texcontractguard
+- fix (2026-07-25, round 3): check bind; destroy minted image; total outs; return false.
 
-[X] Fixed 〜 texture.c:147 and :250 〜 unpinned linkage surface: copyBufferToImage and generateMipmaps had external linkage while being declared in no header and called only from texture.c, so any future out-of-TU caller would link against a signature nothing pinned
-- fix (2026-07-25, round 3) 〜 tier 1, internal linkage: the symbols no longer exist to be mis-declared. Guard: none appropriate 〜 the invariant is enforced by the toolchain, any out-of-TU reference is now an undefined-symbol link error
+[X] Fixed: texture.c:147 and :250: copyBufferToImage/generateMipmaps external with no header. test: none (toolchain)
+- fix (2026-07-25, round 3): internal linkage.
 
-[X] Fixed 〜 shadow_resources.c:34/:46/:72/:149 〜 dropped vkBind{Buffer,Image}Memory VkResult on four sites, each immediately after an allocation whose own failure was checked: on a refused bind the object existed but was unbacked and init reported success, so the first GPU use read or wrote memory that was never bound
-- fix (2026-07-25, round 3) 〜 tier 4, hearing the status and returning false, matching the function's existing (no-unwind, ledger-bound) failure discipline; no discharge added, per the RM fence. Guard: none 〜 a guard here would pin a contract the fence keeps open
+[X] Fixed: shadow_resources.c:34/:46/:72/:149: four dropped vkBind*Memory results; unbacked objects, init success. test: none (RM fence)
+- fix (2026-07-25, round 3): hear status; return false; no discharge added.
 
-[X] Fixed 〜 slot_upload.c:44/:97/:112/:142/:205 〜 the same dropped vkBindBufferMemory on five sites, each one line under a checked gpu_alloc: a refused bind left an unbacked VkBuffer that the caller then installed (the commit-last block rebinds descriptors to it) or wrote through; :142's sibling arm one line up already destroyed the uninstalled local on refusal, proving the intended discipline
-- fix (2026-07-25, round 3) 〜 tier 4, routing each bind refusal into the function's existing failure channel, byte-for-byte matching the adjacent allocation arm. Guard: none 〜 every guard compiling this TU stubs vkBindBufferMemory returning VK_SUCCESS, so the new arms are unreachable there
+[X] Fixed: slot_upload.c:44/:97/:112/:142/:205: five dropped vkBindBufferMemory; unbacked buffer installed. test: none (stubs always SUCCESS)
+- fix (2026-07-25, round 3): bind refusal into existing failure channel.
 
-[X] Fixed 〜 compute.c:95/:164/:176/:231/:308/:398/:455/:490, flat.c:19, additive.c:18, transmission.c:17, shadow_pipe.c:39, tonemap.c:50, text_raster.c:348 〜 all 14 vkCreatePipelineCache calls discarded their VkResult, so on failure the undefined handle was forwarded as the pipelineCache argument to vkCreate{Compute,Graphics}Pipelines and destroyed at teardown through a `!= VK_NULL_HANDLE` gate that undefined garbage passes
-- fix (2026-07-25, round 3) 〜 tier 4 by the one idiom the spec already sanctions: a refused cache is zeroed and init continues, because VK_NULL_HANDLE is a valid pipelineCache everywhere one is consumed. Never fail init over an optimization. Pinned by anotest_protopairguard trigger E, whose stub writes a poison handle and returns OUT_OF_HOST_MEMORY
+[X] Fixed: compute.c:95/:164/:176/:231/:308/:398/:455/:490, flat.c:19, additive.c:18, transmission.c:17, shadow_pipe.c:39, tonemap.c:50, text_raster.c:348: fourteen vkCreatePipelineCache results discarded. test: anotest_protopairguard
+- fix (2026-07-25, round 3): refused cache zeroed; init continues; NULL valid pipelineCache.
 
-[X] Fixed 〜 additive.c:48 and transmission.c:47 〜 the last two open sites of the unchecked-calloc census: both minted their implementation arrays with calloc, never tested the result, then handed `&implementations[k].pipeline` to vkCreateGraphicsPipelines
-- fix (2026-07-25, round 3) 〜 tier 1, the family's existing one-line arm placed before the first SPIR-V acquisition so a refusal cannot strand a loaded blob or a minted module. Pinned by anotest_protopairguard triggers A and B, with calloc interposed on an exact element count
+[X] Fixed: additive.c:48 and transmission.c:47: last unchecked-calloc sites into implementations. test: anotest_protopairguard
+- fix (2026-07-25, round 3): one-line arm before first SPIR-V acquisition.
 
-[X] Fixed 〜 components.c:127 (writers at compute.c ×8, flat.c:51, additive.c:47, transmission.c:46, text_raster.c:335) 〜 non-atomic pair: the reader dereferences implementations[0] gated solely on implementationCount, while every builder published that count one line before minting the array, so the pair lied in exactly the window a partially built state is observable
-- fix (2026-07-25, round 3) 〜 tier 1, homed at the writers per the commit-last ruling: each builder already knows its own count, the reorder costs zero lines, and it makes every present and future reader sound by construction; flat.c's destructor dissolves the pair count-first so the invariant is symmetric. The reader gate is unchanged, with one comment line stating why it is sound. Pinned by the new anotest_protopairguard, which compiles four real builder TUs and probes mid-teardown
+[X] Fixed: components.c:127 (writers at compute.c ×8, flat.c:51, additive.c:47, transmission.c:46, text_raster.c:335): implementationCount published before array mint. test: anotest_protopairguard
+- fix (2026-07-25, round 3): writers commit-last; flat destructor dissolves count-first.
 
-[X] Fixed 〜 text_raster.c:280 and :291 〜 two family shapes at once in ano_vk_text_create_buffer: its vkCreateBuffer refusal left *buffer indeterminate while its sibling gpu_alloc refusal correctly zeroed it, and its vkBindBufferMemory dropped the VkResult so a refused bind returned true with an unbacked buffer
-- fix (2026-07-25, round 3) 〜 tier 4, both restored to the established total-out-param idiom. Guard: none added 〜 no guard compiles text_raster.c today and a new harness would need the whole text module's device-buffer surface
+[X] Fixed: text_raster.c:280 and :291: ano_vk_text_create_buffer partial outs + dropped bind. test: none
+- fix (2026-07-25, round 3): total-out-param idiom both arms.
 
-[X] Fixed 〜 apply.c:34 vs :56 vs :165 〜 split domain decision: RFIELD_LIGHT was synthesized for RCMD_CREATE on `light_index != ANO_RENDER_NO_LIGHT` while both consumers re-gated on `light_index < ANO_STATIC_LIGHT_COUNT` and neither the ingress nor anything else refused, so a caller naming a runtime-registry row on a scene light-entity 〜 the natural off-by-one-region mistake, since ano_render_light_attach addresses exactly those rows 〜 landed the entity and silently lost its entire light: no palette row, no shadow frustum, no bridge event, no diagnostic, against an explicit MUST in anoptic_render.h:108. Not a memory-safety fault; a silent-loss fault, which is why it survived 〜 the scene renders dark and the producer believes it lit it
-- fix (2026-07-25, round 3) 〜 tier 4, deciding the domain once at the drain ingress that already decides the sibling LightType domain, refusing into the protocol's own absent-light spelling with an ANO_ERROR record, and welding the two compile-time-decidable ends of the domain in backend.h beside the contract sentence. Fenced arms untouched and byte-identical. Pinned by the new anotest_lightrowguard, which drives the real apply.c TU through a real SPSC ring
+[X] Fixed: apply.c:34 vs :56 vs :165: RFIELD_LIGHT from light_index!=NO_LIGHT while consumers gate <STATIC_COUNT; runtime index silent-lost light. test: anotest_lightrowguard
+- fix (2026-07-25, round 3): domain once at drain; refuse to absent-light + ANO_ERROR; weld in backend.h.
 
-[X] Fixed 〜 window.c:25-32 〜 unchecked and zero-size allocation on a query that now actually runs: enumerateMonitors did `mi_malloc(monitorCount * sizeof(MonitorInfo))` with no NULL test before the loop that writes it and no guard on count 0. The round-3 reorder is what promoted this from inert to live 〜 pre-reorder the query always answered 0 and the allocation was always mi_malloc(0) with a zero-trip fill
-- fix (2026-07-25, round 4) 〜 tier 1: the function is total on both refusal arms, answering an empty-but-valid (NULL, 0) ledger. A bool face was rejected on caller evidence, the heap-mismatch worry was refuted via mimalloc-override.h, and a caller-side check is too late. Pinned by the new anotest_monitorledgerguard, which compiles the real window.c TU with the module allocator interposed
+[X] Fixed: window.c:25-32: enumerateMonitors mi_malloc unchecked / count 0 after reorder made path live. test: anotest_monitorledgerguard
+- fix (2026-07-25, round 4): total on both refusal arms; empty (NULL, 0) ledger.
 
-[X] Fixed 〜 vulkanMaster.c:108-113 〜 borrowed pointers outliving their owner plus an incomplete ledger clear: unInitVulkan called glfwTerminate before cleanupMonitors, and every monitorInfos[i].modes is a GLFW-owned pointer invalidated by that call; separately, NULLing .window alone taught the reader the ledger self-clears while .ctx silently did not, making cleanupVulkan-twice reachable through any second teardown 〜 which is what anotest_acquirerecycleguard's fresh_world() does on every phase
-- fix (2026-07-25, round 4) 〜 tier 1: cleanupMonitors before glfwTerminate, and the ledger clears completely. Pinned by the extended anotest_acquirerecycleguard teardown tail, which records terminate-versus-dissolve order and a double-teardown ledger
+[X] Fixed: vulkanMaster.c:108-113: glfwTerminate before cleanupMonitors; modes pointers invalidated; incomplete ledger clear. test: anotest_acquirerecycleguard
+- fix (2026-07-25, round 4): cleanupMonitors before glfwTerminate; ledger clears completely.
 
-[X] Fixed 〜 texture.c:386-395 and :467-479 〜 partial out-param contract on the staging-acquisition refusal arms of both upload faces: the arms returned false having written none of the image, allocation or view out-params, and the fallback face writes directly into rendererState fields that survive the failed init unwind
-- fix (2026-07-25, round 4) 〜 tier 3, the arms totalize their out-params. Deliberately confined to the pre-acquisition arms so the fenced custody span is untouched. Pinned by the new anotest_texfaceguard, which poisons all three out-params before every call
+[X] Fixed: texture.c:386-395 and :467-479: staging-refusal arms left image/alloc/view outs unwritten. test: anotest_texfaceguard
+- fix (2026-07-25, round 4): arms totalize outs; pre-acquisition only.
 
-[X] Fixed 〜 scene_buffers.c:437-442 〜 init-time refusal answered diagnostic-only: createFallbackResources warned on a fallback-texture registration mismatch and returned true, so boot proceeded with no fallback texture bound in the bindless set. Pre-sentinel the arm could not fire at all 〜 a refusal answered 0, the same word a granted slot 0 answers, so the refusal was invisible
-- fix (2026-07-25, round 4) 〜 tier 3, the arm unwinds, matching the campaign's init-time policy. Verified no test drives this for a true answer before landing it. Pinned by the new anotest_fallbackinitguard, whose controls demand the nominal boot still registers exactly once
+[X] Fixed: scene_buffers.c:437-442: fallback-texture register mismatch warned and returned true. test: anotest_fallbackinitguard
+- fix (2026-07-25, round 4): arm unwinds.
 
-[X] Fixed 〜 texture.c:438-448 〜 domain-unchecked math on decoder output: the mip derivation `floor(log2(max(w,h))) + 1` had no lower bound on the operand, and log2(0) is -HUGE_VAL while log2 of a negative is NaN, both UB on the (uint32_t) cast, with the value flowing into createImage's mipLevels and generateMipmaps' loop bound
-- fix (2026-07-25, round 4) 〜 tier 4, an accept-form gate at the decode seam. Judged unreachable through stbi and still is; the gate is placed because the value crosses a decode seam, not because a reaching input is known. Pinned by anotest_texfaceguard's 1x1 and 4x4 controls, which forbid a clamp-every-extent or refuse-everything shape
+[X] Fixed: texture.c:438-448: mip log2(max(w,h))+1 ungated; log2(0)/negative → cast UB. test: anotest_texfaceguard
+- fix (2026-07-25, round 4): accept-form gate at decode seam.
 
-[X] Fixed 〜 ano_GltfParser.c:409-465 〜 wasted acquisition after a permanent refusal: the bindless array is monotonic with no release path, so the first ANO_BINDLESS_NONE proves every later registration in the process refuses, yet each further texture was still decoded, staged, uploaded and adopted for a slot that can never be addressed 〜 CPU, staging and VRAM burned in proportion to the asset's texture count
-- fix (2026-07-25, round 4) 〜 tier 3, per the bindless-full latch ruling: a parse-local latch derived from the registrar's published answer word, checked at the loop's existing pre-decode skip seam, with one summary warning after the loop. texture.c remains the sole decoder of fullness. Pinned by the new anotest_gltflatchguard, whose control proves an ample array still adopts every needed texture
+[X] Fixed: ano_GltfParser.c:409-465: after first ANO_BINDLESS_NONE still decoded/uploaded further textures. test: anotest_gltflatchguard
+- fix (2026-07-25, round 4): parse-local bindless-full latch at pre-decode skip.
 
-[X] Fixed 〜 apply.c:57-71 〜 divergent hand-rolled decode of one public payload: the static path built LightData field by field and never touched localDir, while the runtime path built the identical struct through light_data_from_params, which ends with light_set_dir 〜 so every static spot and directional aimed down its parent's -Z whatever the producer asked, and several static spots sharing one parent slot could not fan at all. Invisible by construction: the shader-side consumers read the zeroed row as the documented default, nothing crashed, nothing logged, and no test observed a light direction
-- fix (2026-07-25, round 4) 〜 tier 1, per the shared-decode ruling: one decode serves both regions, with the zero offset pinned explicitly because static lights ride the slot origin and light_offset is runtime-registry vocabulary. Consistency with the whole-row clause, not a reachability argument, is what settles it. Pinned by the new anotest_staticrowdecodeguard, which compiles apply.c, light_registry.c and shadow_casters.c together against a real SPSC ring
+[X] Fixed: apply.c:57-71: static LightData hand-rolled without light_set_dir; spots/dirs aimed parent -Z. test: anotest_staticrowdecodeguard
+- fix (2026-07-25, round 4): one shared decode for static and runtime.
 
-[X] Fixed 〜 apply.c:56-74 with shadow_cache.c:200-213 〜 stale cached derivative: ShadowCasterVolume.range was written only on the CREATE-only grant, so a static UPDATE restaged LightData.range into the palette row but never revisited the caster volume, and shadow_volumes_reparent recomputed centre and radius from the stored range rather than refreshing it 〜 raising a static caster's range extended its shading falloff immediately while the influence sphere the exposure machinery reads kept the old radius, so movers entering the new range never marked the caster exposed and its cached atlas layers were never invalidated: shadows froze at the old radius while the lit area grew
-- fix (2026-07-25, round 4) 〜 tier 1, per the same ruling: the update half is a no-grant refresh_static_shadow homed in shadow_casters.c, walking only blocks the row already owns; CREATE is excluded because registration already installs fresh volumes with the payload range. Pinned by anotest_staticrowdecodeguard, whose triggers demand a raised range move both the palette row and the owned volume and stale the block's cached layers, and whose no-grant canary pins the CREATE-only clause
+[X] Fixed: apply.c:56-74 with shadow_cache.c:200-213: ShadowCasterVolume.range only on CREATE; UPDATE left influence sphere stale. test: anotest_staticrowdecodeguard
+- fix (2026-07-25, round 4): refresh_static_shadow no-grant update path.
 
-[X] Fixed 〜 shadow_resources.c:101 〜 discarded rich status beside a settled checked variant: the moment-atlas layer seed ended with the void face, and its sibling two lines up already checks the mint, so the mint refusal was handled while the submit refusal was not 〜 on a refused end, fence, submit or wait the barrier never executes, the whole layer array stays UNDEFINED, createShadowResources returns true, and the first shadow sample reads an image in the wrong layout, presenting as garbage shadows or a device loss several frames from the boot call that caused it
-- fix (2026-07-25, round 4) 〜 tier 3, consume the checked face and return false. Guard: none 〜 observing it needs a device-shaped harness for the TU that is the open RM-family entry, so a guard for it belongs with that entry
+[X] Fixed: shadow_resources.c:101: moment-atlas seed used void endSingleTimeCommands; wrong layout on first sample. test: none
+- fix (2026-07-25, round 4): consume checked face; return false.
 
-[X] Fixed 〜 pipeline.c:328-344 〜 asymmetric pair dissolution, the off-whitelist twin of the round-3 flat.c teardown fix: ano_vk_cleanup_pipelines freed and NULLed implementations and only then zeroed implementationCount, so between the free and the clear the pair said "N implementations" beside a dangling pointer 〜 the exact window components.c would dereference. Latent, never observed, and it matters because half a settled two-sided contract decays: the moment anything gains a teardown-time survey the window becomes a dereference of freed memory whose count says it is valid
-- fix (2026-07-25, round 4) 〜 tier 3, count-first dissolution matching the twelve builders' commit-last publication. Guard: the property is anotest_protopairguard's mid-teardown probe, but that target does not compile pipeline.c 〜 the loop is fixed and unpinned, and was logged as a lead in the active `docs/BUGS.md` at that checkpoint
+[X] Fixed: pipeline.c:328-344: cleanup_pipelines freed implementations before zeroing count. test: unpinned (protopairguard does not compile pipeline.c)
+- fix (2026-07-25, round 4): count-first dissolution.
 
-[X] Fixed 〜 scene_buffers.c:43 (mintSceneBuffer) 〜 dropped bind status, the last unchecked vkBindBufferMemory on a mint the whole scene rides: the VkResult was discarded and *buffer and *allocation were published with a true return, so a refused bind left the buffer created but unbacked while gpu_alloc's suballocated host mapping still reached the caller 〜 every mapped write landing in arena memory the buffer does not reference and the GPU reading whatever the arena held, silent wrong data rather than a crash, on the sole mint point for the material palette, the stream ring, the transform and light-pose lanes, the indirect-draw buffer, both cluster buffers and all six culling buffers
-- fix (2026-07-25, round 5) 〜 tier 3, the round-3 family idiom layered on this file's stronger total-out-param discipline: the refusal destroys the buffer it just minted and returns false, and because the helper zeroes both out-params at entry the refusal is total, which is exactly what cleanup.c's `if (buffer[i])` gate needs to skip it. The arena span is deliberately not reclaimed 〜 gpu_alloc is monotonic and a partial-boot arena is dissolved wholesale 〜 and the comment says so, so the omission is not read as a leak. Pinned by the new anotest_scenebindguard, observed green on the live tree and 13 failures against a copy with only the bind check reverted; its culling-set canary pins that an Nth-bind refusal discharges its own mint and leaves the bound prefix published
+[X] Fixed: scene_buffers.c:43 (mintSceneBuffer): last unchecked vkBindBufferMemory on scene mint path. test: anotest_scenebindguard
+- fix (2026-07-25, round 5): check bind; destroy minted buffer; outs zeroed at entry.
 
-[X] Fixed 〜 texture.c:381 (createTextureImageFromPixels entry) 〜 unvalidated caller-supplied extent domain: this is the one texture face whose width and height arrive from the caller rather than from stbi, and it had no gate 〜 the sibling file face got one only because the decoder is the source there. width or height 0 gave imageSize 0, a zero-sized staging acquisition, a memcpy of nothing and then vkCreateImage with a zero extent (invalid usage, not a reported failure); a pixel count above (2^64-1)/4 wrapped the very byte count the seam had been widened to carry, undersizing the staging beneath a full-size memcpy; and a NULL pixel source reached that memcpy on the identical path. The face is [[nodiscard]] bool and publishes straight into live render state
-- fix (2026-07-25, round 5) 〜 tier 4, one accept-form gate at the face's entry above every acquisition, so the refusal carries no custody obligation and the fenced post-acquisition arms are untouched. The overflow bound is expressed against the widened product itself rather than a magic extent limit, so every extent a device could legally carry still reaches the acquisition with its exact byte count. All three out-params totalled. Pinned by the new anotest_texpixeldomainguard, green on the live tree and 9 failures plus a segfault on the NULL trigger against a copy with the gate excised; its 65536x16384 and 2^31 x 2 controls forbid a clamp-the-extent or refuse-everything shape
+[X] Fixed: texture.c:381 (createTextureImageFromPixels): caller extent ungated; 0/overflow/NULL pixels. test: anotest_texpixeldomainguard
+- fix (2026-07-25, round 5): accept-form gate above acquisition; outs totalled.
 
-[X] Fixed 〜 apply.c:66 (static UPDATE castsShadow arm) 〜 silent drop on a whole-row contract: backend.h makes a static row caller-addressed and whole-row and requires an UPDATE to resend the entire payload, yet castsShadow was honored 1 -> 0 and not 0 -> 1. refresh_static_shadow walks only blocks the row already owns, so a row created non-casting 〜 or one whose CREATE-time grant the per-type budget or the 26-entry static region refused 〜 stayed shadowless for the scene with no block, no ShadowLightInfo, no event and no log, while the producer had done exactly what the contract asked
-- fix (2026-07-25, round 5) 〜 tier 4 at the drain seam, diagnostic-only: the drop is correct and settled, grants are CREATE-only, so behaviour is byte-for-byte unchanged and the arm instead queries the row's caster mirror through static_shadow_row_casts and emits one ANO_ERROR naming the row, its block-lessness and the CREATE-only rule. The message names the block-lessness as the observed fact rather than promising that re-creating grants, because the budget-refused cause may be refused again. Pinned by the new anotest_staticcastdropguard, whose controls 〜 casting and non-casting CREATE, a matching casting UPDATE, a revoke, a point block, the runtime LIGHT_ATTACH lane 〜 forbid a fix that reports on every casting UPDATE, and whose trigger pins that the report grants nothing
+[X] Fixed: apply.c:66 (static UPDATE castsShadow): castsShadow 0→1 silent drop on whole-row contract. test: anotest_staticcastdropguard
+- fix (2026-07-25, round 5): diagnostic ANO_ERROR naming CREATE-only rule; behaviour unchanged.
 
-[X] Fixed 〜 apply.c:57 with shadow_casters.c 〜 two mirrors of one fact and no seam asserting their agreement: LightData.type (the palette row, restaged on every whole-row UPDATE) feeds shading while ShadowFrustumConfig.lightType (the frustum block, written only at registration) feeds the projection and the block footprint, so a type-changing static UPDATE left a row shading as a spot while its six cube faces kept rendering as a point, indefinitely and silently 〜 and the code that ACTED on the row and any code that might REPORT on it each had their own ownership decode
-- fix (2026-07-25, round 5) 〜 tier 3 weld first: shadow_casters.c now carries exactly one ownership decode, next_owned_block, answering footprint and light type from the block's OWN stored config, and one budget decode, shadow_static_budget, keyed by the released block's own type; the revoke walk, the refresh walk and the new query all consume it, so the seam that reports a divergence and the walk that acts despite it read the identical fact and cannot themselves disagree. Tier 4 layered at the one seam that updates either mirror: a payload type differing from the owned block's stored type emits one ANO_ERROR naming both types and the destroy/recreate remedy, then the refresh proceeds on the block's own footprint. Both mirrors re-converge on the next CREATE, since registration releases the row's prior blocks first. Pinned by anotest_staticcastdropguard, whose trigger pins shadow_volume_set at the block's own base 1 / count 6 so a fix that re-types the block by re-registering fails; anotest_staticrowdecodeguard already pins the behavioural half
+[X] Fixed: apply.c:57 with shadow_casters.c: LightData.type vs ShadowFrustumConfig.lightType diverged on type-changing UPDATE. test: anotest_staticcastdropguard, anotest_staticrowdecodeguard
+- fix (2026-07-25, round 5): next_owned_block sole ownership decode; ANO_ERROR on type mismatch; refresh on block footprint.
 
-[X] Fixed 〜 backend.h:21-53 (the static-region contract block) 〜 documentation lag introduced by an in-surface fix, at the one place a caller reads before writing a static light: the block said only that shadow grants are CREATE-only and that an UPDATE changes photometrics and revokes casting, while since the round-3/4 work a casting static UPDATE also refreshes the influence volumes the row already owns, and since round 5 the two edges an UPDATE drops are reported at the drain seam. Nothing in it was false; it under-described its own path, and it is the text every guard in the light-contract family is written against
-- fix (2026-07-25, round 5) 〜 tier 5, comment-only: the block now states the full lifecycle 〜 CREATE grants and installs volumes, UPDATE re-decodes whole-row, refreshes owned volumes, revokes on castsShadow 0 and never grants, DESTROY releases nothing static-side because cascade_detach_lights is runtime-registry-scoped by design 〜 names the two dropped edges and their reports, and records that RFIELD_LIGHT carries no field mask and that transformIndex / parentSlot carry no liveness guarantee. Guard: none 〜 no runtime surface; the behaviour it describes is pinned between anotest_shadowtypeguard, anotest_shadowreregguard, anotest_lightrowguard, anotest_staticrowdecodeguard and anotest_staticcastdropguard, and all 33 in-tree TUs including backend.h re-verified syntax-clean
+[X] Fixed: backend.h:21-53: static-region contract doc lagged CREATE/UPDATE/DESTROY lifecycle. test: none (comment)
+- fix (2026-07-25, round 5): comment states full lifecycle and dropped-edge reports.
 
-[X] Fixed 〜 geometry.c:410/:420/:487 with scene_buffers.c (createFallbackResources, mesh arm) 〜 refusal sentinel colliding with the success value it was compared against: geometry_pool_upload spelled its refusal 0, which IS FALLBACK_MESH_INDEX, so on the fallback cube's own upload 〜 the single call where a refusal is fatal 〜 a refusal was bit-identical to the intended grant, the `!=` test could not fire, and boot proceeded with mesh slot 0 never emitted while anoRenderFallbackMesh kept publicly promising it; every later refusal aliased mesh 0 the same way, silently drawing the fallback cube. On the half where the test COULD fire the arm only ANO_WARNed and returned true, while its texture twin sixteen lines below had been fixed in round 4 to ANO_ERROR and a full unwind
-- fix (2026-07-25, round 6) 〜 tier 2, moving the refusal out of the index domain exactly as the round-3 bindless ruling did for the byte-identical shape: ANO_MESH_NONE is 0xFFFFFFFFu in geometry.h, welded by _Static_assert against ANO_MAX_MESHES and, at scene_buffers.c, against NO_MESH_INDEX and ANO_RENDER_NO_MESH, so a grant can never spell the refusal and the refusal is already the word both consuming lanes read as absent. Every refusal arm answers it 〜 the upload, the chain, and the chain's *out_lodBase 〜 and the fallback-mesh arm now unwinds like its texture sibling. No signature changed and no caller was rewritten: a failed glTF LOD chain lands on the documented absent-mesh lane through the existing protocol, with the parser untouched. Pinned by the new anotest_fallbackmeshguard, red before and green after, whose scripted upload seam makes both refusal spellings 〜 ANO_MESH_NONE and a granted-but-wrong slot 〜 observable and whose controls forbid a refuse-everything or accept-everything shape
+[X] Fixed: geometry.c:410/:420/:487 with scene_buffers.c: mesh refusal sentinel 0 == FALLBACK_MESH_INDEX; fallback upload refusal invisible. test: anotest_fallbackmeshguard
+- fix (2026-07-25, round 6): ANO_MESH_NONE = 0xFFFFFFFFu; fallback-mesh arm unwinds.
 
-[X] Fixed 〜 anoptic_render.h:150-153 (RenderLightParams.castsShadow) 〜 public contract documenting one of two lanes: the comment described castsShadow exclusively in RCMD_LIGHT_ATTACH terms, while the same field on the same struct drives a different lifecycle when the command carries light_index below ANO_STATIC_LIGHT_COUNT 〜 togglable in one direction only, with ANO_LIGHT_FIELD_CAST meaningless there because RFIELD_LIGHT carries no field mask, and destroy/recreate as the remedy. The renderer-side statement landed in backend.h, which is private; a producer reading only include/ had no way to learn the asymmetry it is now logged at ANO_ERROR for, and the sibling `type` field two lines up already documents both lanes per-command
-- fix (2026-07-25, round 6) 〜 tier 5, comment-only, in the same per-command voice the sibling field established: the static lane is named, the CREATE-only rule stated, and the reported 0 -> 1 drop and its re-create remedy written where the producer reads them. Guard: none 〜 no runtime surface; anotest_staticcastdropguard pins the behaviour the sentence describes
+[X] Fixed: anoptic_render.h:150-153: castsShadow comment documented only LIGHT_ATTACH lane. test: none (comment)
+- fix (2026-07-25, round 6): public header documents both lanes per-command.
 
-[X] Fixed 〜 light_registry.h:29-33 (refresh_static_shadow declaration) 〜 declaration homed away from its contract and its siblings, on a provisional placement that had outlived its excuse: all four functions implementing the static-row caster lifecycle are defined together in shadow_casters.c over one shared ownership decode, but they were declared in three different headers, and refresh_static_shadow's own comment admitted the home was temporary and named the trigger for moving it
-- fix (2026-07-25, round 6) 〜 tier 5, the declaration consolidated into backend.h beside unregister_static_shadow and static_shadow_row_casts and the contract prose that governs them, with a closing cross-reference naming where register_static_shadow still lives and recording that all four are defined together over one decode. No behaviour, no signature. Guard: none 〜 the invariant is a header layout fact; every in-tree TU including backend.h re-verified syntax-clean
+[X] Fixed: light_registry.h:29-33: refresh_static_shadow declared away from siblings/contract. test: none (header layout)
+- fix (2026-07-25, round 6): declaration into backend.h beside unregister/static_shadow_row_casts.
 
 ### Audio
 
-[X] Fixed 〜 audio_win64.c:535 〜 unclearable recovery gate: in dsound_recover a succeeded Restore followed by a failing Lock or Play returned false while DirectSound had already cleared DSBSTATUS_BUFFERLOST, so the chase loop's lost-gated recovery arm could never re-fire; the loop then chased a frozen play cursor against an un-anchored writeCursor and settled into a permanent silent poll 〜 audio dead for the process lifetime after one unlucky focus loss
-- fix (2026-07-25, round 2) 〜 tier 1: a single failure exit that Stops the buffer so the half-recovered state is established rather than inferred, writeCursor left commit-last so a stale cursor is unconsumable, and the loop gate widened from "lost" to "not usably playing" so every non-playing state re-enters recovery. [[nodiscard]] on both predicates. Guard: none authorable on any host in this campaign; syntax proven by extracting both functions against minimal stand-ins. Hardware checklist under "Platform verification posture"
+[X] Fixed: audio_win64.c:535: dsound_recover Restore success then Lock/Play fail left BUFFERLOST clear; recovery never re-fired; permanent silence. test: pending: hardware checklist
+- fix (2026-07-25, round 2): Stop on failure exit; writeCursor commit-last; gate on not-usably-playing.
 
-[X] Fixed 〜 audio_win64.c:290-291 and :319-320 〜 half-acquired device resource: IAudioRenderClient::GetBuffer transfers ownership of a render packet on every success, including the documented S_OK-with-NULL case, and WASAPI requires exactly one ReleaseBuffer per succeeded GetBuffer. Both call sites tested the returned pointer and took a no-release path when it was NULL 〜 the author had evidently considered the case reachable but routed it as if nothing had been acquired 〜 so the packet stays outstanding and every subsequent GetBuffer returns AUDCLNT_E_OUT_OF_ORDER, which the loop cannot distinguish from a transient refusal, leaving the endpoint silent for the process lifetime with no recovery arm and no log line; from the prefill site the wedge lands before Start, so the stream never produces one audible frame
-- fix (2026-07-25, round 3) 〜 tier 1, structural: acquire and release collapse into a single seam (wasapi_write) that both sites go through, making an unreleased packet unrepresentable at any call site; the NULL arm releases 0 frames, which ReleaseBuffer accepts, and the previously dropped HRESULT becomes the helper's result. Behaviour on every previously-working path is byte-identical 〜 same frame counts, same SILENT flag on the prefill, same pull call. Guard: none authorable; hardware checklist under "Platform verification posture"
+[X] Fixed: audio_win64.c:290-291 and :319-320: GetBuffer S_OK-with-NULL took no-release path; OUT_OF_ORDER forever. test: pending: hardware checklist
+- fix (2026-07-25, round 3): wasapi_write sole acquire/release seam; NULL arm releases 0 frames.
 
-[X] Fixed 〜 audio_win64.c:370-391 〜 acknowledged-but-unhandled terminal device state: the render loop's GetCurrentPadding refusal arm slept 10 ms and continued, with an in-code comment conceding the gap, but the dominant failure there is AUDCLNT_E_DEVICE_INVALIDATED, which is permanent for that IAudioClient 〜 so an unplugged headset spun the device thread at ~100 Hz for the process lifetime, never draining the block ring, never lowering the init state and never logging once
-- fix (2026-07-25, round 4) 〜 tier 3: the four documented permanent codes are classified through one wasapi_terminal predicate, and a terminal padding refusal logs exactly one ANO_ERROR naming the HRESULT and returns the device thread. Deliberately arm-shaped rather than loop-wide 〜 the second arm's failure set is disjoint and was closed a round later, below. Guard: none authorable; hardware checklist under "Platform verification posture"
+[X] Fixed: audio_win64.c:370-391: GetCurrentPadding failure slept/continued; DEVICE_INVALIDATED spun ~100 Hz forever. test: pending: hardware checklist
+- fix (2026-07-25, round 4): wasapi_terminal classifies permanent codes; one ANO_ERROR and return.
 
-[X] Fixed 〜 audio_win64.c:389 (wasapi_main, the write arm) 〜 unclassified refusal on the arm of a loop whose sibling arm is classified: GetCurrentPadding and the IAudioRenderClient calls have disjoint documented failure sets and only the former reached round 4's terminal latch. GetBuffer additionally documents AUDCLNT_E_OUT_OF_ORDER and ReleaseBuffer AUDCLNT_E_INVALID_SIZE, both naming a packet the stream still counts as outstanding 〜 INVALID_SIZE leaves it outstanding so every later GetBuffer answers OUT_OF_ORDER 〜 and in both states GetCurrentPadding keeps returning S_OK, so the client latch never fired and the loop refused one packet per device period forever, each `continue` silent: a wedged stream, permanently silent, with no diagnostic
-- fix (2026-07-25, round 5) 〜 tier 2, the campaign's suffixed checked variant, so round 3's exactly-one-ReleaseBuffer discipline and round 4's landed signature both survive: wasapi_write_checked carries the refusing HRESULT out, total on every arm and S_OK for the documented acquired-but-NULL arm so that arm stays transient, while wasapi_write survives unchanged as the prefill's face 〜 the one call site with no loop to latch. wasapi_packet_terminal = wasapi_terminal plus OUT_OF_ORDER and INVALID_SIZE, and the write arm mirrors the padding arm exactly: terminal, or ANO_WASAPI_REFUSAL_LIMIT consecutive undocumented refusals, logs one ANO_ERROR and breaks through the existing `fail:` unwind, on its OWN counter so a padding blip and a packet blip cannot sum. BUFFER_TOO_LARGE, BUFFER_SIZE_ERROR and BUFFER_OPERATION_PENDING stay transient skips. Guard: none authorable 〜 the TU builds only on Windows; the portable half, that the mixer stays observable once the device thread leaves its loop, is what this latch now causes and is pinned by anotest_audiopaceguard. Inspection-grade: type-checked against a mock Win32 surface, and a Windows host must still confirm that a forced OUT_OF_ORDER stops the render thread with the new line and that ordinary underrun traffic never reaches 50 consecutive packet refusals
+[X] Fixed: audio_win64.c:389: write-arm refusals unclassified; OUT_OF_ORDER/INVALID_SIZE wedged stream silent. test: pending: hardware; portable half anotest_audiopaceguard
+- fix (2026-07-25, round 5): wasapi_write_checked; wasapi_packet_terminal; terminal or 50 consecutive undocumented refusals breaks.
 
-[X] Fixed 〜 audio_mixer.c:616 (ano_audio_mixer_main, the ring-full pacing arm) 〜 a terminal condition polled forever at a fixed rate, with the retry placed above the observability publish: the arm was `if (ring_full) { ano_sleep(1000); continue; }`, correct only while some consumer drains a block per period, but blockRing is popped in exactly two places in tree and both run on the device thread 〜 a designed exit since the round-4 terminal latches. Once that thread leaves its loop the ring is full forever: the mixer becomes a permanent ~1 kHz wakeup that renders nothing and, because the continue precedes the telemetry publish, stops publishing too, freezing blockIndex, underruns and peak with no way for a consumer to tell a dead device from a stalled mixer
-- fix (2026-07-25, round 5) 〜 tier 3, welding the verdict out of state the producer already reads: blockRing.head is the consumer's own cursor and ano_audio_ring_full loads it every turn, so ring-full with head unmoved for a whole ring drain means gone, and the mixer backs off to a half-drain idle that publishes one frame per wake with blockCpuNs 0 and blockIndex frozen 〜 the module's honest "alive, producing nothing" signal instead of a dead lane. Any head movement reverts it to the 1 ms pacing wait, so a wrong verdict is self-correcting; publication factored into one static publish_stats shared by both paths. Tier 4 (an atomic deviceAlive flag every backend clears on terminal exit) was rejected although the brief offered it: it needs five backend TUs to remember the store and still misses a device thread that is alive but wedged, precisely the WASAPI packet wedge above 〜 head-movement subsumes both populations, and it settles round 4's "what observes that the device is gone?" fork without minting an atomic. Pinned by the new anotest_audiopaceguard, which stubs the device backend inside the test TU and counts publishes through the public generatorStats hook: 0 publishes per 500 ms before, 47 after, with a slow-but-live consumer and a returning consumer as controls and a rate ceiling that fails a fix publishing on every pacing turn
+[X] Fixed: audio_mixer.c:616: ring-full continue above telemetry publish; dead device → mixer silent forever. test: anotest_audiopaceguard
+- fix (2026-07-25, round 5): ring-full with head unmoved → half-drain idle that still publishes.
 
 ### Test-side
 
 Four guard-side repairs (three rounds 2-4, one round 6). No census line.
 
-[X] Fixed 〜 tests/anotest_growrollbackguard.c (new) 〜 unpinned invariant: round 1's commit-last growth fix made a refused growth publish nothing, but nothing in tests/ read a capacity field after a refusal, so the rollback was load-bearing and unobserved 〜 any future arm advancing SlotUpload.capacity, transformBuffer.capacity, indirectBuffer.capacity or culling.maxEntities before the commit would have gone unnoticed until the cull dispatch indexed past a buffer that was never grown
-- fix (2026-07-25, round 2) 〜 tier 1: the guard pins all nine capacity faces across six armed mid-chain refusals plus two controls, and doubles as the fail-until-fixed guard for the preserve-copy submit status
+[X] Fixed: tests/anotest_growrollbackguard.c (new): commit-last growth rollback unobserved. test: anotest_growrollbackguard
+- fix (2026-07-25, round 2): pins nine capacity faces across mid-chain refusals.
 
-[X] Fixed 〜 tests/anotest_recordbeginguard.c:232 〜 the guard discarded the now-[[nodiscard]] bool from recordCommandBuffer, warning under -Wunused-result
-- fix (2026-07-25, round 2) 〜 tier 3, the file's existing (void) discard idiom. The return is deliberately not pinned: every assertion in this guard is a stub-ledger assertion, and pinning the return would strengthen a guard the campaign fences as written
+[X] Fixed: tests/anotest_recordbeginguard.c:232: discarded [[nodiscard]] recordCommandBuffer bool. test: same
+- fix (2026-07-25, round 2): (void) discard idiom; return deliberately unpinned.
 
-[X] Fixed 〜 tests/anotest_acquirerecycleguard.c, "tail: presentation failure on a submitted frame" 〜 the phase expected the loop to continue past any present failure, which is the inverse of the terminal-latch ruling, so registering the file unchanged would have hard-failed the suite
-- fix (2026-07-25, round 4) 〜 tier 5: the phase splits at the recoverable line, asserting both sides. The general form is worth keeping 〜 when a ruling partitions a failure domain, the guard should assert both halves, or a fix that latches on everything (including OUT_OF_DATE, wedging every legitimate resize) passes just as happily as the correct one
+[X] Fixed: tests/anotest_acquirerecycleguard.c presentation-failure tail: expected continue past any present failure. test: same
+- fix (2026-07-25, round 4): phase splits at recoverable line; asserts both halves.
 
-[X] Fixed 〜 tests/anotest_staticrowdecodeguard.c:181 〜 a comment stating an invariant stronger than any of the guard's own CHECKs enforce: "any ANO_ERROR is a failure" is asserted in exactly one of its nine drains, and round 5 made it false for two of that guard's own canaries. It stayed green, but a future reader tightening the CHECKs to match the comment would have turned a registered guard red against correct behaviour
-- fix (2026-07-25, round 6) 〜 tier 5, the comment corrected to describe the scope the CHECK actually has. No CHECK, no control flow and no scenario was touched, per the campaign's registered-guard rule
+[X] Fixed: tests/anotest_staticrowdecodeguard.c:181: comment claimed any ANO_ERROR is failure; stronger than CHECKs. test: same
+- fix (2026-07-25, round 6): comment matches CHECK scope.
 
 ### Adjudicated contracts (2026-07-25)
 
-Ten rulings written into the tree (not only into a fix). First seven: rounds 1-4. Last three: rounds 5-6.
+Ten rulings written into the tree. First seven rounds 1-4. Last three rounds 5-6.
 
-backend.h, static-region contract 〜 STATIC light rows and shadow registrations are scene-lifetime, caller-owned; no entity-follow on DESTROY. Re-registration is replace. RFIELD_LIGHT has no field mask: static UPDATE is whole-row; castsShadow 0 is revoke. Lives in backend.h's ANO_STATIC_LIGHT_COUNT block. Masked-RMW deferred.
+backend.h, static-region: STATIC rows/shadows scene-lifetime, caller-owned; no entity-follow on DESTROY; re-registration is replace; RFIELD_LIGHT no field mask; castsShadow 0 is revoke.
 
-anoptic_time.h:20, exclude-suspend 〜 monotonic clock excludes suspended time on every platform. Header: "Excludes time the system spends suspended". TSC re-anchor uses QueryUnbiasedInterruptTimePrecise; QPC fallback annotated best-effort. `src/time/CMakeLists.txt` links mincore.
+anoptic_time.h:20, exclude-suspend: monotonic clock excludes suspended time; TSC re-anchor via QueryUnbiasedInterruptTimePrecise; mincore linked.
 
-texture.h, VK_NULL_HANDLE borrow 〜 one spelling on the three faces: deliberate no-borrow and failed caller mint both take the per-op path; refused per-op mint answers false with nothing recorded. parseGltf is the model caller. Distinguishable absent-CB spelling deferred to texture-module owner.
+texture.h, VK_NULL_HANDLE borrow: no-borrow and failed mint both take per-op path; refused per-op mint answers false with nothing recorded.
 
-PipelinePrototype, commit-last 〜 writers own (implementationCount, implementations) atomicity via commit-last; reader gate stays; teardown dissolves count-first. Inline PipelineImplementation[3] deferred under "Non-bug follow-ups" below.
+PipelinePrototype, commit-last: writers own (count, implementations) atomicity; teardown dissolves count-first.
 
-vulkanMaster.c, terminal latch 〜 unrecoverable frame faults latch through the existing close door: one file-scope flag, three ANO_FATAL arms, early-out at drawFrame top. Recreate arms untouched. Device/surface rebuild replaces this latch later.
+vulkanMaster.c, terminal latch: unrecoverable frame faults latch through close door; recreate arms untouched.
 
-ano_GltfParser.c, bindless-full latch 〜 after first ANO_BINDLESS_NONE, skip further decode/upload in that parse. Latch parse-local from registrar answer; texture.c remains sole fullness decoder. Fullness predicate export deferred.
+ano_GltfParser.c, bindless-full latch: after first ANO_BINDLESS_NONE skip further decode/upload in that parse.
 
-apply.c, shared static light decode 〜 one decode for static and runtime; casting static UPDATE refreshes owned influence volumes via no-grant `refresh_static_shadow` in shadow_casters.c. Closed rounds 5-6; contract prose states full lifecycle.
+apply.c, shared static light decode: one decode for static and runtime; casting UPDATE refreshes owned volumes via refresh_static_shadow.
 
-bridge/apply.c, static-UPDATE report rate 〜 unbounded per offending command, matching `gate_light_domain`. Per-row latch / refusals-budget rejected.
+bridge/apply.c, static-UPDATE report rate: unbounded per offending command, matching gate_light_domain.
 
-geometry.h, mesh refusal sentinel 〜 ANO_MESH_NONE = 0xFFFFFFFFu, welded against ANO_MAX_MESHES / NO_MESH_INDEX / ANO_RENDER_NO_MESH. Same shape as bindless. Fallback-mesh arm unwinds like texture twin.
+geometry.h, mesh refusal sentinel: ANO_MESH_NONE = 0xFFFFFFFFu, welded against mesh absents.
 
-include/anoptic_render.h, castsShadow static lane 〜 public header documents both lanes per-command (voice matches sibling `type`). backend.h keeps renderer-side text.
+include/anoptic_render.h, castsShadow static lane: public header documents both lanes per-command.
 
 ### Platform verification posture
 
 Four platform defects plus four Windows strays: inspection-grade with checklists, not host-verified. Darwin barrier fix verified on-host.
 
-Darwin barrier: negative control (9/count-3 → 611 early releases, 4662 unclosed/20000; 16/count-5 deadlocked) vs fix (exact cohorts, TSan clean). `tests/anotest_barriercohortguard.c` green 57/57; passes on Linux/glibc.
+Darwin barrier: negative control (9/count-3 → 611 early releases, 4662 unclosed/20000; 16/count-5 deadlocked) vs fix (exact cohorts, TSan clean). anotest_barriercohortguard green 57/57; passes on Linux/glibc.
 
-Win64 census (inspection): `filesystem_win64.c:137` needs redirector/filter returning TRUE with 0 written. `audio_win64.c:589` needs DSound fallback + DSSCL_PRIORITY focus loss. `time_win64.c:148` needs TSC election + real S3/S4; mincore link landed in `src/time/CMakeLists.txt`.
+Win64 census (inspection): filesystem_win64.c:137 needs redirector/filter TRUE+0 written. audio_win64.c:589 needs DSound + DSSCL_PRIORITY focus loss. time_win64.c:148 needs TSC election + real S3/S4; mincore link landed.
 
-Windows strays: WASAPI packet-arm latch (OUT_OF_ORDER / INVALID_SIZE → one ANO_ERROR, stop thread; underrun never hits 50). DSound recovery (focus return resumes; Play/Lock refuse after Restore retries). WASAPI packet pairing (NULL GetBuffer → zero-frame ReleaseBuffer accepted). WASAPI terminal latch (unplug / stop service / format change → one ANO_ERROR, thread gone; healthy shutdown silent; COM teardown once each).
+Windows strays: WASAPI packet-arm latch; DSound recovery; WASAPI packet pairing; WASAPI terminal latch. Win32-gated guards left open until a Windows runner exists.
 
-Win32-gated guards left open until a Windows runner exists; authored-blind targets refused.
 
 ## Campaign closeout (2026-07-27)
 
-The 2026-07 bug hunt is closed. The final board is 151 of 151 tallied findings retired: 149 fixed, one refuted after an end-to-end ownership trace, one wontfix retained by explicit ruling, and zero open. Post-census test failures are recorded separately and do not alter the source tally.
+The 2026-07 bug hunt is closed. Final board 151 of 151 tallied findings retired: 149 fixed, one refuted, one wontfix, zero open. Post-census test failures recorded separately; do not alter source tally.
 
 ### Final accounting
 
@@ -813,72 +795,72 @@ The 2026-07 bug hunt is closed. The final board is 151 of 151 tallied findings r
 | Open | 0 |
 | Tallied total | 151 |
 
-The source census began with 70 verified findings and 41 lead records; four leads duplicated verified findings, yielding 107 distinct initial concerns. Later passes promoted new verified defects as they were proven. Root-cause tags were assignments, not defect counts, and every finding had one primary remediation bucket.
+Source census began with 70 verified findings and 41 lead records; four leads duplicated verified findings, yielding 107 distinct initial concerns. Later passes promoted new verified defects. Root-cause tags were assignments, not defect counts; every finding had one primary remediation bucket.
 
 ### Final source retirements
 
-[X] Fixed 〜 filesystem_win64.c:33 〜 the Windows game-path query rejected the whole executable path against the smaller engine path capacity before removing the filename, unlike both POSIX siblings, so legal installs near the Win32 path ceiling failed before their valid directory length was known.
+[X] Fixed: filesystem_win64.c:33: Windows game-path rejected whole exe path against smaller engine capacity before filename trim. test: pending / sibling parity
 - odd-sibling-out
-- fix (2026-07-27) 〜 reject only a failed or truncated GetModuleFileNameA result, trim the filename, then validate the directory against MAXPATH before copying it into ano_fspath.
+- fix (2026-07-27): reject only failed/truncated GetModuleFileNameA; trim; then validate directory against MAXPATH.
 
-[X] Fixed 〜 memory.c:9 〜 ano_heap_release forwarded a NULL local heap to mi_heap_destroy, turning five graceful allocation-refusal paths into mimalloc debug assertions.
+[X] Fixed: memory.c:9: ano_heap_release forwarded NULL heap to mi_heap_destroy; mimalloc debug asserts. test: pending / cleanup-attr paths
 - unguarded-delegation
 - seam-validation
-- fix (2026-07-27) 〜 destroy only a non-NULL heap; cleanup attributes remain total when heap creation fails.
+- fix (2026-07-27): destroy only non-NULL heap.
 
-[X] Fixed 〜 music_host.c:45 〜 cadence validation admitted ANO_CADENCE_NONE even though downstream cadence tables contain only the three real policies, allowing the sentinel to become a negative table index.
+[X] Fixed: music_host.c:45: cadence validation admitted ANO_CADENCE_NONE; sentinel became negative table index. test: pending / cadence ingress
 - seam-validation
 - odd-sibling-out
-- fix (2026-07-27) 〜 cadence_ok accepts only ANO_CADENCE_AUTHENTIC through ANO_CADENCE_DECEPTIVE, and invalid config entries fall back to AUTHENTIC instead of publishing the sentinel.
+- fix (2026-07-27): cadence_ok accepts AUTHENTIC..DECEPTIVE; invalid config falls back to AUTHENTIC.
 
-[X] Fixed 〜 music_host.c:232 〜 the register-center override cast an unchecked double into the MIDI placement domain, allowing out-of-range values to truncate or silence the generated melody.
+[X] Fixed: music_host.c:232: register-center override cast unchecked double into MIDI domain. test: pending / override seam
 - seam-validation
 - odd-sibling-out
-- fix (2026-07-27) 〜 the override is active only when the value lies in the MIDI 0..127 domain; rejected values clear the override instead of reaching the cast.
+- fix (2026-07-27): active only for MIDI 0..127; else clear override.
 
-[X] Fixed 〜 music_host.c:226 〜 the tempo override accepted zero, negative, NaN, and infinity, allowing division by zero and out-of-range floating-to-integer conversion in the synth clock.
+[X] Fixed: music_host.c:226: tempo override accepted 0/negative/NaN/inf; clock div0 / float→int UB. test: pending / override seam
 - seam-validation
 - odd-sibling-out
-- fix (2026-07-27) 〜 the override is active only for finite positive values; refusal clears the pin and leaves the mapped tempo path authoritative.
+- fix (2026-07-27): active only for finite positive; else clear pin.
 
-[~] Refuted 〜 shadow_resources.c:22 〜 the proposed local partial-build unwind was based on reading createShadowResources in isolation. Its handles publish directly into the zero-initialized RendererState that owns them, ano_vk_create_scene_resources propagates every refusal to initVulkan, vulkanGarbage.ctx is already registered, and initVulkan calls unInitVulkan on that arm. cleanupVulkan handle-guards and destroys the published shadow buffers, image views, images, SlotUploads, and CPU mirror; the transient command buffer retires with its command pool; GPU arena spans intentionally retire with allocator teardown. No acquired resource becomes unreachable, so a second local owner would duplicate the established caller-owned unwind rather than close a leak.
+[~] Refuted: shadow_resources.c:22: proposed local partial-build unwind. Handles publish into zeroed RendererState; refusal propagates to initVulkan → unInitVulkan; cleanupVulkan destroys published shadow resources; arena spans retire with allocator teardown. No unreachable acquisition. test: n/a
 - ownership-leak
-- refuted (2026-07-27) 〜 end-to-end acquisition, propagation, teardown, and allocator-custody trace; no source change.
+- refuted (2026-07-27): end-to-end acquisition/propagation/teardown/allocator trace; no source change.
 
-[X] Fixed 〜 instance.c:192 〜 getRequiredExtensions duplicated every Vulkan extension name but returned and freed only the pointer array, leaking the copied strings on every boot.
+[X] Fixed: instance.c:192: getRequiredExtensions duplicated extension name strings then freed only pointer array. test: pending / boot
 - ownership-leak
-- fix (2026-07-27) 〜 retain the one allocated pointer array and store borrowed GLFW pointers and static extension-name literals; vkCreateInstance consumes them before the array is freed.
+- fix (2026-07-27): one pointer array of borrowed GLFW/static literals.
 
-[X] Fixed 〜 ano_GltfParser.c:236 〜 a skipped primitive retained calloc zero as geometryPoolIndex, aliasing the fallback mesh instead of the absent-mesh sentinel and spawning a cube for malformed or unsupported geometry.
+[X] Fixed: ano_GltfParser.c:236: skipped primitive kept geometryPoolIndex 0; aliased fallback mesh. test: pending / parse skip
 - silent-drop
-- fix (2026-07-27) 〜 initialize every primitive row to ANO_MESH_NONE before validation; only a successful geometry upload overwrites it.
+- fix (2026-07-27): initialize rows to ANO_MESH_NONE; only successful upload overwrites.
 
-[X] Fixed 〜 ano_strings_collate.c:504 〜 allocation-refusal fallbacks used qsort and abandoned the public stability contract for equal strings and symbols.
+[X] Fixed: ano_strings_collate.c:504: allocation-refusal fallbacks used qsort; broke equal-key stability. test: pending / collate fallback
 - odd-sibling-out
-- fix (2026-07-27) 〜 both no-scratch arms use stable in-place insertion, preserving input order for equal keys while keeping the allocation-free fallback total.
+- fix (2026-07-27): stable in-place insertion on both no-scratch arms.
 
-[X] Fixed 〜 text_gpos.c:294 〜 fixed arrays silently truncated kern lookup and subtable inventories, and the lookup budget could be consumed by irrelevant non-PairPos lookups before valid kerning data was reached.
+[X] Fixed: text_gpos.c:294: fixed arrays truncated kern inventories; non-PairPos lookups could exhaust budget first. test: pending / GPOS extract
 - silent-drop
-- fix (2026-07-27) 〜 size both inventories from the parsed GPOS counts on a local heap, validate lookup indices, grow the subtable array as needed, and return EIO or ENOMEM instead of reporting truncated success.
+- fix (2026-07-27): size inventories from parsed counts on local heap; grow subtables; EIO/ENOMEM on failure.
 
-[X] Fixed 〜 time_win64.c:402 〜 ano_sleep requests at or below one millisecond bypassed every scheduler-facing path and became pure busy-waits, violating the public sleep contract.
+[X] Fixed: time_win64.c:402: ano_sleep ≤1 ms bypassed scheduler path into pure busy-wait. test: pending / sleep contract
 - odd-sibling-out
-- fix (2026-07-27) 〜 every nonzero request enters the coarse stage; the fallback uses a do-while so sub-millisecond requests execute Sleep(0) once before the precision spin tail.
+- fix (2026-07-27): every nonzero request enters coarse stage; do-while Sleep(0) before precision spin.
 
 ### Post-census test-side corrections
 
-[X] Fixed 〜 threads_macos.c barrier waiter and tests/anotest_threads.c watchdog 〜 the Darwin barrier monopolized undersubscribed CI cores while the test's fixed 30-second watchdog mislabeled continuing progress as deadlock.
+[X] Fixed: threads_macos.c barrier waiter and tests/anotest_threads.c watchdog: bare spin starved CI; 30s wall watchdog mislabeled progress as deadlock. test: anoptic_threads
 - unbounded-spin
-- fix (2026-07-27) 〜 the barrier escalates from processor relax to scheduler yield to a short park, while the watchdog fails only after ten seconds of frozen progress. The pushed macOS headless job passed anoptic_threads in 0.23 seconds; the TSan job passed it in 1.64 seconds.
+- fix (2026-07-27): relax → yield → park; watchdog on 10s frozen tally. macOS headless 0.23s; TSan 1.64s.
 
-[X] Fixed 〜 tests/anotest_time.c granularity test 〜 the test treated the minimum elapsed time between two instrumented clock calls as clock resolution, so TSan's 110 ns call overhead failed an arbitrary sub-100 ns threshold on Linux and printed a Windows-QPC diagnosis.
+[X] Fixed: tests/anotest_time.c granularity test: min elapsed treated as resolution; TSan call overhead failed sub-100 ns threshold. test: tests-tsan Nix package
 - test false-positive
-- fix (2026-07-27) 〜 compute the GCD of observed tick deltas to recover counter quantization independently of call overhead, while retaining advance and monotonicity checks. The exact tests-tsan Nix package passes.
+- fix (2026-07-27): GCD of observed tick deltas for quantization; keep advance/monotonicity checks.
 
 ### Non-bug follow-ups
 
-These were deliberately excluded from the bug tally.
+Deliberately excluded from the bug tally.
 
-- Monitors ledger: enumerateMonitors is hardened but initWindow still re-queries GLFW; a future config-surface pass can consume the ledger or delete the redundant query.
-- Bindless capacity: consumers currently latch the registrar refusal word; a future checked face could return slot and capacity closure together if slot release is introduced.
-- PipelinePrototype: inline PipelineImplementation[3] would delete the count/pointer pair and its allocation family, but changes components.h and is a layout refactor rather than a bug fix.
+- Monitors ledger: enumerateMonitors hardened; initWindow still re-queries GLFW.
+- Bindless capacity: consumers latch refusal word; future checked face could return slot+capacity if release lands.
+- PipelinePrototype: inline PipelineImplementation[3] would delete count/pointer pair; layout refactor, not a bug fix.

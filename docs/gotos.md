@@ -1,25 +1,26 @@
 # Labelled unwind
 
-House rules for `goto` in Anoptic. Part 1 is the convention: read it before every error-path review. Part 2 maps what has not been converted. Part 2 authorizes nothing.
+House rules for `goto` in Anoptic. Part 1 is the convention. Part 2 maps what has not been converted. Part 2 authorizes nothing.
 
-Reference: Vulkan pipeline builders as of 2026-07-25 (`flat.c`, `shadow_pipe.c`, `compute.c`, `tonemap.c`, `additive.c`, `transmission.c`, `text_raster.c`) and the audio module since written (`ano_audio.c`, `audio_linux.c`, `audio_macos.c`, `audio_win64.c`). Distilled from those and from Linux kernel, curl, SQLite, OpenSSL, FreeBSD style(9).
+Reference: Vulkan pipeline builders as of 2026-07-25 (`flat.c`, `shadow_pipe.c`, `compute.c`, `tonemap.c`, `additive.c`, `transmission.c`, `text_raster.c`) and the audio module (`ano_audio.c`, `audio_linux.c`, `audio_macos.c`, `audio_win64.c`). Distilled from those and from Linux kernel, curl, SQLite, OpenSSL, FreeBSD style(9).
+
 
 # Part 1 - the convention
 
 ## When goto is right
 
-Three cases, one property.
+Three cases.
 
-- Multi-acquisition unwind. Two or more resources in sequence; any step can refuse. Without a label, discharge sites grow with arms × resources; with one they do not.
-- Single-exit cleanup. Something must happen on every exit: lock dropped, count committed, out-param totalled. C will not do it for you.
-- Emergency escape hatch. Abandon the body, rejoin at a common tail. `drawFrame` (`vulkanMaster.c:289`, `:315`) takes `goto discharge` when recording or submit refuses: no frame submitted or presented; acquired swapchain image still discharged at `:360`.
+- Multi-acquisition unwind. Two or more resources in sequence; any step can refuse.
+- Single-exit cleanup. Lock drop, count commit, out-param total on every exit.
+- Emergency escape hatch. Abandon the body, rejoin at a common tail. `drawFrame` (`vulkanMaster.c:289`, `:315`) takes `goto discharge` when recording or submit refuses; acquired swapchain image still discharged at `:360`.
 
-Shared property: one destination below, every arm agrees. Alternative is a repeated block or a flag through nested ifs. Both drift. A label cannot.
+> CONVENTION: One destination below. Every arm agrees.
 
 ## When goto is banned
 
-- Anything a structured construct expresses. `break`, `continue`, `return`, early guard, inverted condition. A jump one statement down is noise.
-- Backward jumps. Every label below every jump reaching it. A backward `goto` is a hand-written loop; write the loop.
+- Anything `break`, `continue`, `return`, early guard, or inverted condition already expresses.
+- Backward jumps. Write a loop.
 - Jumping into the scope of a variably-modified type. C forbids it. Hoist the VLA or size it statically.
 - Out of a function. Failure return; the label is how every arm reaches one.
 - Where scope-bound cleanup already runs. `LOCALHEAPATTR` releases on every exit; a label freeing the same heap is a double free.
@@ -29,8 +30,10 @@ Shared property: one destination below, every arm agrees. Alternative is a repea
 - `fail` for an unwind. Suffix when more than one: `fail_blur`, `fail_published`, `fail_pcm`. Suffix names the phase or thing discharged, never the arm.
 - `discharge`, `done`, `out` for escape hatches that are not failures. `drawFrame` says `discharge` because the frame is abandoned, not failed.
 - Labels at end of function, after success `return`, column 0. Never mid-function, never inside a block or loop.
-- Success path returns above the first `fail:` and never falls into one. The `return true;` above `fail:` is load-bearing. Merged `done:`/`out:` is the deliberate exception.
+- Success path returns above the first `fail:` and never falls into one. Merged `done:`/`out:` is the deliberate exception.
 - Comment above the label states what makes discharge safe (usually null-safety) and what it does not own. `flat.c:307` is the template.
+
+> CONVENTION: The `return true;` above `fail:` is load-bearing.
 
 ## The two shapes
 
@@ -46,7 +49,7 @@ fail_a:	un_a();
 	return false;
 ```
 
-Each arm jumps to the label matching what it holds. Labels fall through in reverse acquisition order. Nothing discharged twice; nothing inert discharged. One label per acquisition. Insert an acquisition mid-chain and every arm below must be re-pointed.
+Each arm jumps to the label matching what it holds. Labels fall through in reverse acquisition order. One label per acquisition.
 
 Single discharge:
 
@@ -67,11 +70,11 @@ fail:
 
 Everything inert at declaration; one label discharges everything unconditionally; every arm jumps there.
 
-House choice: single discharge wherever every deallocator at the label is null-safe. Cascade where one is not.
+> CONVENTION: Single discharge wherever every deallocator at the label is null-safe. Cascade where one is not.
 
-`free(NULL)`, `mi_free(NULL)`, `ano_aligned_free(NULL)` and every `vkDestroy*`/`vkFree*` on `VK_NULL_HANDLE` are no-ops. `dlclose(NULL)`, `fclose(NULL)`, `pw_thread_loop_destroy(NULL)`, `AudioComponentInstanceDispose(NULL)` and most third-party `*_destroy` are not. No null contract → cascade (wrapping each discharge in `if` is cascade with worse names). `pw_start` (`audio_linux.c:371`, five labels over dlopen, pw_init, loop, stream, thread-start) is right and stays.
+`free(NULL)`, `mi_free(NULL)`, `ano_aligned_free(NULL)` and every `vkDestroy*`/`vkFree*` on `VK_NULL_HANDLE` are no-ops. `dlclose(NULL)`, `fclose(NULL)`, `pw_thread_loop_destroy(NULL)`, `AudioComponentInstanceDispose(NULL)` and most third-party `*_destroy` are not. No null contract means cascade. `pw_start` (`audio_linux.c:371`, five labels over dlopen, pw_init, loop, stream, thread-start) is right and stays.
 
-Where both shapes are legal: house shape runs a handful of no-op frees on the error path; buys identical arms and immunity to arm-reorder/insert mistakes. Error paths are cold. Take it.
+Where both shapes are legal, take single discharge. Error paths are cold.
 
 ## Two variants of the single label
 
@@ -81,9 +84,9 @@ Arena, prefer when available: every acquisition from one scoped heap; label is o
 
 ## One label per phase
 
-One label per disjoint acquisition phase. Disjoint: earlier phase fully discharged before the later begins.
+> CONVENTION: One label per disjoint acquisition phase. Earlier phase fully discharged before the later begins.
 
-`ano_vk_init_shadow` (`shadow_pipe.c:23`) is the reference. Depth phase's four blobs and five modules discharged at `:176-186`; blur phase declares its own pair and carries `blur_done:` (`:266`). One label spanning both would double-free depth-phase locals already gone.
+`ano_vk_init_shadow` (`shadow_pipe.c:23`) is the reference. Depth phase's four blobs and five modules discharged at `:176-186`; blur phase declares its own pair and carries `blur_done:` (`:266`).
 
 `ano_vk_init_compute` (`compute.c:24`) is the counterexample: nine stages, one label, no phase boundary. Nine blob/module pairs sit in `sh[SH_COUNT]` (`:30`) held to exit. Split when phases share no shape. When phases are repetitions of one shape, hold the resources and keep one label.
 
@@ -91,44 +94,43 @@ One label per disjoint acquisition phase. Disjoint: earlier phase fully discharg
 
 Hoist every resource the label touches to the top of the region and give it the value its deallocator ignores: `NULL`, `VK_NULL_HANDLE`, `{0}`, `-1` for a descriptor.
 
-1. Label discharges unconditionally, so an unacquired resource must already be inert.
-2. Jumped-over initializers. A `goto` past a declaration does not run its initializer; value is indeterminate; reading at the label is UB. Top-of-region declaration with an initializer every arm passes through is mandatory.
+> CONVENTION: Label discharges unconditionally, so an unacquired resource must already be inert.
+> CONVENTION: A `goto` past a declaration does not run its initializer. Top-of-region declaration with an initializer every arm passes through is mandatory.
 
-Corollary: a non-total-on-failure callee breaks the rule from outside. `loadFile` once left `buffer->data` dangling on a short read, so every builder re-inerts: `{ code.data = NULL; goto fail; }`. Defensive now the callee is total (`pipeline.c:63`); kept; deleted with `loadFile`. New code: fallible callee writes total out-params or it is the bug.
+A non-total-on-failure callee breaks the rule from outside. `loadFile` once left `buffer->data` dangling on a short read, so every builder re-inerts: `{ code.data = NULL; goto fail; }`. Defensive now the callee is total (`pipeline.c:63`); kept; deleted with `loadFile`. New code: fallible callee writes total out-params or it is the bug.
 
 ## Discharge idempotence
 
-Every deallocator at a label must be null-safe, or the pointer re-inerted after discharge. No third option.
+> CONVENTION: Every deallocator at a label must be null-safe, or the pointer re-inerted after discharge. No third option.
 
 - Null-safe by contract: `free`, `mi_free`, `ano_aligned_free` (mi_free by delegation), every `vkDestroy*`/`vkFree*` on `VK_NULL_HANDLE`.
 - Not null-safe: `dlclose`, `fclose`, third-party destroy, anything taking a handle by value with no documented null case. Read the contract.
-- Re-inert after discharge when a path below still names what was released, or restructure so nothing is released twice. `ano_vk_init_compute` took the second: stopped mid-stage discharge; one `out:` (`compute.c:486`) discharges all nine pairs at most once. Where mid-function discharge must stay, split the label: `shadow_pipe.c:187`.
+- Re-inert after discharge when a path below still names what was released, or restructure so nothing is released twice. `ano_vk_init_compute` took the second: one `out:` (`compute.c:486`) discharges all nine pairs at most once. Where mid-function discharge must stay, split the label: `shadow_pipe.c:187`.
 
-Discharge set: acquired and not yet published. A resource that escapes through an out-param on success is not the label's. `createTextureImage` hands its staging buffer out at `texture.c:526`; a label there owns that buffer only above that line. Wrong = use-after-free in the caller, not a leak.
+Discharge set: acquired and not yet published. A resource that escapes through an out-param on success is not the label's. `createTextureImage` hands its staging buffer out at `texture.c:526`; a label there owns that buffer only above that line.
 
-Success epilogue and label body are frequently identical (`tonemap.c:141-144` against `:154-157`; both `text_raster.c` builders). Duplication accepted under roughly six lines: shared `out:` with a status variable saves them and costs a status branch on the hardest path to trace.
-
-Trade flips when the duplicate is a per-stage tail keeping null-after-discharge. `ano_vk_init_compute` deleted its tails for a merged `out:` behind hoisted `bool ok` (`compute.c:29`, `:486`); `flat.c:309` same at one stage. One discharge site that runs at most once has no invariant to maintain. Resources live until exit (nine SPIR-V blobs/modules, under a megabyte, once): fine on one-shot init, not in the frame loop.
+Success epilogue and label body are frequently identical (`tonemap.c:141-144` against `:154-157`; both `text_raster.c` builders). Duplication accepted under roughly six lines. Trade flips when the duplicate is a per-stage tail keeping null-after-discharge. `ano_vk_init_compute` deleted its tails for a merged `out:` behind hoisted `bool ok` (`compute.c:29`, `:486`); `flat.c:309` same at one stage. Resources live until exit (nine SPIR-V blobs/modules, under a megabyte, once): fine on one-shot init, not in the frame loop.
 
 ## What a label must never do
 
 - Allocate. A cleanup path that can fail has no cleanup path.
 - Log at more than one site. One diagnostic per failure. Distinct messages log at the arm; label stays silent.
 - Return anything but the failure value. No partial success.
-- Discharge what the caller owns, or what teardown will discharge later. `flat_init_with_cull` frees blobs and modules; leaves pipelines, layout and cache to `ano_pipeline_flat_cleanup`. Freeing them at the label double-frees at teardown.
+- Discharge what the caller owns, or what teardown will discharge later. `flat_init_with_cull` frees blobs and modules; leaves pipelines, layout and cache to `ano_pipeline_flat_cleanup`.
 - Run on the success path, if named `fail`. Merged `done:`/`out:` runs on both by design.
 
 ## Relationship to the rest
 
 - Bugs go in `docs/BUGS.md`, not beside the label. Known-wrong unwind = census entry with named test, never `// TODO: leaks here`.
-- Contract forks get adjudicated, not hidden in error paths. Unsettled ownership lifted out and ruled on (`docs/BUGS_DONE.md`, "Adjudicated contracts"). An unwind over an open fork settles it silently: what Part 2's fence prevents.
+- Contract forks get adjudicated, not hidden in error paths. Unsettled ownership lifted out and ruled on (`docs/BUGS_DONE.md`, "Adjudicated contracts").
 - Five-tier hierarchy (`.claude/skills/invariants/SKILL.md`) ranks the repair. Labelled unwind is tier-1: makes the leak unconstructible.
+
 
 # Part 2 - the map
 
 Survey of where the idiom would land next. Nothing here authorizes conversion. No code changes now.
 
-Not a custody fix: changes where discharge is written, never who owns. Entry blocked on ownership stays blocked; converting early settles ownership silently.
+Not a custody fix: changes where discharge is written, never who owns. Entry blocked on ownership stays blocked.
 
 Not warranted below about three arms: `render_slots_alloc_range` closed with `alloc_range_rollback` per arm and is right; `initSwapChain` (`swapchain.c:149`) took null-safe `freeSupportDetails` in the trivial-fix wave, deleted 2026-07-26 when the query returned values only. Roughly: one or two arms take a helper, three or more take a label.
 
@@ -170,7 +172,7 @@ Ranked by what a failure strands, not arm count. First two strand live resources
 
 Already converted, leave alone: all three audio platform backends - `alsa_start` (`audio_linux.c:93`), `pw_start` (`:371`), `coreaudio_start` (`audio_macos.c:56`), `wasapi_start`/`wasapi_main`/`dsound_start`/`dsound_main` (`audio_win64.c:472`/`:313`/`:808`/`:691`) - all cascading labels, all correct for their non-null-safe deallocators.
 
-Already discharged by scope; converting would be a regression: `ano_meshoptimizer.c` `ano_optimize_vertex_cache` (`:119`) and `ano_simplify_ex` (`:662`), and `audio_mixer.c:685` `ano_audio_render_offline`, all `LOCALHEAPATTR`. Bare returns correct by construction. Recorded so a later sweep does not re-flag on arm count.
+Already discharged by scope; converting would be a regression: `ano_meshoptimizer.c` `ano_optimize_vertex_cache` (`:119`) and `ano_simplify_ex` (`:662`), and `audio_mixer.c:685` `ano_audio_render_offline`, all `LOCALHEAPATTR`. Bare returns correct by construction.
 
 Below the bar or holding nothing: `getRequiredExtensions` (`instance.c:171`, no arms; defects are unchecked `calloc` and per-string `strdup` leak, neither a label addresses), `createImageViews` (`swapchain.c:455`, already unwinds its own prefix), `recordCommandBuffer` (`frame/record.c:20`, three arms but no resource), `ano_vk_ui_init` (`ui_raster.c:186`, degrades rather than refusing), `ano_text_font_load` (`text.c:124`, two arms, under the bar), plus `createInstance`, `initWindow`, `ano_vk_init_geometry_pool`, `createDescriptorPool`, `createBindlessTextureArray`, `ano_synth_create`, `ano_synth_score_begin`, `ano_synth_live_begin`, `ano_music_create`, `ano_render_ui_set`.
 
