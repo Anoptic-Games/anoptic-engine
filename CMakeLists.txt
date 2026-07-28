@@ -77,10 +77,13 @@ if(UNIX)
     add_compile_options(-fno-omit-frame-pointer)
 endif()
 
-# ano_scrub: delete every object file.
+# ano_scrub: delete every first-party object file. Policy (and the ANO_SCRUB override)
+# lives in scrub_objects.cmake; the default passed here is Release-only, matching LTO.
 add_custom_target(ano_scrub
-    COMMAND ${CMAKE_COMMAND} -DANO_SCRUB_DIR=${CMAKE_BINARY_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/scrub_objects.cmake
-    COMMENT "Scrubbing object files (whole rebuild ahead)"
+    COMMAND ${CMAKE_COMMAND} -DANO_SCRUB_DIR=${CMAKE_BINARY_DIR}
+            -DANO_SCRUB_DEFAULT=$<CONFIG:Release>
+            -P ${CMAKE_SOURCE_DIR}/cmake/scrub_objects.cmake
+    COMMENT "Applying object scrub policy"
     VERBATIM)
 
 option(ANOPTIC_TESTS "Build the Anoptic test suite" OFF)

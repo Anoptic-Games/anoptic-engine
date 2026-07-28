@@ -341,8 +341,13 @@ export default function NixBuildSystemRundown() {
           IS Nix's native execution model. A derivation cannot build
           incrementally: the sandbox starts empty every time, and the unit of
           caching is the whole immutable output, keyed by the hash of every
-          input. `ano_scrub` exists only to impose that same discipline on the
-          mutable `build/` trees the dev shells use.
+          input. `ano_scrub` imposes that same discipline on the mutable
+          `build/` trees the dev shells use 〜 but only where it pays for
+          itself. The target always runs; `cmake/scrub_objects.cmake` decides,
+          so every caller gets the same answer. It scrubs on Release (LTO is
+          Release-only) and goes incremental on Debug and the sanitizer
+          profiles. Pinned submodules are never scrubbed. `ANO_SCRUB=1` forces
+          a whole build of any config, `ANO_SCRUB=0` skips one.
         </Text>
       </Stack>
 
@@ -529,7 +534,7 @@ export default function NixBuildSystemRundown() {
           rows={[
             [
               <Code>build.sh</Code>,
-              "The dev-loop driver: profiles 1–7 map to Release / Debug / Tests / ASan / TSan / Headless / Release-tests. Runs ano_scrub before every build 〜 the whole-build policy applied to the repo's mutable build/ trees.",
+              "The dev-loop driver: profiles 1–8 map to Release / Debug / Headless / Headless-debug / Tests / Tests+ASan / Tests+TSan / O3-tests. Runs ano_scrub before every build; the target itself scrubs only the Release configs (1, 3, 8) and leaves the rest incremental. ANO_SCRUB=1 / 0 overrides either way.",
             ],
             [
               "…inside nix develop (or via nix run)",
