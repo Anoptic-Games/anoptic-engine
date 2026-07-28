@@ -286,7 +286,9 @@ if(TARGET anoptic_render)
     add_dependencies(anoptic_test_resources anoptic_shaders)
     if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
         add_custom_command(TARGET anoptic_test_resources POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets ${CMAKE_CURRENT_BINARY_DIR}
+                COMMAND ${CMAKE_COMMAND} -DANO_ASSETS_SRC=${CMAKE_SOURCE_DIR}/assets
+                        -DANO_ASSETS_DST=${CMAKE_CURRENT_BINARY_DIR}
+                        -P ${CMAKE_SOURCE_DIR}/cmake/stage_assets.cmake
                 VERBATIM)
     endif()
 

@@ -291,7 +291,9 @@ if(ANOPTIC_HEADLESS OR Vulkan_FOUND)
         # Stage test assets next to the binary.
         if(EXISTS ${CMAKE_SOURCE_DIR}/assets)
             add_custom_command(TARGET anopticengine POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:anopticengine>
+                    COMMAND ${CMAKE_COMMAND} -DANO_ASSETS_SRC=${CMAKE_SOURCE_DIR}/assets
+                            -DANO_ASSETS_DST=$<TARGET_FILE_DIR:anopticengine>
+                            -P ${CMAKE_SOURCE_DIR}/cmake/stage_assets.cmake
                     COMMENT "Staging assets/ next to anopticengine"
                     VERBATIM)
         endif()
