@@ -21,7 +21,7 @@ size_t anostr_find(anostr_t s, anostr_t needle, size_t from)
     size_t last = s.len - needle.len;       // last viable start index
     for (size_t i = from; i <= last; i++) {
         // memchr to next candidate first byte.
-        const char *hit = memchr(hay + i, nd[0], last - i + 1);
+        const char *hit = static_cast<const char *>(memchr(hay + i, nd[0], last - i + 1));
         if (hit == NULL)
             return ANOSTR_NPOS;
         i = (size_t)(hit - hay);
@@ -56,7 +56,7 @@ anostr_t anostr_replace_all(mi_heap_t *heap, anostr_t s, anostr_t needle, anostr
     if (total > ANOSTR_INLINE_CAP) {
         if (heap == NULL)
             return anostr_empty();
-        dst = mi_heap_malloc(heap, (size_t)total);
+        dst = static_cast<char *>(mi_heap_malloc(heap, (size_t)total));
         if (dst == NULL)
             return anostr_empty();
     }
@@ -110,7 +110,7 @@ anostr_t anostr_join(mi_heap_t *heap, anostr_t sep, const anostr_t *parts, size_
 
     if (heap == NULL)
         return anostr_empty();
-    char *dst = mi_heap_malloc(heap, (size_t)total);
+    char *dst = static_cast<char *>(mi_heap_malloc(heap, (size_t)total));
     if (dst == NULL)
         return anostr_empty();
 

@@ -45,9 +45,9 @@ static inline uint32_t material_of(uint32_t i) { return i + 7u; }
 
 static void *producer_fn(void *arg)
 {
-    AnoRenderBridge *b = arg;
+    AnoRenderBridge *b = static_cast<AnoRenderBridge *>(arg);
     for (uint32_t i = 0; i < ITEMS; i++) {
-        RenderCommand c = {0};
+        RenderCommand c = {};
         c.kind           = RCMD_UPDATE;
         c.render_id      = i;
         c.fields         = RFIELD_MESH_MAT;
@@ -68,7 +68,7 @@ typedef struct
 
 static void *consumer_fn(void *arg)
 {
-    ConsumerCtx *ctx = arg;
+    ConsumerCtx *ctx = static_cast<ConsumerCtx *>(arg);
     uint32_t next = 0;
     while (next < ITEMS) {
         RenderCommand c;
@@ -77,7 +77,8 @@ static void *consumer_fn(void *arg)
         if (c.mesh_index != mesh_of(next) || c.material_index != material_of(next))
             ctx->payload_err++;
         next++;
-        RenderEvent e = { .kind = REVENT_SLOT_RETIRED, .u.render_id = c.render_id };
+        RenderEvent e = { .kind = REVENT_SLOT_RETIRED };
+        e.u.render_id = c.render_id;
         while (!ano_render_emit_event(ctx->b, &e)) { /* event ring full: spin */ }
     }
     ctx->received = next;
@@ -621,7 +622,7 @@ static void test_size_add_array(void)
 typedef struct
 {
     AnoRenderBridge          *b;
-    _Atomic bool              stop;
+    ANO_ATOMIC(bool)              stop;
     AnoGlyphInstance          inst[2];
     uint32_t                  attempts; // thread-owned; read after join
     AnoRenderSubmitResultCode code;
@@ -629,7 +630,7 @@ typedef struct
 
 static void *spin_fn(void *arg)
 {
-    SpinCtx *ctx = arg;
+    SpinCtx *ctx = static_cast<SpinCtx *>(arg);
     for (;;) {
         AnoRenderSubmitResult r = ano_render_text_set(ctx->b, 1u, ctx->inst, 2u);
         ctx->attempts++;

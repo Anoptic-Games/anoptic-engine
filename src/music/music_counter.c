@@ -55,8 +55,8 @@ void ano_generate_counter(const AnoHarmonicContext *ctx, AnoMeter meter,
                           const AnoCounterState *state, const AnoCounterConfig *cfg,
                           AnoMusicRng *rng, AnoCounterResult *out)
 {
-    *out = (AnoCounterResult){ 0 };
-    out->state = *state;
+    memset(out, 0, sizeof *out);
+    memcpy(&out->state, state, sizeof out->state);
     AnoScale mscale = ctx->chord.valid ? ano_chord_scale_for(ctx->chord, ctx->scale)
                                        : ctx->scale;
     uint32_t strongMask = 0;

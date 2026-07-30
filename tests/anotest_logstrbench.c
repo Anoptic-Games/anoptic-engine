@@ -9,6 +9,10 @@
 //   - byte transparency: sentinel UTF-8 (あの Bjørn's Agda Gun) exact in file (%.*s on non-NUL inline).
 // Deterministic. argv[1] = messages-per-producer. DISABLED in ctest. Exit nonzero only on oracle break.
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <x86intrin.h>
+#endif
+
 #include <anoptic_log.h>
 #include <anoptic_memory.h>
 #include <anoptic_strings_utf.h>
@@ -41,7 +45,6 @@ static anostr_t g_pool[POOL_N];
 
 // Calibrated rdtsc on x86-64 (below QPC grain), else ano_timestamp_ticks. Same as anotest_logtail.
 #if defined(__x86_64__) || defined(_M_X64)
-#include <x86intrin.h>
 static inline uint64_t tick_now(void) { return __rdtsc(); }
 static double g_nsPerTick = 1.0;
 static void tick_calibrate(void)
@@ -96,7 +99,7 @@ typedef struct {
 
 static void *producer(void *p)
 {
-    prod_arg *a = p;
+    prod_arg *a = static_cast<prod_arg *>(p);
     test_rng rng = rng_make(0xB10CE500u ^ (uint32_t)a->id);
     for (int i = 0; i < a->count; i++) {
         anostr_t name = g_pool[rng_below(&rng, POOL_N)];
@@ -137,7 +140,7 @@ static bool file_contains(const char *path, const char *needle)
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char *all = malloc((size_t)sz + 1);
+    char *all = static_cast<char *>(malloc((size_t)sz + 1));
     bool found = false;
     if (all != NULL && fread(all, 1, (size_t)sz, f) == (size_t)sz) {
         size_t nl = strlen(needle);
@@ -162,7 +165,8 @@ int main(int argc, char **argv)
     if (heap == NULL) { printf("FAIL: mi_heap_new\n"); return 1; }
     pool_init(heap);
 
-    uint64_t *buf = malloc((size_t)MAXP * (size_t)g_msgs * sizeof *buf);
+    uint64_t *buf = static_cast<uint64_t *>(
+        malloc((size_t)MAXP * (size_t)g_msgs * sizeof *buf));
     if (buf == NULL) { fprintf(stderr, "sample buffer allocation failed\n"); return 0; }
 
     printf("Logger x strings: %%.*s-captured UTF-8 item names, %d msgs/producer\n\n", g_msgs);

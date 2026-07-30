@@ -23,7 +23,7 @@
 #include "templates/scratch.h"
 
 #include <signal.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -177,13 +177,14 @@ static void *spammer(void *arg)
     for (;;) {
         s ^= s << 13; s ^= s >> 17; s ^= s << 5;
         if (huge) {
-            ano_log_write(ANO_INFO, 0, NULL, 0, "%s", bigbuf);  // 4000 B entries: the ring pins full
+            ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, NULL, 0, "%s", bigbuf);  // 4000 B entries: the ring pins full
         } else {
             int n = (int)(s % 100u) + 8;
             for (int i = 0; i < n; i++) buf[i] = (char)('!' + (int)((s + (uint32_t)i) % 90u));
             buf[n] = 0;
-            ano_log_write(ANO_INFO, 0, "anotest", 1, "%s", buf);
-            ano_log_write(ANO_WARN, 0, NULL, 0, "mix=%d/%x/%s", (int)s, s, "alpha");
+            ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, "anotest", 1, "%s", buf);
+            ano_log_write(ANO_WARN, ANO_ROUTE_DEFAULT, NULL, 0,
+                          "mix=%d/%x/%s", (int)s, s, "alpha");
             if ((++it & 63u) == 0)
                 ano_log_write(ANO_ERROR, ANO_NOW | ANO_FILE, NULL, 0, "now-%u", it);  // NOW under storm
         }
@@ -206,17 +207,19 @@ static void sc_ring_full(void)  { storm_then_crash(true); }
 static void sc_deadman(void)
 {
 #if defined(_WIN32)
-    char *page = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    char *page = static_cast<char *>(
+        VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     if (page == NULL) exit(41);
 #else
-    char *page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    char *page = static_cast<char *>(
+        mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
     if (page == MAP_FAILED) exit(41);
 #endif
     memcpy(page, "poison %d", 10);
     ano_sleep(5000);        // 5 ms idle: let the drainer park
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-nonliteral"
-    ano_log_write(ANO_INFO, 0, NULL, 0, (const char *)page, 7);
+    ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, NULL, 0, (const char *)page, 7);
 #pragma GCC diagnostic pop
 #if defined(_WIN32)
     VirtualFree(page, 0, MEM_RELEASE);  // freed while the drainer is still waking
@@ -389,7 +392,7 @@ static char *read_all(const char *path, size_t *out_len)
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (sz < 0) { fclose(f); return NULL; }
-    char *buf = malloc((size_t)sz + 1);
+    char *buf = static_cast<char *>(malloc((size_t)sz + 1));
     if (buf == NULL) { fclose(f); return NULL; }
     size_t rd = fread(buf, 1, (size_t)sz, f);
     fclose(f);

@@ -14,7 +14,7 @@
 // inv: touches only blockRing (consumer side), deviceScratch, underruns, deviceRun
 static void *null_device_main(void *arg)
 {
-    AnoAudioMixer *mx = arg;
+    AnoAudioMixer *mx = static_cast<AnoAudioMixer *>(arg);
     const uint64_t periodUs = (uint64_t)mx->blockFrames * 1000000ull / mx->sampleRate;
     bool started = false; // no underruns before first block
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {

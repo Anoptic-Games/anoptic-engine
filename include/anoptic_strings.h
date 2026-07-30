@@ -19,6 +19,10 @@
 
 #include "anoptic_memory.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Value Type */
 
@@ -298,5 +302,9 @@ anostr_t anostr_freeze(anostr_builder_t *b);
 
 // Consume without a value; frees the buffer now.
 void anostr_builder_discard(anostr_builder_t *b);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif //ANOPTICENGINE_ANOPTIC_STRINGS_H

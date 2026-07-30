@@ -17,6 +17,10 @@
 #include <alloca.h>
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Hardware interference sizes. Compile-time only (_Alignas / struct layout); not a runtime query.
 // ANO_CACHE_LINE: true coherency grain for packing / line-granular reservation (128 Apple aarch64, else 64).
 // ANO_THREAD_LINE: false-sharing isolation for hot per-thread atomics. Align cursors to it.
@@ -48,5 +52,9 @@ void* ano_aligned_malloc(size_t size, size_t alignment);
 
 // Frees a block from ano_aligned_malloc. Else UB.
 void ano_aligned_free(void* ptr);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif //ANOPTICENGINE_ANOPTIC_MEMORY_H

@@ -8,8 +8,12 @@
 
 #include <stddef.h>
 #include <pthread.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <time.h>     // struct timespec for ano_thread_cond_timedwait
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef pthread_t anothread_t;
 
@@ -158,5 +162,8 @@ int ano_thread_barrier_wait(anothread_barrier_t *barrier);
 
 int ano_thread_barrier_destroy(anothread_barrier_t *barrier);
 
+#ifdef __cplusplus
+}
+#endif
 
 #endif // ANOPTIC_THREADS_H

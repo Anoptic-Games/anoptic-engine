@@ -25,6 +25,10 @@
 
 #include "anoptic_strings.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Types */
 
@@ -147,5 +151,9 @@ anostr_t anostr_from_utf32(mi_heap_t *heap, const anorune_t *src, size_t count);
 
 // value -> NUL-terminated rune array from heap. Rune count (sans NUL) in *count if non-NULL. NULL on fail.
 anorune_t *anostr_to_utf32(mi_heap_t *heap, anostr_t s, size_t *count);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif //ANOPTICENGINE_ANOPTIC_STRINGS_UTF_H

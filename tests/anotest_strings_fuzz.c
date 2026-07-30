@@ -29,14 +29,14 @@ static int sign(int v) { return v < 0 ? -1 : v > 0; }
 static uint64_t fnv64(const void *p, size_t n)
 {
     uint64_t h = 0xcbf29ce484222325ULL;
-    const uint8_t *b = p;
+    const uint8_t *b = static_cast<const uint8_t *>(p);
     for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ULL; }
     return h;
 }
 static uint32_t fnv32(const void *p, size_t n)
 {
     uint32_t h = 0x811c9dc5u;
-    const uint8_t *b = p;
+    const uint8_t *b = static_cast<const uint8_t *>(p);
     for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x01000193u; }
     return h;
 }
@@ -147,9 +147,10 @@ static int oracle_cmp(const void *a, const void *b)
 
 static bool check_against_oracle(const anostr_t *items, size_t n, const char *what, mi_heap_t *heap)
 {
-    anostr_t *mine = mi_heap_malloc(heap, n * sizeof *mine);
-    anostr_t *ref  = mi_heap_malloc(heap, n * sizeof *ref);
-    uint32_t *order = mi_heap_malloc(heap, n * sizeof *order);
+    anostr_t *mine = static_cast<anostr_t *>(mi_heap_malloc(heap, n * sizeof *mine));
+    anostr_t *ref = static_cast<anostr_t *>(mi_heap_malloc(heap, n * sizeof *ref));
+    uint32_t *order = static_cast<uint32_t *>(
+        mi_heap_malloc(heap, n * sizeof *order));
     if (mine == NULL || ref == NULL || order == NULL) {
         printf("FAIL: %s: oracle scratch alloc\n", what); failures++; return false;
     }
@@ -164,7 +165,7 @@ static bool check_against_oracle(const anostr_t *items, size_t n, const char *wh
         }
 
     anostr_sort_idx(items, n, order);
-    uint8_t *seen = mi_heap_zalloc(heap, n);
+    uint8_t *seen = static_cast<uint8_t *>(mi_heap_zalloc(heap, n));
     for (size_t i = 0; i < n; i++) {
         if (order[i] >= n || seen[order[i]]) {
             printf("FAIL: %s: order is not a permutation at %zu\n", what, i); failures++; return false;
@@ -252,7 +253,7 @@ static void check_kinds(mi_heap_t *h, anostr_intern_t *it, const char *buf, size
     v[k++] = anostr_slice(anostr_keep(h, anostr_view(buf, n)), 0, n); // full-length slice-borrow
     v[k++] = anostr_dedupe(it, anostr_view(buf, n));                  // canonical
     if (nulfree) {
-        char *cs = mi_heap_malloc(h, n + 1);
+        char *cs = static_cast<char *>(mi_heap_malloc(h, n + 1));
         memcpy(cs, buf, n); cs[n] = 0;
         v[k++] = anostr_from_cstr(h, cs);
     }
@@ -307,10 +308,11 @@ static void smoketest(mi_heap_t *h)
     anostr_t empty = anostr_empty();
     anostr_t sml   = anostr_view("abc", 3);       // inline
     anostr_t lng   = anostr_view(lit, strlen(lit));
+    const anostr_t zeroValue = {};
 
     // Construction & accessors.
     CHECK(anostr_is_empty(empty) && anostr_len(empty) == 0, "empty is empty");
-    CHECK(memcmp(&empty, &(anostr_t){0}, sizeof(anostr_t)) == 0, "empty is a zeroed value");
+    CHECK(memcmp(&empty, &zeroValue, sizeof(anostr_t)) == 0, "empty is a zeroed value");
     CHECK(anostr_is_inline(sml) && !anostr_is_inline(lng), "inline rule follows length");
     anostr_t fr = anostr_from(h, lit, strlen(lit));
     anostr_t fc = anostr_from_cstr(h, lit);
@@ -552,6 +554,7 @@ static void test_edges(mi_heap_t *h)
 
     // Every empty spelling bit-identical to anostr_empty().
     anostr_builder_t eb = anostr_builder_make(h, 0);
+    const anostr_t zeroValue = {};
     anostr_t empties[] = {
         anostr_empty(), anostr_view("", 0), anostr_from(h, "x", 0),
         anostr_from_cstr(h, NULL), anostr_from_cstr(h, ""), anostr_freeze(&eb),
@@ -559,7 +562,7 @@ static void test_edges(mi_heap_t *h)
         anostr_replace_all(h, anostr_lit("xx"), anostr_lit("x"), anostr_empty()),
     };
     for (size_t k = 0; k < sizeof empties / sizeof empties[0]; k++)
-        CHECK(memcmp(&empties[k], &(anostr_t){0}, sizeof(anostr_t)) == 0, "empty is bit-identical");
+        CHECK(memcmp(&empties[k], &zeroValue, sizeof(anostr_t)) == 0, "empty is bit-identical");
 
     // Malformed: opaque to byte ops, U+FFFD for rune ops.
     static const char *bad[] = {
@@ -611,7 +614,7 @@ static void test_keep_lifetime(mi_heap_t *h)
     CHECK(tmp != NULL, "temp heap");
     if (tmp == NULL) return;
     const char *text = "a borrowed long string that outlives its source";
-    char *buf = mi_heap_malloc(tmp, strlen(text));
+    char *buf = static_cast<char *>(mi_heap_malloc(tmp, strlen(text)));
     memcpy(buf, text, strlen(text));
     anostr_t kept = anostr_keep(h, anostr_view(buf, strlen(text)));   // copied into h
     CHECK(!anostr_is_inline(kept), "kept long value");

@@ -13,10 +13,11 @@
 #include <anoptic_filesystem.h>
 
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -58,8 +59,8 @@ static void resolve_log_paths(void)
 static int g_fail;
 #define CHECK(cond, msg) do { if (!(cond)) { fprintf(stderr, "  FAIL: %s\n", (msg)); g_fail = 1; } } while (0)
 
-static _Atomic int  g_worker_fail;
-static _Atomic bool g_stop;
+static ANO_ATOMIC(int)  g_worker_fail;
+static ANO_ATOMIC(bool) g_stop;
 
 
 /* Helpers */
@@ -72,13 +73,13 @@ static char *slurp(const char *path, size_t *out_len)
     if (f == NULL) { if (out_len) *out_len = 0; return NULL; }
 
     size_t cap = 8192, len = 0;
-    char *buf = malloc(cap);
+    char *buf = static_cast<char *>(malloc(cap));
     if (buf == NULL) { fclose(f); if (out_len) *out_len = 0; return NULL; }
 
     for (;;) {
         if (len + 1 >= cap) {
             size_t ncap = cap * 2;
-            char *nbuf = realloc(buf, ncap);
+            char *nbuf = static_cast<char *>(realloc(buf, ncap));
             if (nbuf == NULL) { free(buf); fclose(f); if (out_len) *out_len = 0; return NULL; }
             buf = nbuf;
             cap = ncap;
@@ -196,9 +197,17 @@ static int test_deferred_formatting(void)
     DCHK("D08:[%X]", 0xabc);
     DCHK("D09:[%o]", 64);
     DCHK("D10:[%u]", 4000000000u);
+#if LONG_MAX > 2147483647L
     DCHK("D11:[%ld]", 9000000000L);
+#else
+    DCHK("D11:[%ld]", 2000000000L);
+#endif
     DCHK("D12:[%lld]", -9000000000000LL);
+#if ULONG_MAX > 4294967295UL
     DCHK("D13:[%lu]", 18000000000UL);
+#else
+    DCHK("D13:[%lu]", 4000000000UL);
+#endif
     DCHK("D14:[%zu]", (size_t)123456);
     DCHK("D15:[%.3f]", 3.14159);
     DCHK("D16:[%10.3f]", 3.14159);
@@ -223,7 +232,11 @@ static int test_deferred_formatting(void)
     DCHK("D35:[%lld]", -9223372036854775807LL - 1);       // LLONG_MIN magnitude edge
     DCHK("D36:[%llu]", 18446744073709551615ULL);          // ULLONG_MAX
     DCHK("D37:[%u]", 4294967295u);                        // UINT_MAX
+#if ULONG_MAX > 4294967295UL
     DCHK("D38:[%lx]", 0xfeedfacecafeUL);                  // long hex, hand-rolled
+#else
+    DCHK("D38:[%lx]", 0xfeedcafeUL);                      // LLP64 long hex, hand-rolled
+#endif
     DCHK("D39:[%*d]", -5, 42);                            // negative '*' width = left justify
     DCHK("D40:[%#x]", 0);                                  // alt-form zero
     DCHK("D41:[%#o]", 0);
@@ -317,13 +330,14 @@ static int test_level_gate(void)
 #define FULL_PER     12000
 #define FULL_FLOOD   (FULL_THREADS * FULL_PER)
 
-static _Atomic int g_full_flushed;
+static ANO_ATOMIC(int) g_full_flushed;
 
 static void *full_flooder(void *arg)
 {
     int id = (int)(intptr_t)arg;
     for (int i = 0; i < FULL_PER; i++)
-        if (ano_log_write(ANO_INFO, 0, __FILE_NAME__, __LINE__, "flood t%d %d", id, i) == 1)
+        if (ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                          "flood t%d %d", id, i) == 1)
             atomic_fetch_add(&g_full_flushed, 1);
     return NULL;
 }
@@ -448,7 +462,8 @@ static void *worker(void *arg)
 {
     int id = (int)(intptr_t)arg;
     for (int i = 0; i < MSGS_PER_THREAD; i++)
-        if (ano_log_write(ANO_ERROR, 0, __FILE_NAME__, __LINE__, "worker %d msg %d", id, i) != 0)
+        if (ano_log_write(ANO_ERROR, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                          "worker %d msg %d", id, i) != 0)
             atomic_fetch_add(&g_worker_fail, 1);
     return NULL;
 }
@@ -489,7 +504,8 @@ static void *c1_producer(void *arg)
 {
     int id = (int)(intptr_t)arg;
     for (int i = 0; i < C1_PER; i++)
-        ano_log_write(ANO_INFO, 0, __FILE_NAME__, __LINE__, "c1 p%d %d", id, i);
+        ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                      "c1 p%d %d", id, i);
     return NULL;
 }
 
@@ -547,7 +563,8 @@ static void *c2_worker(void *arg)
     int id = (int)(intptr_t)arg;
     for (int cyc = 0; cyc < C2_CYCLES; cyc++) {
         for (int i = 0; i < C2_BATCH; i++)
-            ano_log_write(ANO_INFO, 0, __FILE_NAME__, __LINE__, "c2 t%d c%d i%d", id, cyc, i);
+            ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                          "c2 t%d c%d i%d", id, cyc, i);
         ano_log_flush();   // drain to empty: buffer state recycles back to 0
     }
     return NULL;
@@ -587,7 +604,8 @@ static void *c3_producer(void *arg)
 {
     int id = (int)(intptr_t)arg;
     for (int i = 0; i < C3_OPS; i++)
-        ano_log_write(ANO_INFO, 0, __FILE_NAME__, __LINE__, "c3 p%d %d", id, i);
+        ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                      "c3 p%d %d", id, i);
     return NULL;
 }
 
@@ -722,7 +740,8 @@ static int test_abuse_output_dir(void)
 static int test_lifecycle_guard(const char *when)
 {
     g_fail = 0;
-    int r = ano_log_write(ANO_ERROR, 0, __FILE_NAME__, __LINE__, "%s enqueue", when);
+    int r = ano_log_write(ANO_ERROR, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                          "%s enqueue", when);
     ano_log_write(ANO_WARN, ANO_NOW, __FILE_NAME__, __LINE__, "%s immediate (expected on stderr)", when);
     ano_log_set_level(ANO_WARN);
     ano_log_flush();
@@ -745,7 +764,8 @@ static int test_srcfile_literal(void)
 {
     g_fail = 0;
     reset_output();
-    ano_log_write(ANO_INFO, 0, "ctrl_lit.c", 42, "control literal %d", 1);
+    ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, "ctrl_lit.c", 42,
+                  "control literal %d", 1);
     ano_log_flush();
 
     char *c = slurp(LOG_PATH, NULL);
@@ -765,7 +785,7 @@ static int test_srcfile_mutable_buffer(void)
     reset_output();
     char keep[32];
     strcpy(keep, "ctrl_keep.c");
-    ano_log_write(ANO_INFO, 0, keep, 77, "control intact %d", 2);
+    ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, keep, 77, "control intact %d", 2);
     ano_log_flush();
 
     char *c = slurp(LOG_PATH, NULL);
@@ -790,7 +810,8 @@ static int test_srcfile_calltime_capture(void)
     static char buf[SRCFILE_TRIGGERS][24];
     for (unsigned k = 0; k < SRCFILE_TRIGGERS; k++) {
         snprintf(buf[k], sizeof buf[k], "live_%02u.c", k);
-        ano_log_write(ANO_INFO, 0, buf[k], (int)(4200u + k), "trig %u", k);
+        ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, buf[k], (int)(4200u + k),
+                      "trig %u", k);
         memcpy(buf[k], "gone", 4);   // scribble: same length, call-time name destroyed
     }
     ano_log_flush();
@@ -1015,7 +1036,8 @@ static void *heavy_producer(void *arg)
     int id = (int)(intptr_t)arg;
     ano_loglevel_t lvls[3] = { ANO_INFO, ANO_WARN, ANO_ERROR };
     for (int i = 0; i < HEAVY_PER; i++)
-        ano_log_write(lvls[i % 3], 0, __FILE_NAME__, __LINE__, "heavy p%d %d", id, i);
+        ano_log_write(lvls[i % 3], ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                      "heavy p%d %d", id, i);
     return NULL;
 }
 
@@ -1066,7 +1088,8 @@ static void *soak_producer(void *arg)
 {
     int id = (int)(intptr_t)arg;
     for (int i = 0; i < SOAK_PER; i++)
-        ano_log_write(ANO_INFO, 0, __FILE_NAME__, __LINE__, "soak p%d %d", id, i);
+        ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                      "soak p%d %d", id, i);
     return NULL;
 }
 
@@ -1107,7 +1130,8 @@ static void *pj_producer(void *arg)
 {
     int id = (int)(intptr_t)arg;
     for (int i = 0; i < PJ_PER; i++)
-        ano_log_write(ANO_INFO, 0, __FILE_NAME__, __LINE__, "pj p%d %d", id, i);
+        ano_log_write(ANO_INFO, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                      "pj p%d %d", id, i);
     return NULL;
 }
 

@@ -5,7 +5,19 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#endif
 #include "vulkan_backend/texture/texture.h" 
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 #include <anoptic_log.h>
 
@@ -285,26 +297,7 @@ static bool formatFiltersLinear(VulkanContext* ctx, VkFormat format)
 	VkCommandBuffer commandBuffer = cmd == VK_NULL_HANDLE ? beginSingleTimeCommands(ctx) : cmd;
 	if (commandBuffer == VK_NULL_HANDLE) return false;
 
-	VkImageMemoryBarrier barrier =
-	{// Zero-initialize
-		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		.pNext = NULL,
-		.srcAccessMask = 0,
-		.dstAccessMask = 0,
-		.oldLayout = 0,
-		.newLayout = 0,
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = VK_NULL_HANDLE,
-		.subresourceRange =
-		{
-			.aspectMask = 0,
-			.baseMipLevel = 0,
-			.levelCount = 0,
-			.baseArrayLayer = 0,
-			.layerCount = 0
-		}
-	};
+	VkImageMemoryBarrier barrier = {};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	barrier.image = image;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -424,6 +417,7 @@ AnoTextureResult createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffe
 	const VkFormat texFormat = textureBaseFormat(usage);
 	const uint32_t mipLevels = 1;
 	AnoTextureResultCode code = ANO_TEXTURE_DEVICE; // default; SOURCE overrides
+	VkDeviceSize imageSize = 0;
 
 	// NULL pixels, zero dim, or RGBA byte-count overflow.
 	if (pixels == NULL || !(width >= 1) || !(height >= 1) ||
@@ -435,7 +429,7 @@ AnoTextureResult createTextureImageFromPixels(VulkanContext* ctx, VkCommandBuffe
 	}
 
 	// Widen before multiply.
-	VkDeviceSize imageSize = (VkDeviceSize)width * height * 4;
+	imageSize = (VkDeviceSize)width * height * 4;
 
 	if (!createDataBuffer(ctx, &stagingAllocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging, &stagingAlloc))
 	{
@@ -516,9 +510,10 @@ AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, Tex
 	VkImage image = VK_NULL_HANDLE; GpuAllocation alloc = (GpuAllocation){0};
 	VkBuffer staging = VK_NULL_HANDLE; GpuAllocation stagingAlloc = (GpuAllocation){0};
 	VkImageView srgbView = VK_NULL_HANDLE, unormView = VK_NULL_HANDLE;
-	Texture8 texture = {0};
+	Texture8 texture = {};
 	const VkFormat texFormat = textureBaseFormat(usage);
 	AnoTextureResultCode code = ANO_TEXTURE_DEVICE; // default; SOURCE overrides
+	VkDeviceSize imageSize = 0;
 
 	// Decode gate: refuse zero/negative dims before log2.
 	texture = readTexture8bit(fileName);
@@ -530,7 +525,7 @@ AnoTextureResult createTextureImage(VulkanContext* ctx, VkCommandBuffer cmd, Tex
 	}
 
 	// Widen before multiply.
-	VkDeviceSize imageSize = (VkDeviceSize)texture.texWidth * texture.texHeight * 4;
+	imageSize = (VkDeviceSize)texture.texWidth * texture.texHeight * 4;
 	texture.mipLevels = (uint32_t)(floor(log2(texture.texWidth > texture.texHeight ? texture.texWidth : texture.texHeight)) + 1); // dynamic mip levels; the log2 operand is >= 1 by the decode gate
 	// Dual-view: single mip.
 	if (textureViewFormatCount(usage) == 2) texture.mipLevels = 1;

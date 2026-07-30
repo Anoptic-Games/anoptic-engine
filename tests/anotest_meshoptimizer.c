@@ -66,9 +66,12 @@ static void test_degenerate_triangles() {
     size_t bound = ano_build_meshlets_bound(9, 64, 126);
     assert(bound > 0);
 
-    ano_meshlet_t* meshlets = calloc(bound, sizeof(ano_meshlet_t));
-    uint32_t* meshlet_vertices = calloc(bound * 64, sizeof(uint32_t));
-    uint8_t* meshlet_triangles = calloc(bound * 126 * 3, sizeof(uint8_t));
+    ano_meshlet_t* meshlets = static_cast<ano_meshlet_t *>(
+        calloc(bound, sizeof(ano_meshlet_t)));
+    uint32_t* meshlet_vertices = static_cast<uint32_t *>(
+        calloc(bound * 64, sizeof(uint32_t)));
+    uint8_t* meshlet_triangles = static_cast<uint8_t *>(
+        calloc(bound * 126 * 3, sizeof(uint8_t)));
 
     size_t meshlet_count = ano_build_meshlets(
         meshlets,
@@ -121,9 +124,12 @@ static void test_meshlet_limits() {
     size_t bound = ano_build_meshlets_bound(30, 9, 5);
     assert(bound > 0);
 
-    ano_meshlet_t* meshlets = calloc(bound, sizeof(ano_meshlet_t));
-    uint32_t* meshlet_vertices = calloc(bound * 9, sizeof(uint32_t));
-    uint8_t* meshlet_triangles = calloc(bound * 5 * 3, sizeof(uint8_t));
+    ano_meshlet_t* meshlets = static_cast<ano_meshlet_t *>(
+        calloc(bound, sizeof(ano_meshlet_t)));
+    uint32_t* meshlet_vertices = static_cast<uint32_t *>(
+        calloc(bound * 9, sizeof(uint32_t)));
+    uint8_t* meshlet_triangles = static_cast<uint8_t *>(
+        calloc(bound * 5 * 3, sizeof(uint8_t)));
 
     size_t meshlet_count = ano_build_meshlets(
         meshlets,
@@ -155,9 +161,12 @@ static void test_bounds_checks() {
     size_t bound = ano_build_meshlets_bound(4, 300, 300); // params exceed 256
     assert(bound > 0);
 
-    ano_meshlet_t* meshlets = calloc(bound, sizeof(ano_meshlet_t));
-    uint32_t* meshlet_vertices = calloc(bound * 256, sizeof(uint32_t));
-    uint8_t* meshlet_triangles = calloc(bound * 256 * 3, sizeof(uint8_t));
+    ano_meshlet_t* meshlets = static_cast<ano_meshlet_t *>(
+        calloc(bound, sizeof(ano_meshlet_t)));
+    uint32_t* meshlet_vertices = static_cast<uint32_t *>(
+        calloc(bound * 256, sizeof(uint32_t)));
+    uint8_t* meshlet_triangles = static_cast<uint8_t *>(
+        calloc(bound * 256 * 3, sizeof(uint8_t)));
 
     size_t meshlet_count = ano_build_meshlets(
         meshlets,

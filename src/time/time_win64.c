@@ -13,7 +13,7 @@
 #include <windows.h>
 #include <time.h>
 #include <errno.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +30,7 @@
 // Timebase: invariant TSC (rdtsc) when available, else QPC. Chosen once, shared by ticks and ticks_to_ns.
 
 // QPC frequency (counts/s), cached once. TSC calibration reference too.
-static _Atomic uint64_t cachedPerfFreq = 0;
+static ANO_ATOMIC(uint64_t) cachedPerfFreq = 0;
 
 // QPC frequency, resolved once. The module's single timebase validation point.
 //   out: uint64_t counts/s, never 0
@@ -72,9 +72,9 @@ static inline uint64_t unbiased_now(void) {
 
 // Resolved timebase, frozen after resolve_clock.
 enum { CLOCK_UNSET = 0, CLOCK_TSC = 1, CLOCK_QPC = 2 };
-static _Atomic int      g_clockMode  = CLOCK_UNSET;
-static _Atomic int      g_clockElect = 0;    // one-time election guard for resolve_clock
-static _Atomic uint64_t cachedTscHz  = 0;    // calibrated invariant-TSC frequency (TSC mode only)
+static ANO_ATOMIC(int)      g_clockMode  = CLOCK_UNSET;
+static ANO_ATOMIC(int)      g_clockElect = 0;    // one-time election guard for resolve_clock
+static ANO_ATOMIC(uint64_t) cachedTscHz  = 0;    // calibrated invariant-TSC frequency (TSC mode only)
 
 // Calibration sanity band (excludes 0).
 #define ANO_TSC_HZ_MIN 100000000ull      // 100 MHz
@@ -134,9 +134,9 @@ static uint64_t calibrate_tsc_hz(void) {
 
 // A TSC stamp is __rdtsc() + g_tscBias, valid while the raw count stays at or above g_tscAnchorRaw.
 // The pair is republished only when a power transition restarts the counter.
-static _Atomic uint64_t g_tscBias      = 0;   // exported - raw; wraps mod 2^64 by design
-static _Atomic uint64_t g_tscAnchorRaw = 0;   // raw TSC at the anchor
-static _Atomic int      g_tscAnchoring = 0;   // one re-anchor at a time
+static ANO_ATOMIC(uint64_t) g_tscBias      = 0;   // exported - raw; wraps mod 2^64 by design
+static ANO_ATOMIC(uint64_t) g_tscAnchorRaw = 0;   // raw TSC at the anchor
+static ANO_ATOMIC(int)      g_tscAnchoring = 0;   // one re-anchor at a time
 // Reference pair, written before g_clockMode goes public and thereafter only under g_tscAnchoring.
 static uint64_t g_refAnchor      = 0;   // unbiased interrupt time (100ns units) at the anchor
 static uint64_t g_exportedAnchor = 0;   // exported ticks at the anchor
@@ -334,7 +334,7 @@ static _Thread_local HANDLE tlSleepTimer = NULL;
 
 // FLS slot: closes timer at thread exit. Allocated once via CAS.
 static DWORD       gSleepTimerFls = FLS_OUT_OF_INDEXES;
-static _Atomic int gFlsInit = 0;
+static ANO_ATOMIC(int) gFlsInit = 0;
 
 static void NTAPI ano_sleep_timer_free(PVOID p) {
     if (p != NULL && p != INVALID_HANDLE_VALUE)

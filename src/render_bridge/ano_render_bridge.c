@@ -8,6 +8,7 @@
  * Public contract: include/anoptic_render.h. */
 
 #include "render_bridge.h"
+#include "cpp/ano_types.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -37,7 +38,7 @@ bool ano_spsc_init(AnoSpscRing *ring, mi_heap_t *heap, uint32_t capacity_pow2, u
     if (cap == 0u) return false;                       // capacity overflow
     if ((size_t)cap > SIZE_MAX / stride) return false; // cap*stride overflow
 
-    uint8_t *buffer = mi_heap_calloc(heap, cap, stride);
+    uint8_t *buffer = static_cast<uint8_t *>(mi_heap_calloc(heap, cap, stride));
     if (!buffer) return false;
 
     atomic_init(&ring->tail, 0u);
@@ -207,7 +208,7 @@ AnoRenderSubmitResult ano_render_submit_bulk_update(AnoRenderBridge *bridge, con
         || ((fields & RFIELD_MESH_MAT)  && (!ano_size_add_array(&bytes, count, sizeof(uint32_t))
                                             || !ano_size_add_array(&bytes, count, sizeof(uint32_t)))))
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_INVALID);
-    char *blk = mi_malloc(bytes);
+    char *blk = static_cast<char *>(mi_malloc(bytes));
     if (!blk)
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_OOM);
     RenderUpdateBatch *b = (RenderUpdateBatch *)blk;
@@ -253,7 +254,7 @@ AnoRenderSubmitResult ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, co
     size_t bytes = sizeof(RenderDestroyBatch);
     if (!ano_size_add_array(&bytes, count, sizeof(uint32_t)))
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_INVALID);
-    char *blk = mi_malloc(bytes);
+    char *blk = static_cast<char *>(mi_malloc(bytes));
     if (!blk)
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_OOM);
     RenderDestroyBatch *b = (RenderDestroyBatch *)blk;
@@ -287,7 +288,7 @@ AnoRenderSubmitResult ano_render_text_set(AnoRenderBridge *bridge, uint32_t text
     if (count > ANO_RENDER_TEXT_MAX)
         count = ANO_RENDER_TEXT_MAX; // clamp to the region
     size_t bytes = sizeof(RenderTextBlock) + (size_t)count * sizeof(AnoGlyphInstance);
-    char *blk = mi_malloc(bytes);
+    char *blk = static_cast<char *>(mi_malloc(bytes));
     if (blk == NULL)
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_OOM);
     RenderTextBlock *b = (RenderTextBlock *)blk;
@@ -295,7 +296,7 @@ AnoRenderSubmitResult ano_render_text_set(AnoRenderBridge *bridge, uint32_t text
     memcpy(inst, instances, (size_t)count * sizeof(AnoGlyphInstance));
     b->count = count;
     b->instances = inst;
-    RenderCommand c = { .kind = RCMD_TEXT_SET, .text_id = text_id, .text = b, .bulk_owned = true };
+    RenderCommand c = { .kind = RCMD_TEXT_SET, .text = b, .text_id = text_id, .bulk_owned = true };
     if (!ano_spsc_push(&bridge->commands, &c)) {
         ano_render_command_release(&c); // failed push: retire block
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_BACKPRESSURE);
@@ -408,7 +409,8 @@ AnoRenderSubmitResult ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id,
     size_t stopB = (size_t)ui->stopCount * sizeof(AnoUiStop);
     size_t curveB = (size_t)ui->curveCount * sizeof(uint32_t);
     size_t glyphB = (size_t)glyphCount * sizeof(AnoGlyphInstance);
-    char *blk = mi_malloc(sizeof(RenderUiBlock) + primB + clipB + paintB + stopB + curveB + glyphB);
+    char *blk = static_cast<char *>(
+        mi_malloc(sizeof(RenderUiBlock) + primB + clipB + paintB + stopB + curveB + glyphB));
     if (blk == NULL)
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_OOM);
     RenderUiBlock *b = (RenderUiBlock *)blk;
@@ -440,7 +442,7 @@ AnoRenderSubmitResult ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id,
     at += curveB;
     b->glyphs = (const AnoGlyphInstance *)at;
     if (glyphB) memcpy(at, glyphs, glyphB);
-    RenderCommand c = { .kind = RCMD_UI_SET, .ui_id = ui_id, .ui = b, .bulk_owned = true };
+    RenderCommand c = { .kind = RCMD_UI_SET, .ui = b, .ui_id = ui_id, .bulk_owned = true };
     if (!ano_spsc_push(&bridge->commands, &c)) {
         ano_render_command_release(&c); // failed push: retire block
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_BACKPRESSURE);
@@ -472,11 +474,11 @@ bool ano_render_acquire_snapshot(AnoRenderBridge *bridge, RenderSnapshot *out)
 }
 
 // Accept-form compares need float fields.
-_Static_assert(_Generic(((AnoViewState *)0)->eye[0],    float: 1, default: 0)
-                   && _Generic(((AnoViewState *)0)->center[0], float: 1, default: 0)
-                   && _Generic(((AnoViewState *)0)->up[0],     float: 1, default: 0)
-                   && _Generic(((AnoViewState *)0)->fovYDeg,   float: 1, default: 0),
-               "view pose guard assumes float eye/center/up/fovYDeg");
+static_assert(std::same_as<std::remove_cvref_t<decltype(((AnoViewState *)nullptr)->eye[0])>, float>
+           && std::same_as<std::remove_cvref_t<decltype(((AnoViewState *)nullptr)->center[0])>, float>
+           && std::same_as<std::remove_cvref_t<decltype(((AnoViewState *)nullptr)->up[0])>, float>
+           && std::same_as<std::remove_cvref_t<decltype(((AnoViewState *)nullptr)->fovYDeg)>, float>,
+              "view pose guard assumes float eye/center/up/fovYDeg");
 _Static_assert(sizeof ((AnoViewState *)0)->eye    == 3u * sizeof(float)
                    && sizeof ((AnoViewState *)0)->center == 3u * sizeof(float)
                    && sizeof ((AnoViewState *)0)->up     == 3u * sizeof(float),

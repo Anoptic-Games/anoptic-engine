@@ -49,8 +49,8 @@ typedef struct AnoAlsaState
 
 static void *alsa_main(void *arg)
 {
-    AnoAudioMixer *mx = arg;
-    AnoAlsaState  *st = mx->deviceState;
+    AnoAudioMixer *mx = static_cast<AnoAudioMixer *>(arg);
+    AnoAlsaState  *st = static_cast<AnoAlsaState *>(mx->deviceState);
     const uint32_t frames     = mx->blockFrames;
     const size_t   frameBytes = st->sbuf ? ANO_AUDIO_CHANNELS * sizeof(int16_t)
                                          : ANO_AUDIO_CHANNELS * sizeof(float);
@@ -92,7 +92,8 @@ static void *alsa_main(void *arg)
 
 static bool alsa_start(AnoAudioMixer *mx)
 {
-    AnoAlsaState *st = mi_heap_calloc(mx->heap, 1, sizeof *st);
+    AnoAlsaState *st = static_cast<AnoAlsaState *>(
+        mi_heap_calloc(mx->heap, 1, sizeof *st));
     if (!st)
         return false;
     st->lib = dlopen("libasound.so.2", RTLD_NOW | RTLD_LOCAL);
@@ -102,6 +103,9 @@ static bool alsa_start(AnoAudioMixer *mx)
         mi_free(st);
         return false;
     }
+    unsigned latencyUs =
+        (unsigned)((uint64_t)mx->blockFrames * 4u * 1000000ull / mx->sampleRate);
+    int err = 0;
 
 #define ANO_ALSA_SYM(dst, name) do { \
         *(void **)&(dst) = dlsym(st->lib, name); \
@@ -121,9 +125,8 @@ static bool alsa_start(AnoAudioMixer *mx)
         goto fail;
 
     // float first, s16 fallback. latency = 4 blocks
-    unsigned latencyUs = (unsigned)((uint64_t)mx->blockFrames * 4u * 1000000ull / mx->sampleRate);
-    int err = st->pcm_set_params(st->pcm, ANO_ALSA_FORMAT_FLOAT_LE, ANO_ALSA_RW_INTERLEAVED,
-                                 ANO_AUDIO_CHANNELS, mx->sampleRate, 1, latencyUs);
+    err = st->pcm_set_params(st->pcm, ANO_ALSA_FORMAT_FLOAT_LE, ANO_ALSA_RW_INTERLEAVED,
+                             ANO_AUDIO_CHANNELS, mx->sampleRate, 1, latencyUs);
     if (err < 0) {
         err = st->pcm_set_params(st->pcm, ANO_ALSA_FORMAT_S16_LE, ANO_ALSA_RW_INTERLEAVED,
                                  ANO_AUDIO_CHANNELS, mx->sampleRate, 1, latencyUs);
@@ -131,13 +134,16 @@ static bool alsa_start(AnoAudioMixer *mx)
             ano_log(ANO_WARN, "audio/alsa: set_params failed: %s", st->strerr(err));
             goto fail_pcm;
         }
-        st->sbuf = mi_heap_calloc(mx->heap, (size_t)mx->blockFrames * ANO_AUDIO_CHANNELS,
-                                  sizeof(int16_t));
+        st->sbuf = static_cast<int16_t *>(
+            mi_heap_calloc(mx->heap, (size_t)mx->blockFrames * ANO_AUDIO_CHANNELS,
+                           sizeof(int16_t)));
         if (!st->sbuf)
             goto fail_pcm;
         ano_dsp_rng_seed(&st->dither, 0xD17E4u);
     }
-    st->fbuf = mi_heap_calloc(mx->heap, (size_t)mx->blockFrames * ANO_AUDIO_CHANNELS, sizeof(float));
+    st->fbuf = static_cast<float *>(
+        mi_heap_calloc(mx->heap, (size_t)mx->blockFrames * ANO_AUDIO_CHANNELS,
+                       sizeof(float)));
     if (!st->fbuf)
         goto fail_pcm;
 
@@ -164,7 +170,7 @@ fail:
 
 static void alsa_stop(AnoAudioMixer *mx)
 {
-    AnoAlsaState *st = mx->deviceState;
+    AnoAlsaState *st = static_cast<AnoAlsaState *>(mx->deviceState);
     if (!st)
         return; // start() failed and already joined/freed
     atomic_store_explicit(&mx->deviceRun, false, memory_order_release);
@@ -297,7 +303,7 @@ typedef struct AnoPipewireState
     ano_pw_thread_loop *loop;
     ano_pw_stream      *stream;
     AnoAudioPull        pull;
-    _Atomic int         error; // state_changed(ERROR)
+    ANO_ATOMIC(int)         error; // state_changed(ERROR)
     AnoAudioMixer      *mx;
 } AnoPipewireState;
 
@@ -332,7 +338,7 @@ static uint32_t pw_build_format_pod(uint32_t *w, uint32_t rate)
 // RT_PROCESS: no loop lock. Pull cooked frames, set chunk, queue.
 static void pw_on_process(void *data)
 {
-    AnoPipewireState *st = data;
+    AnoPipewireState *st = static_cast<AnoPipewireState *>(data);
     AnoPwBuffer *b = st->api.stream_dequeue_buffer(st->stream);
     if (!b)
         return;
@@ -345,7 +351,7 @@ static void pw_on_process(void *data)
     uint32_t frames = d->maxsize / stride;
     if (b->requested != 0u && b->requested < frames)
         frames = (uint32_t)b->requested;
-    ano_audio_pull_frames(st->mx, &st->pull, (float *)d->data, frames);
+    ano_audio_pull_frames(st->mx, &st->pull, static_cast<float *>(d->data), frames);
     d->chunk->offset = 0u;
     d->chunk->stride = (int32_t)stride;
     d->chunk->size   = frames * stride;
@@ -355,7 +361,7 @@ static void pw_on_process(void *data)
 static void pw_on_state_changed(void *data, int oldState, int newState, const char *error)
 {
     (void)oldState;
-    AnoPipewireState *st = data;
+    AnoPipewireState *st = static_cast<AnoPipewireState *>(data);
     if (newState == ANO_PW_STATE_ERROR) {
         atomic_store_explicit(&st->error, 1, memory_order_release);
         ano_log(ANO_ERROR, "audio/pipewire: stream error: %s", error ? error : "(none)");
@@ -370,7 +376,8 @@ static const AnoPwStreamEvents g_pwEvents = {
 
 static bool pw_start(AnoAudioMixer *mx)
 {
-    AnoPipewireState *st = mi_heap_calloc(mx->heap, 1, sizeof *st);
+    AnoPipewireState *st = static_cast<AnoPipewireState *>(
+        mi_heap_calloc(mx->heap, 1, sizeof *st));
     if (!st)
         return false;
     st->mx = mx;
@@ -381,6 +388,12 @@ static bool pw_start(AnoAudioMixer *mx)
         mi_free(st);
         return false;
     }
+    char latency[32] = {};
+    char rateStr[32] = {};
+    ano_pw_properties *props = NULL;
+    uint32_t podWords[42] = {};
+    const AnoSpaPod *params[1] = {};
+    int res = 0;
 
 #define ANO_PW_SYM(dst, name) do { \
         *(void **)&(st->api.dst) = dlsym(st->api.lib, name); \
@@ -413,10 +426,9 @@ static bool pw_start(AnoAudioMixer *mx)
         goto fail_deinit;
 
     // request block as quantum (pull absorbs any grant)
-    char latency[32], rateStr[32];
     snprintf(latency, sizeof latency, "%u/%u", mx->blockFrames, mx->sampleRate);
     snprintf(rateStr, sizeof rateStr, "1/%u", mx->sampleRate);
-    ano_pw_properties *props = st->api.properties_new(
+    props = st->api.properties_new(
         "media.type",       "Audio",
         "media.category",   "Playback",
         "media.role",       "Game",
@@ -432,14 +444,13 @@ static bool pw_start(AnoAudioMixer *mx)
     if (st->api.thread_loop_start(st->loop) != 0)
         goto fail_stream;
 
-    uint32_t podWords[42];
     pw_build_format_pod(podWords, mx->sampleRate);
-    const AnoSpaPod *params[1] = { (const AnoSpaPod *)podWords };
+    params[0] = reinterpret_cast<const AnoSpaPod *>(podWords);
     st->api.thread_loop_lock(st->loop);
-    int res = st->api.stream_connect(st->stream, ANO_PW_DIRECTION_OUTPUT, ANO_PW_ID_ANY,
-                                     ANO_PW_FLAG_AUTOCONNECT | ANO_PW_FLAG_MAP_BUFFERS
-                                         | ANO_PW_FLAG_RT_PROCESS,
-                                     params, 1u);
+    res = st->api.stream_connect(st->stream, ANO_PW_DIRECTION_OUTPUT, ANO_PW_ID_ANY,
+                                 ANO_PW_FLAG_AUTOCONNECT | ANO_PW_FLAG_MAP_BUFFERS
+                                     | ANO_PW_FLAG_RT_PROCESS,
+                                 params, 1u);
     st->api.thread_loop_unlock(st->loop);
     if (res < 0)
         goto fail_started;
@@ -481,7 +492,7 @@ fail_lib:
 
 static void pw_stop(AnoAudioMixer *mx)
 {
-    AnoPipewireState *st = mx->deviceState;
+    AnoPipewireState *st = static_cast<AnoPipewireState *>(mx->deviceState);
     if (!st)
         return;
     st->api.thread_loop_stop(st->loop); // without lock

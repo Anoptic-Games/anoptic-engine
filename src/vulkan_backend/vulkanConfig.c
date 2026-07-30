@@ -7,17 +7,16 @@
 #include "vulkan_backend/vulkanConfig.h"
 
 
-// Static parameters. preferredMode all-bits = "nothing selected". preferredMsaa default 4x.
-static VulkanSettings vulkanSettings = {.preferredDevice = "", .preferredMode = 0b111111111, .preferredMsaa = 4};
+// Static parameters. preferredMode MAX_ENUM = "nothing selected". preferredMsaa default 4x.
+static VulkanSettings vulkanSettings = {.preferredDevice = "", .preferredMode = VK_PRESENT_MODE_MAX_ENUM_KHR, .preferredMsaa = 4};
 
-// monitorIndex -1 wraps to UINT32_MAX, ignored (structs.h)
-static WindowParameters windowParameters = {.width = 800, .height = 600, .monitorIndex = -1, .borderless = false};
+static WindowParameters windowParameters = {.width = 800, .height = 600, .monitorIndex = ANO_WINDOWED_MONITOR, .borderless = false};
 
 /* If an API function isn't here, it's probably implemented in vulkanMaster.c */
 
 /* Write Functions */
 
-bool requestDevice(char* deviceName)
+bool requestDevice(const char* deviceName)
 {
 	vulkanSettings.preferredDevice = deviceName;
 	return true;
@@ -56,7 +55,7 @@ bool setBorderless(bool borderless)
 
 /* Read Functions */
 
-char* getChosenDevice()
+const char* getChosenDevice()
 {
 	return vulkanSettings.preferredDevice;
 }
@@ -105,7 +104,7 @@ bool updateWindow(GLFWwindow *window)
     }
 
     // 2. Monitor. -1 wraps to UINT32_MAX, ignored (structs.h)
-    if (windowParameters.monitorIndex != -1)
+    if (windowParameters.monitorIndex != ANO_WINDOWED_MONITOR)
     {
         int count;
         GLFWmonitor** monitors = glfwGetMonitors(&count);

@@ -78,10 +78,10 @@ int main(int argc, char **argv)
 
     // Master <- reverb(1) <- sfx(2) filter + send.
     AnoAudioBusDesc layout[3] = {
-        [0] = { 0 },
-        [1] = { .parent = 0, .gain = 0.8f, .fx = { ANO_AUDIO_FX_REVERB } },
-        [2] = { .parent = 0, .fx = { ANO_AUDIO_FX_FILTER },
-                .sendTarget = { 1 }, .sendLevel = { 0.35f } },
+        {},
+        { .parent = 0, .gain = 0.8f, .fx = { ANO_AUDIO_FX_REVERB } },
+        { .parent = 0, .fx = { ANO_AUDIO_FX_FILTER },
+          .sendTarget = { 1 }, .sendLevel = { 0.35f } },
     };
     AnoAudioConfig cfg = { .busCount = 3, .busLayout = layout };
     CHECK(ano_audio_init(&cfg), "audio world up (console layout)");
@@ -106,8 +106,8 @@ int main(int argc, char **argv)
 
     // Looping positional bed ahead of origin.
     AnoAudioCommand bed = { .kind = ACMD_SOURCE_PLAY, .source_id = 100,
-        .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 1, .bus = 2, .gain = 0.5f,
-                  .flags = ANO_AUDIO_SOURCE_LOOP | ANO_AUDIO_SOURCE_POSITIONAL,
+        .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .bus = 2, .buffer_id = 1,
+                  .flags = ANO_AUDIO_SOURCE_LOOP | ANO_AUDIO_SOURCE_POSITIONAL, .gain = 0.5f,
                   .position = { 0.0f, 0.0f, -3.0f }, .minDist = 1.5f } };
     must_submit(b, &bed);
     CHECK(wait_telemetry(b, pred_audible, 2000), "bed audible");
@@ -130,10 +130,10 @@ int main(int argc, char **argv)
         if (i % (400u / stepMs) == 0u) { // click every 400 ms
             float a = (float)rng_below(&rng, 6283u) / 1000.0f;
             AnoAudioCommand click = { .kind = ACMD_SOURCE_PLAY, .source_id = nextClickId++,
-                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 2, .bus = 2, .gain = 0.7f,
-                          .flags = ANO_AUDIO_SOURCE_POSITIONAL,
-                          .position = { 5.0f * sinf(a), 0.0f, 5.0f * cosf(a) },
-                          .rate = 0.8f + 0.05f * (float)rng_below(&rng, 9u) } };
+                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .bus = 2, .buffer_id = 2,
+                          .flags = ANO_AUDIO_SOURCE_POSITIONAL, .gain = 0.7f,
+                          .rate = 0.8f + 0.05f * (float)rng_below(&rng, 9u),
+                          .position = { 5.0f * sinf(a), 0.0f, 5.0f * cosf(a) } } };
             must_submit(b, &click);
             clicksFired++;
         }

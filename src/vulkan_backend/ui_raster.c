@@ -8,13 +8,13 @@
 #include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/instance/instanceInit.h"
 #include "vulkan_backend/text_raster.h"
+#include "cpp/ano_alloc.h"
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <anoptic_log.h>
-#include <anoptic_memory.h>
 #include <anoptic_ui.h>
 
 // Region layout inside one uiFrameBuffer, in binding order. Offsets 256-aligned
@@ -202,22 +202,21 @@ bool ano_vk_ui_init(VulkanContext* ctx, RendererState* state)
             state->uiOverlay = false;
             return true;
         }
-        state->frames[i].uiFrameMapped = state->frames[i].uiFrameAlloc.mapped;
+        state->frames[i].uiFrameMapped = static_cast<uint8_t*>(state->frames[i].uiFrameAlloc.mapped);
     }
 
     // Pending compose tables on the text heap (dies with it at teardown).
     if (state->uiOverlay)
     {
-        state->uiPendingPrims = mi_heap_malloc(state->textHeap, ANO_UI_PRIM_BYTES);
-        state->uiPendingClips = mi_heap_malloc(state->textHeap, ANO_UI_CLIP_BYTES);
-        state->uiPendingPaints = mi_heap_malloc(state->textHeap, ANO_UI_PAINT_BYTES);
-        state->uiPendingStops = mi_heap_malloc(state->textHeap, ANO_UI_STOP_BYTES);
-        state->uiPendingCurves = mi_heap_malloc(state->textHeap, ANO_UI_CURVE_BYTES);
-        state->uiPendingGlyphs = mi_heap_malloc(state->textHeap,
-                                                ANO_UI_MAX_GLYPHS * sizeof(AnoGlyphInstance));
-        state->uiTileCursor = mi_heap_malloc(state->textHeap, ANO_UI_TILE_OFFSET_WORDS * 4u);
-        state->uiTileScratch = mi_heap_malloc(state->textHeap,
-                                              ANO_UI_TILEOFF_BYTES + ANO_UI_TILEENT_BYTES);
+        state->uiPendingPrims = ano::heap_allocate<AnoUiPrim>(state->textHeap, ANO_UI_MAX_PRIMS);
+        state->uiPendingClips = ano::heap_allocate<AnoUiClip>(state->textHeap, ANO_UI_MAX_CLIPS);
+        state->uiPendingPaints = ano::heap_allocate<AnoUiPaint>(state->textHeap, ANO_UI_MAX_PAINTS);
+        state->uiPendingStops = ano::heap_allocate<AnoUiStop>(state->textHeap, ANO_UI_MAX_STOPS);
+        state->uiPendingCurves = ano::heap_allocate<uint32_t>(state->textHeap, ANO_UI_MAX_CURVE_WORDS);
+        state->uiPendingGlyphs = ano::heap_allocate<AnoGlyphInstance>(state->textHeap, ANO_UI_MAX_GLYPHS);
+        state->uiTileCursor = ano::heap_allocate<uint32_t>(state->textHeap, ANO_UI_TILE_OFFSET_WORDS);
+        state->uiTileScratch = ano::heap_allocate<uint32_t>(
+            state->textHeap, ANO_UI_TILE_OFFSET_WORDS + ANO_UI_MAX_TILE_ENTRIES);
         state->uiTilesEnabled = getenv("ANO_FORCE_NO_UI_TILES") == NULL;
         if (!state->uiPendingPrims || !state->uiPendingClips || !state->uiPendingPaints
             || !state->uiPendingStops || !state->uiPendingCurves || !state->uiPendingGlyphs
@@ -380,9 +379,9 @@ bool ano_vk_ui_build_tiles(RendererState* state, uint32_t frameIndex)
         fr->uiTileVersion = 0; // entry overflow: rebuild next time, brute this frame
         return false;
     }
-    memcpy((uint8_t*)fr->uiFrameMapped + ANO_UI_TILEOFF_OFF, offsets,
+    memcpy(fr->uiFrameMapped + ANO_UI_TILEOFF_OFF, offsets,
            ((size_t)gx * gy + 1u) * 4u);
-    memcpy((uint8_t*)fr->uiFrameMapped + ANO_UI_TILEENT_OFF, entries, (size_t)total * 4u);
+    memcpy(fr->uiFrameMapped + ANO_UI_TILEENT_OFF, entries, (size_t)total * 4u);
     fr->uiTileVersion = state->uiVersion;
     fr->uiTileOx = ox; fr->uiTileOy = oy; fr->uiTileGx = gx; fr->uiTileGy = gy;
     ano_debug_log(ANO_INFO, "UI tiles: %ux%u grid, %u prims -> %u entries (slot %u)",

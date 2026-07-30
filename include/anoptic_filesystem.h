@@ -10,6 +10,10 @@
 #include <stdbool.h>
 #include <stddef.h>   // size_t
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Paths */
 
@@ -77,5 +81,9 @@ int ano_fs_sync(ano_file *file);
 // Close and free without sync. Call ano_fs_sync for durability.
 // Input: open handle. Output: 0 on success, -1 on error. Handle freed either way.
 int ano_fs_close(ano_file *file);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // ANOPTICENGINE_ANOPTIC_FILEPATH_H

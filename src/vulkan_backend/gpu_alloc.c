@@ -60,7 +60,7 @@ GpuAllocation gpu_alloc(GpuAllocator* alloc, VkMemoryRequirements reqs, VkMemory
         ano_log(ANO_ERROR, "Host OOM: Failed to allocate memory for GPU block tracking array!");
         return (GpuAllocation){0};
     }
-    alloc->blocks = temp;
+    alloc->blocks = static_cast<GpuBlock*>(temp);
     GpuBlock* newBlock = &alloc->blocks[alloc->blockCount];
     alloc->blockCount++;
 

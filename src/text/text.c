@@ -32,7 +32,7 @@ static FT_Face              g_faces[ANO_TEXT_MAX_FONTS]; // slot i <-> AnoFontId
 // FT_Alloc_Func: malloc into the module heap.
 static void *text_ft_alloc(FT_Memory memory, long size)
 {
-    return mi_heap_malloc(memory->user, (size_t)size);
+    return mi_heap_malloc(static_cast<mi_heap_t *>(memory->user), (size_t)size);
 }
 
 // FT_Free_Func: mimalloc resolves the owning heap from the block.
@@ -46,7 +46,7 @@ static void text_ft_free(FT_Memory memory, void *block)
 static void *text_ft_realloc(FT_Memory memory, long cur_size, long new_size, void *block)
 {
     (void)cur_size;
-    return mi_heap_realloc(memory->user, block, (size_t)new_size);
+    return mi_heap_realloc(static_cast<mi_heap_t *>(memory->user), block, (size_t)new_size);
 }
 
 // Module heap + FreeType library through it, default font-format modules. Idempotent. Calling thread owns the module.
@@ -186,7 +186,7 @@ int ano_text_ref_ft_render(AnoFontId font, uint32_t codepoint, uint32_t pixelsPe
                            uint8_t *buf, uint32_t cap, int *width, int *rows,
                            int *left, int *top)
 {
-    FT_Face face = ano_text_face(font);
+    FT_Face face = static_cast<FT_Face>(ano_text_face(font));
     if (face == NULL || buf == NULL || width == NULL || rows == NULL || left == NULL
         || top == NULL || pixelsPerEm == 0)
         return EINVAL;

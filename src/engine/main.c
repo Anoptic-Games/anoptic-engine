@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <string.h>
 #include <math.h>
 #include "anoptic_time.h"
@@ -153,7 +153,7 @@ static void spawn_scene(AnoRenderBridge* bridge) {
 
 	// Decorative candle lights: attach to first candle slot (non-casting). light_id = producer namespace.
 	uint32_t lid = 100u;
-	struct { float col[3], in, rng, inner, outer; uint32_t type; float dir[3], ox, oy, oz; } cl[5] = {
+	struct { float col[3], in, rng, inner, outer; RenderLightType type; float dir[3], ox, oy, oz; } cl[5] = {
 		{{1.0f,0.5f,0.15f}, 6.0f, 4.0f, 0,0, RENDER_LIGHT_POINT, {0,0,0},  0.6f,0.3f,0.0f},
 		{{0.2f,0.8f,1.0f},  6.0f, 4.0f, 0,0, RENDER_LIGHT_POINT, {0,0,0}, -0.6f,0.3f,0.0f},
 		{{1.0f,0.2f,0.8f},  5.0f, 4.0f, 0,0, RENDER_LIGHT_POINT, {0,0,0},  0.0f,0.8f,0.0f},
@@ -361,15 +361,17 @@ static void music_world_stop(bool drain);
 // Fail path: fail: -> music_world_stop(false). Leaves g_synth/g_music NULL, audio world down.
 static bool music_world_start(void)
 {
+	bool started = [&]() -> bool {
 	AnoMusicConfig cfg;
 	music_config(&cfg);
 
-	g_synth = ano_synth_create(&(AnoSynthDesc){ .sampleRate = MUSIC_RATE });
+	AnoSynthDesc synthDesc = { .sampleRate = MUSIC_RATE };
+	g_synth = ano_synth_create(&synthDesc);
 	g_music = ano_music_create(&cfg, MUSIC_SEED);
 	if (g_synth == NULL || g_music == NULL)
-		goto fail;
+		return false;
 	if (!ano_synth_attach_music(g_synth, g_music))
-		goto fail;
+		return false;
 
 	AnoAudioBusDesc layout[ANO_SYNTH_CONSOLE_BUSES];
 	uint32_t buses = ano_synth_console_layout(layout, ANO_SYNTH_CONSOLE_BUSES);
@@ -387,7 +389,7 @@ static bool music_world_start(void)
 		.generatorCommands = ano_synth_commands,
 	};
 	if (!ano_audio_init(&acfg))
-		goto fail;
+		return false;
 
 	AnoAudioBridge *ab = anoAudioBridge();
 	AnoAudioOfflineEvent setup[64];
@@ -398,7 +400,7 @@ static bool music_world_start(void)
 		while (!ano_audio_submit(ab, &setup[i].cmd)) {
 			if (++spin >= 1000u) {
 				ano_log(ANO_WARN, "Music: audio command ring full for 1 s; console setup abandoned.");
-				goto fail;
+				return false;
 			}
 			ano_sleep(1000);
 		}
@@ -413,17 +415,16 @@ static bool music_world_start(void)
 	}
 	if (!haveTelem) {
 		ano_log(ANO_WARN, "Music: no mixer telemetry after 1 s; transport not started.");
-		goto fail; // silent run, as documented
+		return false; // silent run, as documented
 	}
 	ano_synth_transport_start(g_synth, (t.blockIndex + 8u) * (uint64_t)t.blockFrames);
 	ano_log(ANO_INFO, "Music: composing live at %u Hz (seed %u).", MUSIC_RATE,
 	        (unsigned)MUSIC_SEED);
 	return true;
-
-// Partial-state unwind: music_world_stop(false). No drain (transport never started above).
-fail:
-	music_world_stop(false);
-	return false;
+	}();
+	if (!started)
+		music_world_stop(false); // partial-state unwind; transport never started above
+	return started;
 }
 
 // drain: true -> stop transport + wait for mixer/tails. music_world_start unwind passes false.
@@ -979,8 +980,9 @@ hudDone:
 		if (ab != NULL) {
 			// Down: coalesced one ACMD_MUSIC_AFFECT per tick; urgent = next BARLINE.
 			if (affectDirty) {
-				AnoAudioCommand c = { .kind = ACMD_MUSIC_AFFECT, .urgent = true,
-				                      .affect = { mus.valence, mus.energy, mus.tension } };
+				AnoAudioCommand c = { .kind = ACMD_MUSIC_AFFECT,
+				                      .affect = { mus.valence, mus.energy, mus.tension },
+				                      .urgent = true };
 				if (ano_audio_submit(ab, &c))
 					affectDirty = false; // else: ring full, try again next tick
 			}

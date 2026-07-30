@@ -89,7 +89,7 @@ void ano_music_blake2b8(const void *msg, size_t len, uint8_t out[8])
     memcpy(h, B2B_IV, sizeof h);
     h[0] ^= 0x01010000ull ^ 8ull; // param block: digest_length 8, fanout 1, depth 1
 
-    const uint8_t *p = msg;
+    const uint8_t *p = static_cast<const uint8_t *>(msg);
     uint64_t t = 0;
     // full blocks, except the last block is always compressed with the final flag
     while (len > 128) {
@@ -118,7 +118,7 @@ void ano_blake2b8_init(AnoBlake2b8 *s)
 
 void ano_blake2b8_update(AnoBlake2b8 *s, const void *msg, size_t len)
 {
-    const uint8_t *p = msg;
+    const uint8_t *p = static_cast<const uint8_t *>(msg);
     while (len > 0) {
         if (s->len == 128) {
             s->t += 128;

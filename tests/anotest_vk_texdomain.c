@@ -41,20 +41,21 @@ int main(void)
 
     // Probe resources; unconditional teardown at done.
     int status = 1;
-    TexturePackage pkg = {0};
+    TexturePackage pkg = {};
     VkBuffer ssbo = VK_NULL_HANDLE;
-    GpuAllocation ssboAlloc = {0};
+    GpuAllocation ssboAlloc = {};
     VkDescriptorSetLayout probeLayout = VK_NULL_HANDLE;
     VkDescriptorPool probePool = VK_NULL_HANDLE;
     VkDescriptorSet probeSet = VK_NULL_HANDLE;
     VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
     VkPipeline pipe = VK_NULL_HANDLE;
     VkShaderModule module = VK_NULL_HANDLE;
-    struct Buffer code = {0};
+    struct Buffer code = {};
 
+    bool passed = [&]() -> bool {
     if (g_ValidationErrors > 0) {
         printf("Error: validation errors occurred during initVulkan!\n");
-        goto done;
+        return false;
     }
 
     // 4x4 solid RGBA=PROBE_BYTE, COLOR|DATA roles. Transient CB. No staging kept.
@@ -65,29 +66,29 @@ int main(void)
                                                           TEXTURE_USE_COLOR | TEXTURE_USE_DATA, false);
     if (built.code != ANO_TEXTURE_BUILT) {
         printf("Error: createTextureImageFromPixels refused both roles (code %d)!\n", (int)built.code);
-        goto done;
+        return false;
     }
 
     // One image, one alloc, two distinct views (srgb + unorm).
     if (pkg.image == VK_NULL_HANDLE || pkg.alloc.memory == VK_NULL_HANDLE) {
         printf("Error: BUILT package carries no image or no allocation!\n");
-        goto done;
+        return false;
     }
     if (pkg.srgbView == VK_NULL_HANDLE || pkg.unormView == VK_NULL_HANDLE) {
         printf("Error: both roles were asked for but only one view was built!\n");
-        goto done;
+        return false;
     }
     if (pkg.srgbView == pkg.unormView) {
         printf("Error: the two roles collapsed onto one view handle!\n");
-        goto done;
+        return false;
     }
     if (pkg.staging != VK_NULL_HANDLE) {
         printf("Error: keepStaging was false but the staging buffer was published!\n");
-        goto done;
+        return false;
     }
     if (g_ValidationErrors > 0) {
         printf("Error: the mutable-format image and its two views drew %u validation errors!\n", g_ValidationErrors);
-        goto done;
+        return false;
     }
     printf("One image, one allocation, two distinct views; MUTABLE_FORMAT + format list accepted.\n");
 
@@ -96,11 +97,11 @@ int main(void)
     uint32_t unormSlot = bindless_register_texture(ctx, &rendererState.bindlessTextures, pkg.unormView, rendererState.textureSampler);
     if (srgbSlot == ANO_BINDLESS_NONE || unormSlot == ANO_BINDLESS_NONE) {
         printf("Error: the bindless array refused a view (srgb %u, unorm %u)!\n", srgbSlot, unormSlot);
-        goto done;
+        return false;
     }
     if (srgbSlot == unormSlot) {
         printf("Error: both views landed in bindless slot %u!\n", srgbSlot);
-        goto done;
+        return false;
     }
     printf("Bindless slots: srgb %u, unorm %u.\n", srgbSlot, unormSlot);
 
@@ -110,7 +111,7 @@ int main(void)
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           &ssbo, &ssboAlloc) || ssboAlloc.mapped == NULL) {
         printf("Error: failed to create a host-visible probe SSBO!\n");
-        goto done;
+        return false;
     }
     memset(ssboAlloc.mapped, 0, (size_t)probeBytes);
 
@@ -127,7 +128,7 @@ int main(void)
     probeLayoutInfo.pBindings = &ssboBinding;
     if (vkCreateDescriptorSetLayout(ctx->device, &probeLayoutInfo, NULL, &probeLayout) != VK_SUCCESS) {
         printf("Error: failed to create the probe descriptor set layout!\n");
-        goto done;
+        return false;
     }
 
     VkDescriptorPoolSize probePoolSize = { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1 };
@@ -138,7 +139,7 @@ int main(void)
     probePoolInfo.maxSets = 1;
     if (vkCreateDescriptorPool(ctx->device, &probePoolInfo, NULL, &probePool) != VK_SUCCESS) {
         printf("Error: failed to create the probe descriptor pool!\n");
-        goto done;
+        return false;
     }
 
     VkDescriptorSetAllocateInfo probeAlloc = {};
@@ -148,7 +149,7 @@ int main(void)
     probeAlloc.pSetLayouts = &probeLayout;
     if (vkAllocateDescriptorSets(ctx->device, &probeAlloc, &probeSet) != VK_SUCCESS) {
         printf("Error: failed to allocate the probe descriptor set!\n");
-        goto done;
+        return false;
     }
 
     VkDescriptorBufferInfo ssboInfo = { .buffer = ssbo, .offset = 0, .range = VK_WHOLE_SIZE };
@@ -172,12 +173,12 @@ int main(void)
     pipeLayoutInfo.pPushConstantRanges = &push;
     if (vkCreatePipelineLayout(ctx->device, &pipeLayoutInfo, NULL, &pipeLayout) != VK_SUCCESS) {
         printf("Error: failed to create the probe pipeline layout!\n");
-        goto done;
+        return false;
     }
 
     if (!loadFile("resources/shaders/texdomain_probe.comp.spv", &code)) {
         printf("Error: failed to load resources/shaders/texdomain_probe.comp.spv!\n");
-        goto done;
+        return false;
     }
     module = createShaderModule(ctx->device, &code);
 
@@ -186,18 +187,18 @@ int main(void)
     pipeInfo.layout = pipeLayout;
     if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, module, NULL, &pipeInfo.stage)) {
         printf("Error: the probe shader module was refused!\n");
-        goto done;
+        return false;
     }
     if (vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &pipeInfo, NULL, &pipe) != VK_SUCCESS) {
         printf("Error: failed to create the probe compute pipeline!\n");
-        goto done;
+        return false;
     }
 
     // One dispatch, fence-synced.
     VkCommandBuffer cmd = beginSingleTimeCommands(ctx);
     if (cmd == VK_NULL_HANDLE) {
         printf("Error: failed to mint the probe command buffer!\n");
-        goto done;
+        return false;
     }
     VkDescriptorSet sets[2] = { probeSet, rendererState.bindlessTextures.set };
     uint32_t indices[2] = { srgbSlot, unormSlot };
@@ -217,38 +218,39 @@ int main(void)
 
     if (!endSingleTimeCommandsChecked(ctx, cmd)) {
         printf("Error: the probe dispatch failed to submit or complete!\n");
-        goto done;
+        return false;
     }
 
     // probe[0..3] = srgb view, probe[4..7] = unorm view.
-    const float* probe = (const float*)ssboAlloc.mapped;
+    const float* probe = static_cast<const float*>(ssboAlloc.mapped);
     printf("SRGB  view RGBA: %.5f %.5f %.5f %.5f\n", probe[0], probe[1], probe[2], probe[3]);
     printf("UNORM view RGBA: %.5f %.5f %.5f %.5f\n", probe[4], probe[5], probe[6], probe[7]);
 
     if (!within(probe[4], WANT_UNORM, TOL_UNORM) || !within(probe[5], WANT_UNORM, TOL_UNORM)
         || !within(probe[6], WANT_UNORM, TOL_UNORM)) {
         printf("Error: the UNORM view read %.5f, not %.5f +/- %.3f!\n", probe[4], WANT_UNORM, TOL_UNORM);
-        goto done;
+        return false;
     }
     if (!within(probe[0], WANT_SRGB, TOL_SRGB) || !within(probe[1], WANT_SRGB, TOL_SRGB)
         || !within(probe[2], WANT_SRGB, TOL_SRGB)) {
         printf("Error: the SRGB view read %.5f, not %.5f +/- %.3f!\n", probe[0], WANT_SRGB, TOL_SRGB);
-        goto done;
+        return false;
     }
     // Alpha linear in both formats.
     if (!within(probe[3], WANT_UNORM, TOL_UNORM) || !within(probe[7], WANT_UNORM, TOL_UNORM)) {
         printf("Error: alpha decoded (srgb %.5f, unorm %.5f), it must stay linear!\n", probe[3], probe[7]);
-        goto done;
+        return false;
     }
     if (g_ValidationErrors > 0) {
         printf("Error: %u validation errors during registration and dispatch!\n", g_ValidationErrors);
-        goto done;
+        return false;
     }
 
     printf("One image, two views, two domains: %.5f through SRGB and %.5f through UNORM.\n", probe[0], probe[4]);
-    status = 0;
+    return true;
+    }();
+    status = passed ? 0 : 1;
 
-done:
     // Destroy probe objects. Bindless slots and arena spans stay until unInitVulkan.
     vkDestroyPipeline(ctx->device, pipe, NULL);
     vkDestroyShaderModule(ctx->device, module, NULL);

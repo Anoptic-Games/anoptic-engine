@@ -47,15 +47,16 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	// Depth-only geometry variant (ANO_DEPTH_ONLY compile of flat.mesh/flat.vert).
 	// Unwind idiom: buffers/modules inert at declare; goto fail discharges live. Masked pair too.
 	// loadFile refuse: buffer indeterminate -> re-inert before unwind.
-	struct Buffer geomCode = {0}, fragCode = {0}, mGeomCode = {0}, mFragCode = {0};
+	struct Buffer geomCode = {}, fragCode = {}, mGeomCode = {}, mFragCode = {};
 	VkShaderModule geomModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE, taskModule = VK_NULL_HANDLE,
 		mGeomModule = VK_NULL_HANDLE, mFragModule = VK_NULL_HANDLE;
 
 	char path[64];
+	bool depthOk = [&]() -> bool {
 	snprintf(path, sizeof(path), "resources/shaders/%s.spv",
 		useMesh ? (useTask ? "flat_depth_task.mesh" : "flat_depth.mesh") : "flat_depth.vert");
-	if (!loadFile(path, &geomCode)) { geomCode.data = NULL; goto fail; }
-	if (!loadFile("resources/shaders/shadow_depth.frag.spv", &fragCode)) { fragCode.data = NULL; goto fail; }
+	if (!loadFile(path, &geomCode)) { geomCode.data = NULL; return false; }
+	if (!loadFile("resources/shaders/shadow_depth.frag.spv", &fragCode)) { fragCode.data = NULL; return false; }
 	geomModule = createShaderModule(ctx->device, &geomCode);
 	fragModule = createShaderModule(ctx->device, &fragCode);
 
@@ -63,7 +64,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	TaskStageStorage taskStore;
 	VkPipelineShaderStageCreateInfo taskStageInfo = {};
 	if (useTask && !ano_pipeline_task_stage(ctx, VK_TRUE, VK_FALSE, &taskStore, &taskModule, &taskStageInfo))
-		goto fail;
+		return false;
 
 	// shadowPass = true (constant_id 0 in flat.mesh / flat.vert).
 	VkBool32 shadowPassTrue = VK_TRUE;
@@ -74,7 +75,7 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	stages[0] = taskStageInfo; // leading task slot
 	if (!ano_pipeline_stage(geometryStage, geomModule, &specInfo, &stages[1])
 		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[2]))
-		goto fail;
+		return false;
 
 	VkPipelineViewportStateCreateInfo viewportState = {};
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -156,8 +157,8 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	if (r == VK_SUCCESS) {
 		snprintf(path, sizeof(path), "resources/shaders/%s.spv",
 			useMesh ? (useTask ? "flat_depth_masked_task.mesh" : "flat_depth_masked.mesh") : "flat_depth_masked.vert");
-		if (!loadFile(path, &mGeomCode)) { mGeomCode.data = NULL; goto fail; }
-		if (!loadFile("resources/shaders/shadow_depth_masked.frag.spv", &mFragCode)) { mFragCode.data = NULL; goto fail; }
+		if (!loadFile(path, &mGeomCode)) { mGeomCode.data = NULL; return false; }
+		if (!loadFile("resources/shaders/shadow_depth_masked.frag.spv", &mFragCode)) { mFragCode.data = NULL; return false; }
 		mGeomModule = createShaderModule(ctx->device, &mGeomCode);
 		mFragModule = createShaderModule(ctx->device, &mFragCode);
 
@@ -165,27 +166,28 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 		// Same shadowPass spec info, masked modules.
 		if (!ano_pipeline_stage(geometryStage, mGeomModule, &specInfo, &mStages[1])
 			|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, mFragModule, NULL, &mStages[2]))
-			goto fail;
+			return false;
 		pipelineInfo.pStages = useTask ? mStages : &mStages[1];
 
 		mr = vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &pipelineInfo, NULL, &state->shadowPipelineMasked);
 
-		ano_aligned_free(mGeomCode.data);
-		ano_aligned_free(mFragCode.data);
-		vkDestroyShaderModule(ctx->device, mGeomModule, NULL);
-		vkDestroyShaderModule(ctx->device, mFragModule, NULL);
 	}
-
-	ano_aligned_free(geomCode.data);
-	ano_aligned_free(fragCode.data);
-	vkDestroyShaderModule(ctx->device, geomModule, NULL);
-	vkDestroyShaderModule(ctx->device, fragModule, NULL);
-	vkDestroyShaderModule(ctx->device, taskModule, NULL);
-	// fail: unreachable below: nine discharged and NOT re-inerted.
-	// A goto fail added below is a nine-object double free. Add none. blur_done: or return.
 
 	if (r != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create shadow depth pipeline!"); return false; }
 	if (mr != VK_SUCCESS) { ano_log(ANO_FATAL, "Failed to create masked shadow depth pipeline!"); return false; }
+	return true;
+	}();
+
+	ano_aligned_free(geomCode.data);
+	ano_aligned_free(fragCode.data);
+	ano_aligned_free(mGeomCode.data);
+	ano_aligned_free(mFragCode.data);
+	vkDestroyShaderModule(ctx->device, geomModule, NULL);
+	vkDestroyShaderModule(ctx->device, fragModule, NULL);
+	vkDestroyShaderModule(ctx->device, mGeomModule, NULL);
+	vkDestroyShaderModule(ctx->device, mFragModule, NULL);
+	vkDestroyShaderModule(ctx->device, taskModule, NULL);
+	if (!depthOk) return false;
 
 	// --- Moment prefilter pipeline: fullscreen separable box over the atlas (X then Y) ---
 	// One combined-image-sampler at set 0 + 16-byte push (dir + layer).
@@ -208,21 +210,21 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	if (vkCreatePipelineLayout(ctx->device, &blurLayoutInfo, NULL, &state->shadowBlurLayout) != VK_SUCCESS) {
 		ano_log(ANO_FATAL, "Failed to create shadow blur pipeline layout!"); return false; }
 
-	// Blur unwind phase: depth phase discharged; blur pair has its own label.
-	bool blurOk = false;
-	struct Buffer blurVertCode = {0}, blurFragCode = {0};
+	// Blur phase: resources remain inert until acquired, then discharge once.
+	struct Buffer blurVertCode = {}, blurFragCode = {};
 	VkShaderModule blurVert = VK_NULL_HANDLE, blurFrag = VK_NULL_HANDLE;
+	bool blurOk = [&]() -> bool {
 	snprintf(path, sizeof(path), "resources/shaders/%s.spv",
 		ctx->deviceCapabilities.shaderOutputLayer ? "shadowblur.vert" : "tonemap.vert");
-	if (!loadFile(path, &blurVertCode)) { blurVertCode.data = NULL; goto blur_done; }
-	if (!loadFile("resources/shaders/shadowblur.frag.spv", &blurFragCode)) { blurFragCode.data = NULL; goto blur_done; }
+	if (!loadFile(path, &blurVertCode)) { blurVertCode.data = NULL; return false; }
+	if (!loadFile("resources/shaders/shadowblur.frag.spv", &blurFragCode)) { blurFragCode.data = NULL; return false; }
 	blurVert = createShaderModule(ctx->device, &blurVertCode);
 	blurFrag = createShaderModule(ctx->device, &blurFragCode);
 
 	VkPipelineShaderStageCreateInfo blurStages[2];
 	if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, blurVert, NULL, &blurStages[0])
 		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, blurFrag, NULL, &blurStages[1]))
-		goto blur_done;
+		return false;
 
 	VkPipelineVertexInputStateCreateInfo blurVertexInput = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 	VkPipelineInputAssemblyStateCreateInfo blurIA = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -233,14 +235,19 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 		.polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1.0f };
 	VkPipelineMultisampleStateCreateInfo blurMS = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+	VkPipelineColorBlendAttachmentState blurBlend = {};
+	blurBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+	                         | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 	VkPipelineColorBlendStateCreateInfo blurCB = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-		.attachmentCount = 1, .pAttachments = &statsBlend[0] };
+		.attachmentCount = 1, .pAttachments = &blurBlend };
 	VkPipelineDepthStencilStateCreateInfo blurDS = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 		.depthTestEnable = VK_FALSE, .depthWriteEnable = VK_FALSE };
+	VkDynamicState blurDynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 	VkPipelineDynamicStateCreateInfo blurDyn = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-		.dynamicStateCount = 2, .pDynamicStates = dynamicStates };
+		.dynamicStateCount = 2, .pDynamicStates = blurDynamicStates };
+	VkFormat blurFormat = ANO_SHADOW_STATS_FORMAT;
 	VkPipelineRenderingCreateInfo blurRendering = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-		.colorAttachmentCount = 1, .pColorAttachmentFormats = &statsFormat[0] };
+		.colorAttachmentCount = 1, .pColorAttachmentFormats = &blurFormat };
 
 	VkGraphicsPipelineCreateInfo blurPipeline = { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &blurRendering };
 	blurPipeline.stageCount = 2; blurPipeline.pStages = blurStages;
@@ -255,28 +262,16 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	blurPipeline.layout = state->shadowBlurLayout;
 	blurPipeline.renderPass = VK_NULL_HANDLE;
 
-	blurOk = vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &blurPipeline, NULL, &state->shadowBlurPipeline) == VK_SUCCESS;
+	return vkCreateGraphicsPipelines(ctx->device, state->shadowCache, 1, &blurPipeline, NULL,
+	                                 &state->shadowBlurPipeline) == VK_SUCCESS;
+	}();
 	if (!blurOk) ano_log(ANO_FATAL, "Failed to create shadow blur pipeline!");
 
-	// Both paths, unconditional: mi_free ignores NULL, vkDestroyShaderModule ignores VK_NULL_HANDLE.
-blur_done:
+	// Both paths, unconditional.
 	ano_aligned_free(blurVertCode.data);
 	ano_aligned_free(blurFragCode.data);
 	vkDestroyShaderModule(ctx->device, blurVert, NULL);
 	vkDestroyShaderModule(ctx->device, blurFrag, NULL);
 	return blurOk;
 
-	// Unconditional: mi_free ignores NULL, vkDestroyShaderModule ignores VK_NULL_HANDLE.
-	// Sampler, cache, layouts and pipelines stay for ano_vk_cleanup_pipelines.
-fail:
-	ano_aligned_free(geomCode.data);
-	ano_aligned_free(fragCode.data);
-	ano_aligned_free(mGeomCode.data);
-	ano_aligned_free(mFragCode.data);
-	vkDestroyShaderModule(ctx->device, geomModule, NULL);
-	vkDestroyShaderModule(ctx->device, fragModule, NULL);
-	vkDestroyShaderModule(ctx->device, mGeomModule, NULL);
-	vkDestroyShaderModule(ctx->device, mFragModule, NULL);
-	vkDestroyShaderModule(ctx->device, taskModule, NULL);
-	return false;
 }

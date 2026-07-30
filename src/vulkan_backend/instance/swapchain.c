@@ -48,7 +48,7 @@ static VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableF
 
 // preferredMode if the surface offers it, else FIFO, which the spec always guarantees.
 // availablePresentModes holds presentModesCount entries.
-static VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, uint32_t presentModesCount, uint32_t preferredMode)
+static VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availablePresentModes, uint32_t presentModesCount, VkPresentModeKHR preferredMode)
 {
     for (uint32_t i = 0; i < presentModesCount; i++) 
     {
@@ -101,10 +101,10 @@ static VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR capabilities, 
 
 // Surface capabilities + chosen format and present mode.
 // Inputs: device, surface, preferredMode. Output: bool; *out total out-param, zeroed on false.
-static bool querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface, uint32_t preferredMode, SwapChainSupport* out)
+static bool querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface, VkPresentModeKHR preferredMode, SwapChainSupport* out)
 {
-    *out = (SwapChainSupport){0};
-    SwapChainSupport support = {0};
+    *out = SwapChainSupport{};
+    SwapChainSupport support = {};
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &support.capabilities) != VK_SUCCESS)
         return false;
 
@@ -136,7 +136,7 @@ static bool querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface,
     return true;
 }
 
-bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain, RendererState* state) // Selects and initializes a swap chain
+bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, VkPresentModeKHR preferredMode, VkSwapchainKHR oldSwapChain, RendererState* state) // Selects and initializes a swap chain
 {
     SwapChainSupport support;
     if (!querySwapChainSupport(ctx->physicalDevice, ctx->surface, preferredMode, &support))
@@ -505,4 +505,3 @@ bool createImageViews(VulkanContext* ctx, RendererState* state)
     state->viewCount = state->imageCount;
     return true;
 }
-

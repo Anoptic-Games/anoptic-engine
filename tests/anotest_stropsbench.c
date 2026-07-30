@@ -195,7 +195,8 @@ int main(int argc, char **argv)
 
     mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
     if (heap == NULL) { printf("FAIL: mi_heap_new\n"); return 1; }
-    uint64_t *ticks = mi_heap_malloc(heap, (size_t)g_reps * sizeof *ticks);
+    uint64_t *ticks = static_cast<uint64_t *>(
+        mi_heap_malloc(heap, (size_t)g_reps * sizeof *ticks));
     if (ticks == NULL) { printf("FAIL: tick buffer\n"); return 1; }
 
     test_rng rng = rng_make(0x0B5E55EDu);

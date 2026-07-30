@@ -706,8 +706,8 @@ void ano_engine_init(AnoMusicEngine *e, uint64_t seed, const AnoEngineConfig *cf
     st->clock = ano_phrase_clock(cfg->phraseBars);
     st->prevBassRoot = ANO_NEAR_NONE;
     st->padTie = ANO_NEAR_NONE;
-    st->melody = ano_melody_state_init();
-    st->counter = ano_counter_state_init();
+    ano_melody_state_init(&st->melody);
+    ano_counter_state_init(&st->counter);
     ano_ledger_init(&st->ledger);
     ano_planner_init(&st->planner);
     // tags not values: zero would claim phrase/bar 0
@@ -967,11 +967,12 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
         if (!st->hasLifecycle) {
             AnoMusicRng r;
             eng_stream1(e, &r, "signature");
-            st->lifecycle = (AnoMotifLifecycle){
-                .motif = ano_make_signature(&r, params.noteDensity, params.roughness,
-                                            &cfg->melody, ano_meter_slots(cfg->meter), 8),
-                .developAfter = 2, .completedPhrase = -1,
-            };
+            memset(&st->lifecycle, 0, sizeof st->lifecycle);
+            st->lifecycle.motif = ano_make_signature(
+                &r, params.noteDensity, params.roughness,
+                &cfg->melody, ano_meter_slots(cfg->meter), 8);
+            st->lifecycle.developAfter = 2;
+            st->lifecycle.completedPhrase = -1;
             st->hasLifecycle = true;
         }
         if (pos.pos == 0 && pos.kind != ANO_SEG_CODETTA)
@@ -1243,11 +1244,12 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
                 strncpy(ev->role, "motif", sizeof ev->role - 1);
             }
         }
-        AnoMelodyState ms = ano_melody_state_init();
+        AnoMelodyState ms;
+        ano_melody_state_init(&ms);
         ms.prevPitch = melCount ? melEvents[melCount - 1].core.pitch
                                 : st->melody.prevPitch;
         ms.prevAnchor = st->melody.prevAnchor;
-        st->melody = ms; // prev_outer=None, pending tie consumed
+        memcpy(&st->melody, &ms, sizeof ms); // prev_outer=None, pending tie consumed
         for (uint32_t i = 0; i < melCount; ++i)
             events[nEvents++] = melEvents[i];
     } else if (melodyOn) {
@@ -1303,7 +1305,7 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
         memcpy(melEvents, mr.events, melCount * sizeof melEvents[0]);
         for (uint32_t i = 0; i < melCount; ++i)
             events[nEvents++] = melEvents[i];
-        st->melody = mr.state;
+        memcpy(&st->melody, &mr.state, sizeof mr.state);
         if (ano_phrase_slot(pos) == ANO_SLOT_CADENCE && melCount) {
             // the cadence gesture's tail, remembered for a codetta echo
             const AnoMusicEvent *surf[ANO_MELODY_MAX_EVENTS];
@@ -1385,7 +1387,7 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
                                  &r, &cr);
             for (uint32_t i = 0; i < cr.eventCount; ++i)
                 events[nEvents++] = cr.events[i];
-            st->counter = cr.state;
+            memcpy(&st->counter, &cr.state, sizeof cr.state);
         }
     }
 
@@ -1481,7 +1483,7 @@ void ano_engine_advance_bar(AnoMusicEngine *e, AnoBarResult *out)
             uint32_t cl = ano_default_chain(layer, cfg->performChains, chain);
             if (cl) {
                 AnoMusicRng r;
-                eng_stream3(e, &r, "mod", ANO_LAYER_NAMES[layer], bar);
+                eng_stream3(e, &r, "mod", ano_music_layer_name(layer), bar);
                 n = ano_apply_chain(chain, cl, buf, n, ANO_BAR_MAX_EVENTS, &ctx,
                                     cfg->meter, &params, &r);
             }

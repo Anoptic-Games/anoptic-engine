@@ -17,7 +17,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -186,7 +186,8 @@ static void bb_handler(int sig, siginfo_t *info, void *uctx)
 
     // Disarm hooks first: second fault terminates, no recurse.
     for (size_t i = 0; i < BB_NHOOKED; i++) {
-        struct sigaction dfl = { .sa_handler = SIG_DFL };
+        struct sigaction dfl = {};
+        dfl.sa_handler = SIG_DFL;
         sigaction(bb_hooked[i].sig, &dfl, NULL);
     }
 
@@ -315,7 +316,9 @@ int bb_install(void)
     stack_t ss = { .ss_sp = bb_altStack, .ss_size = sizeof bb_altStack };
     if (sigaltstack(&ss, NULL) != 0)
         return -1;
-    struct sigaction sa = { .sa_sigaction = bb_handler, .sa_flags = SA_SIGINFO | SA_ONSTACK };
+    struct sigaction sa = {};
+    sa.sa_sigaction = bb_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     int rc = 0;
     for (size_t i = 0; i < BB_NHOOKED; i++)
@@ -331,7 +334,7 @@ int bb_thread_arm(void)
 {
     if (bb_threadAltStack != NULL)
         return 0;
-    char *mem = ano_aligned_malloc(BB_ALTSTACK_SZ, 16);
+    char *mem = static_cast<char *>(ano_aligned_malloc(BB_ALTSTACK_SZ, 16));
     if (mem == NULL)
         return -1;
     stack_t ss = { .ss_sp = mem, .ss_size = BB_ALTSTACK_SZ };

@@ -6,7 +6,7 @@
 // anoptic_threads.h: barrier init domain, exactly-count cohorts, over-subscribed reuse.
 // Watchdog kills a stalled tally. Canaries fence the barrier object. Exit 0 == pass.
 
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -183,7 +183,7 @@ static void test_barrier_oversubscribed(unsigned n, unsigned m)
     atomic_store(&arrivals, 0u); atomic_store(&releases, 0u);
     atomic_store(&serials, 0u);  atomic_store(&early, 0u);
 
-    anothread_t *t = malloc(m * sizeof *t);
+    anothread_t *t = static_cast<anothread_t *>(malloc(m * sizeof *t));
     CHECK(t != NULL, "thread table");
     if (t == NULL) return;
     for (unsigned i = 0; i < m; ++i)

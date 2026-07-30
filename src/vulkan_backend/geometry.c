@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include "vulkan_backend/geometry.h"
-#include <anoptic_memory.h>   // puts this TU's malloc/free in the engine allocator (MI_OVERRIDE is OFF)
+#include "cpp/ano_alloc.h"
 #include <string.h>
 #include <stdio.h>
 #include <anoptic_log.h>
@@ -12,7 +12,8 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
 {
     pool->meshCount = 0;
     pool->meshCapacity = 100;
-    pool->meshes = calloc(pool->meshCapacity, sizeof(MeshRegion));
+    pool->meshes = ano::allocate_zero<MeshRegion>(pool->meshCapacity);
+    if (!pool->meshes) return false;
     pool->vertexWriteOffset = 0;
     pool->indexWriteOffset = 0;
     
@@ -42,7 +43,7 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
         .size = vertexPoolSize,
         .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = concurrent ? 2 : 0,
+        .queueFamilyIndexCount = concurrent ? 2u : 0u,
         .pQueueFamilyIndices = concurrent ? queueFamilyIndices : NULL
     };
     vkCreateBuffer(device, &vInfo, NULL, &pool->vertexBuffer);
@@ -63,7 +64,7 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
         .size = indexPoolSize,
         .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = concurrent ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = concurrent ? 2 : 0,
+        .queueFamilyIndexCount = concurrent ? 2u : 0u,
         .pQueueFamilyIndices = concurrent ? queueFamilyIndices : NULL
     };
     vkCreateBuffer(device, &iInfo, NULL, &pool->indexBuffer);
@@ -117,10 +118,10 @@ static bool geometry_pool_emit_level(GeometryPool* pool, GpuAllocator* alloc, Vk
     size_t max_meshlets = ano_build_meshlets_bound(indexCount, 64, 126);
     if (max_meshlets == 0) return false;
 
-    ano_meshlet_t* meshlets = (ano_meshlet_t*)malloc(max_meshlets * sizeof(ano_meshlet_t));
-    uint32_t* meshlet_vertices = (uint32_t*)malloc(max_meshlets * 64 * sizeof(uint32_t));
-    uint8_t* meshlet_triangles = (uint8_t*)malloc(max_meshlets * 126 * 3 * sizeof(uint8_t));
-    ano_meshlet_bounds_gpu_t* bounds = (ano_meshlet_bounds_gpu_t*)malloc(max_meshlets * sizeof(ano_meshlet_bounds_gpu_t));
+    ano_meshlet_t* meshlets = ano::allocate<ano_meshlet_t>(max_meshlets);
+    uint32_t* meshlet_vertices = ano::allocate<uint32_t>(max_meshlets * 64u);
+    uint8_t* meshlet_triangles = ano::allocate<uint8_t>(max_meshlets * 126u * 3u);
+    ano_meshlet_bounds_gpu_t* bounds = ano::allocate<ano_meshlet_bounds_gpu_t>(max_meshlets);
 
     size_t meshlet_count = ano_build_meshlets(
         meshlets,
@@ -228,8 +229,8 @@ static bool geometry_pool_emit_level(GeometryPool* pool, GpuAllocator* alloc, Vk
     // Record commands
     VkCommandBufferAllocateInfo allocCmdInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandPool = transientPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1
     };
     VkCommandBuffer cmd;
@@ -409,8 +410,11 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
         // Cap at ANO_MAX_MESHES (updateCullingBuffers writes meshData[i*9] for i < meshCount).
         if (pool->meshCount >= ANO_MAX_MESHES) return ANO_MESH_NONE; // GPU buffers full
         if (pool->meshCount >= pool->meshCapacity) {
-            pool->meshCapacity = pool->meshCapacity == 0 ? 100 : pool->meshCapacity * 2;
-            pool->meshes = realloc(pool->meshes, pool->meshCapacity * sizeof(MeshRegion));
+            uint32_t capacity = pool->meshCapacity == 0 ? 100u : pool->meshCapacity * 2u;
+            MeshRegion* meshes = ano::reallocate(pool->meshes, capacity);
+            if (!meshes) return ANO_MESH_NONE;
+            pool->meshes = meshes;
+            pool->meshCapacity = capacity;
         }
         meshIndex = pool->meshCount;
     }
@@ -446,7 +450,7 @@ AnoLodConfig ano_lod_config_default(uint32_t lodCount)
 static uint32_t geometry_compact_level(const Vertex* srcVerts, uint32_t srcVertexCount,
                                        uint32_t* indices, uint32_t indexCount, Vertex* outVerts)
 {
-    uint32_t* remap = (uint32_t*)malloc((size_t)srcVertexCount * sizeof(uint32_t));
+    uint32_t* remap = ano::allocate<uint32_t>(srcVertexCount);
     if (!remap) return 0;
     memset(remap, 0xFF, (size_t)srcVertexCount * sizeof(uint32_t)); // 0xFFFFFFFF == unassigned
 
@@ -491,16 +495,32 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
 
     // Reserve `want` contiguous slots (cull addresses lodBase+level; free-list gaps break that).
     if ((uint64_t)pool->meshCount + want > pool->meshCapacity) {
-        while ((uint64_t)pool->meshCount + want > pool->meshCapacity)
-            pool->meshCapacity = pool->meshCapacity == 0 ? 100 : pool->meshCapacity * 2;
-        pool->meshes = realloc(pool->meshes, pool->meshCapacity * sizeof(MeshRegion));
+        uint32_t capacity = pool->meshCapacity;
+        while ((uint64_t)pool->meshCount + want > capacity)
+            capacity = capacity == 0 ? 100u : capacity * 2u;
+        MeshRegion* meshes = ano::reallocate(pool->meshes, capacity);
+        if (!meshes) {
+            if (out_lodBase)  *out_lodBase = ANO_MESH_NONE;
+            if (out_lodCount) *out_lodCount = 0u;
+            return ANO_MESH_NONE;
+        }
+        pool->meshes = meshes;
+        pool->meshCapacity = capacity;
     }
-    uint32_t lodBase = pool->meshCount;
-    pool->meshCount += want;  // reserve; rolled back to the count actually produced below
 
     // Per-level scratch (simplified + compacted), reused; sized to full source count.
-    uint32_t* simplified = (want > 1u) ? (uint32_t*)malloc((size_t)indexCount * sizeof(uint32_t)) : NULL;
-    Vertex*   compacted  = (want > 1u) ? (Vertex*)malloc((size_t)vertexCount * sizeof(Vertex)) : NULL;
+    uint32_t* simplified = want > 1u ? ano::allocate<uint32_t>(indexCount) : NULL;
+    Vertex* compacted = want > 1u ? ano::allocate<Vertex>(vertexCount) : NULL;
+    if (want > 1u && (!simplified || !compacted)) {
+        free(simplified);
+        free(compacted);
+        simplified = NULL;
+        compacted = NULL;
+        want = 1u;
+    }
+
+    uint32_t lodBase = pool->meshCount;
+    pool->meshCount += want;  // reserve; rolled back to the count actually produced below
 
     uint32_t produced = 0;
     for (uint32_t lvl = 0; lvl < want; ++lvl) {
@@ -556,32 +576,47 @@ void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex)
 
     // Add to vertex free list
     if (pool->vertexFreeCount >= pool->vertexFreeCapacity) {
-        pool->vertexFreeCapacity = pool->vertexFreeCapacity == 0 ? 32 : pool->vertexFreeCapacity * 2;
-        pool->vertexFreeBlocks = realloc(pool->vertexFreeBlocks, pool->vertexFreeCapacity * sizeof(GeoFreeBlock));
+        uint32_t capacity = pool->vertexFreeCapacity == 0 ? 32u : pool->vertexFreeCapacity * 2u;
+        GeoFreeBlock* blocks = ano::reallocate(pool->vertexFreeBlocks, capacity);
+        if (blocks) {
+            pool->vertexFreeBlocks = blocks;
+            pool->vertexFreeCapacity = capacity;
+        }
     }
-    pool->vertexFreeBlocks[pool->vertexFreeCount++] = (GeoFreeBlock){
-        .offset = mesh->vertexOffset,
-        .size = mesh->vertexCount * sizeof(Vertex)
-    };
+    if (pool->vertexFreeCount < pool->vertexFreeCapacity)
+        pool->vertexFreeBlocks[pool->vertexFreeCount++] = (GeoFreeBlock){
+            .offset = mesh->vertexOffset,
+            .size = static_cast<uint32_t>(mesh->vertexCount * sizeof(Vertex))
+        };
 
     // Add to index free list
     if (mesh->indexCount > 0) {
         if (pool->indexFreeCount >= pool->indexFreeCapacity) {
-            pool->indexFreeCapacity = pool->indexFreeCapacity == 0 ? 32 : pool->indexFreeCapacity * 2;
-            pool->indexFreeBlocks = realloc(pool->indexFreeBlocks, pool->indexFreeCapacity * sizeof(GeoFreeBlock));
+            uint32_t capacity = pool->indexFreeCapacity == 0 ? 32u : pool->indexFreeCapacity * 2u;
+            GeoFreeBlock* blocks = ano::reallocate(pool->indexFreeBlocks, capacity);
+            if (blocks) {
+                pool->indexFreeBlocks = blocks;
+                pool->indexFreeCapacity = capacity;
+            }
         }
-        pool->indexFreeBlocks[pool->indexFreeCount++] = (GeoFreeBlock){
-            .offset = mesh->indexOffset,
-            .size = mesh->indexCount
-        };
+        if (pool->indexFreeCount < pool->indexFreeCapacity)
+            pool->indexFreeBlocks[pool->indexFreeCount++] = (GeoFreeBlock){
+                .offset = mesh->indexOffset,
+                .size = mesh->indexCount
+            };
     }
 
     // Add mesh index to free list
     if (pool->freeMeshIndexCount >= pool->freeMeshIndexCapacity) {
-        pool->freeMeshIndexCapacity = pool->freeMeshIndexCapacity == 0 ? 32 : pool->freeMeshIndexCapacity * 2;
-        pool->freeMeshIndices = realloc(pool->freeMeshIndices, pool->freeMeshIndexCapacity * sizeof(uint32_t));
+        uint32_t capacity = pool->freeMeshIndexCapacity == 0 ? 32u : pool->freeMeshIndexCapacity * 2u;
+        uint32_t* indices = ano::reallocate(pool->freeMeshIndices, capacity);
+        if (indices) {
+            pool->freeMeshIndices = indices;
+            pool->freeMeshIndexCapacity = capacity;
+        }
     }
-    pool->freeMeshIndices[pool->freeMeshIndexCount++] = meshIndex;
+    if (pool->freeMeshIndexCount < pool->freeMeshIndexCapacity)
+        pool->freeMeshIndices[pool->freeMeshIndexCount++] = meshIndex;
 
     // Clear mesh
     memset(mesh, 0, sizeof(MeshRegion));

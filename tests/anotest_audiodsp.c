@@ -194,8 +194,8 @@ static bool render_case(const AnoAudioBusDesc *layout, uint32_t busCount,
 static void test_effects(void)
 {
     enum { F = 48000 }; // one second
-    float *out = mi_malloc((size_t)F * 2u * sizeof(float));
-    float *alt = mi_malloc((size_t)F * 2u * sizeof(float));
+    float *out = static_cast<float *>(mi_malloc((size_t)F * 2u * sizeof(float)));
+    float *alt = static_cast<float *>(mi_malloc((size_t)F * 2u * sizeof(float)));
     if (!out || !alt) {
         CHECK(false, "case buffers failed to allocate");
         return;
@@ -204,8 +204,8 @@ static void test_effects(void)
     // Limiter: 2x-hot tone under 0.5 ceiling.
     {
         const AnoAudioBusDesc layout[2] = {
-            [0] = { .fx = { ANO_AUDIO_FX_LIMITER } },
-            [1] = { .parent = 0 },
+            { .fx = { ANO_AUDIO_FX_LIMITER } },
+            { .parent = 0 },
         };
         const AnoAudioOfflineEvent ev[] = {
             { .frame = 0, .cmd = { .kind = ACMD_FX_SET, .bus = 0, .fxSlot = 0,
@@ -223,12 +223,12 @@ static void test_effects(void)
     // DC blocker: constant-offset loop -> ~zero.
     {
         const AnoAudioBusDesc layout[2] = {
-            [0] = { 0 },
-            [1] = { .parent = 0, .fx = { ANO_AUDIO_FX_DCBLOCK } },
+            {},
+            { .parent = 0, .fx = { ANO_AUDIO_FX_DCBLOCK } },
         };
         const AnoAudioOfflineEvent ev[] = {
             { .frame = 0, .cmd = { .kind = ACMD_SOURCE_PLAY, .source_id = 1,
-                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 2, .bus = 1,
+                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .bus = 1, .buffer_id = 2,
                           .flags = ANO_AUDIO_SOURCE_LOOP, .gain = 1.0f } } },
         };
         CHECK(render_case(layout, 2, ev, 1, out, F), "dc case renders");
@@ -238,14 +238,14 @@ static void test_effects(void)
     // WIDTH 0: uncorrelated stereo -> identical channels.
     {
         const AnoAudioBusDesc layout[2] = {
-            [0] = { 0 },
-            [1] = { .parent = 0, .fx = { ANO_AUDIO_FX_WIDTH } },
+            {},
+            { .parent = 0, .fx = { ANO_AUDIO_FX_WIDTH } },
         };
         const AnoAudioOfflineEvent ev[] = {
             { .frame = 0, .cmd = { .kind = ACMD_FX_SET, .bus = 1, .fxSlot = 0,
                 .paramId = ANO_AUDIO_P_WIDTH_AMOUNT, .value = 0.0f } },
             { .frame = 0, .cmd = { .kind = ACMD_SOURCE_PLAY, .source_id = 1,
-                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 3, .bus = 1,
+                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .bus = 1, .buffer_id = 3,
                           .flags = ANO_AUDIO_SOURCE_LOOP, .gain = 0.5f } } },
         };
         CHECK(render_case(layout, 2, ev, 2, out, F), "width case renders");
@@ -259,10 +259,10 @@ static void test_effects(void)
     // Compressor: hot tone peak below uncompressed.
     {
         const AnoAudioBusDesc comp[2] = {
-            [0] = { 0 },
-            [1] = { .parent = 0, .fx = { ANO_AUDIO_FX_COMPRESSOR } },
+            {},
+            { .parent = 0, .fx = { ANO_AUDIO_FX_COMPRESSOR } },
         };
-        const AnoAudioBusDesc flat[2] = { [0] = { 0 }, [1] = { .parent = 0 } };
+        const AnoAudioBusDesc flat[2] = { {}, { .parent = 0 } };
         const AnoAudioOfflineEvent ev[] = {
             { .frame = 0, .cmd = { .kind = ACMD_FX_SET, .bus = 1, .fxSlot = 0,
                 .paramId = ANO_AUDIO_P_COMP_THRESHOLD, .value = 0.2f } },
@@ -281,13 +281,13 @@ static void test_effects(void)
     // Sends + reverb: tail after source dies, then decays; zero send silent.
     {
         AnoAudioBusDesc layout[3] = {
-            [0] = { 0 },
-            [1] = { .parent = 0, .fx = { ANO_AUDIO_FX_REVERB } },
-            [2] = { .parent = 0, .sendTarget = { 1 }, .sendLevel = { 0.6f } },
+            {},
+            { .parent = 0, .fx = { ANO_AUDIO_FX_REVERB } },
+            { .parent = 0, .sendTarget = { 1 }, .sendLevel = { 0.6f } },
         };
         const AnoAudioOfflineEvent ev[] = {
             { .frame = 0, .cmd = { .kind = ACMD_SOURCE_PLAY, .source_id = 1,
-                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 1, .bus = 2, .gain = 0.8f } } },
+                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .bus = 2, .buffer_id = 1, .gain = 0.8f } } },
         };
         CHECK(render_case(layout, 3, ev, 1, out, F), "reverb case renders");
         // Click gone by 0.6 s; window is reverb only.
@@ -303,15 +303,15 @@ static void test_effects(void)
     // Ping-pong: click echoes at delay time.
     {
         const AnoAudioBusDesc layout[3] = {
-            [0] = { 0 },
-            [1] = { .parent = 0, .fx = { ANO_AUDIO_FX_PINGPONG } },
-            [2] = { .parent = 0, .sendTarget = { 1 }, .sendLevel = { 0.8f } },
+            {},
+            { .parent = 0, .fx = { ANO_AUDIO_FX_PINGPONG } },
+            { .parent = 0, .sendTarget = { 1 }, .sendLevel = { 0.8f } },
         };
         const AnoAudioOfflineEvent ev[] = {
             { .frame = 0, .cmd = { .kind = ACMD_FX_SET, .bus = 1, .fxSlot = 0,
                 .paramId = ANO_AUDIO_P_PP_TIME_MS, .value = 250.0f } },
             { .frame = 0, .cmd = { .kind = ACMD_SOURCE_PLAY, .source_id = 1,
-                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 1, .bus = 2, .gain = 0.8f } } },
+                .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .bus = 2, .buffer_id = 1, .gain = 0.8f } } },
         };
         CHECK(render_case(layout, 3, ev, 2, out, F), "pingpong case renders");
         float echo  = rms_win(out, 12000, 16800); // 0.25-0.35 s first echo
@@ -322,10 +322,10 @@ static void test_effects(void)
     // Chorus: waveform changes, level holds.
     {
         const AnoAudioBusDesc wet[2] = {
-            [0] = { 0 },
-            [1] = { .parent = 0, .fx = { ANO_AUDIO_FX_CHORUS } },
+            {},
+            { .parent = 0, .fx = { ANO_AUDIO_FX_CHORUS } },
         };
-        const AnoAudioBusDesc dry[2] = { [0] = { 0 }, [1] = { .parent = 0 } };
+        const AnoAudioBusDesc dry[2] = { {}, { .parent = 0 } };
         const AnoAudioOfflineEvent ev[] = {
             { .frame = 0, .cmd = { .kind = ACMD_SOURCE_PLAY, .source_id = 1,
                 .desc = { .kind = ANO_AUDIO_SOURCE_TONE, .bus = 1, .gain = 0.4f, .freqHz = 440.0f } } },
@@ -370,14 +370,14 @@ static bool render_console(float *out, uint64_t frames)
 {
     // Master <- reverb(1) + delay(2) <- music(3) + sfx(4).
     const AnoAudioBusDesc layout[5] = {
-        [0] = { .fx = { ANO_AUDIO_FX_DRIVE, ANO_AUDIO_FX_COMPRESSOR,
-                        ANO_AUDIO_FX_LIMITER, ANO_AUDIO_FX_DCBLOCK } },
-        [1] = { .parent = 0, .gain = 0.8f, .fx = { ANO_AUDIO_FX_REVERB } },
-        [2] = { .parent = 0, .gain = 0.7f, .fx = { ANO_AUDIO_FX_PINGPONG } },
-        [3] = { .parent = 0, .fx = { ANO_AUDIO_FX_EQ3, ANO_AUDIO_FX_CHORUS },
-                .sendTarget = { 1, 2 }, .sendLevel = { 0.30f, 0.15f } },
-        [4] = { .parent = 0, .fx = { ANO_AUDIO_FX_FILTER, ANO_AUDIO_FX_WIDTH },
-                .sendTarget = { 1 }, .sendLevel = { 0.25f } },
+        { .fx = { ANO_AUDIO_FX_DRIVE, ANO_AUDIO_FX_COMPRESSOR,
+                  ANO_AUDIO_FX_LIMITER, ANO_AUDIO_FX_DCBLOCK } },
+        { .parent = 0, .gain = 0.8f, .fx = { ANO_AUDIO_FX_REVERB } },
+        { .parent = 0, .gain = 0.7f, .fx = { ANO_AUDIO_FX_PINGPONG } },
+        { .parent = 0, .fx = { ANO_AUDIO_FX_EQ3, ANO_AUDIO_FX_CHORUS },
+          .sendTarget = { 1, 2 }, .sendLevel = { 0.30f, 0.15f } },
+        { .parent = 0, .fx = { ANO_AUDIO_FX_FILTER, ANO_AUDIO_FX_WIDTH },
+          .sendTarget = { 1 }, .sendLevel = { 0.25f } },
     };
     const AnoAudioOfflineEvent ev[] = {
         { .frame = 0, .cmd = { .kind = ACMD_FX_SET, .bus = 3, .fxSlot = 0,
@@ -389,10 +389,10 @@ static bool render_console(float *out, uint64_t frames)
         { .frame = 0, .cmd = { .kind = ACMD_SOURCE_PLAY, .source_id = 1,
             .desc = { .kind = ANO_AUDIO_SOURCE_TONE, .bus = 3, .gain = 0.4f, .freqHz = 220.0f } } },
         { .frame = 0, .cmd = { .kind = ACMD_SOURCE_PLAY, .source_id = 2,
-            .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 1, .bus = 4, .gain = 0.7f,
-                      .flags = ANO_AUDIO_SOURCE_LOOP, .rate = 0.9f } } },
-        { .frame = 12000, .cmd = { .kind = ACMD_BUS_SET, .bus = 3,
-            .fields = ANO_AUDIO_FIELD_SEND0, .send = { 0.6f, 0.0f } } },
+            .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .bus = 4, .buffer_id = 1,
+                      .flags = ANO_AUDIO_SOURCE_LOOP, .gain = 0.7f, .rate = 0.9f } } },
+        { .frame = 12000, .cmd = { .kind = ACMD_BUS_SET,
+            .fields = ANO_AUDIO_FIELD_SEND0, .bus = 3, .send = { 0.6f, 0.0f } } },
         { .frame = 24000, .cmd = { .kind = ACMD_FX_SET, .bus = 4, .fxSlot = 0,
             .paramId = ANO_AUDIO_P_FILTER_CUTOFF, .value = 1200.0f } },
         { .frame = 36000, .cmd = { .kind = ACMD_SOURCE_STOP, .source_id = 1 } },
@@ -416,8 +416,8 @@ static bool render_console(float *out, uint64_t frames)
 static void test_console_golden(uint32_t soak)
 {
     enum { F = 48000 };
-    float *golden = mi_malloc((size_t)F * 2u * sizeof(float));
-    float *again  = mi_malloc((size_t)F * 2u * sizeof(float));
+    float *golden = static_cast<float *>(mi_malloc((size_t)F * 2u * sizeof(float)));
+    float *again = static_cast<float *>(mi_malloc((size_t)F * 2u * sizeof(float)));
     if (!golden || !again) {
         CHECK(false, "console buffers failed to allocate");
         return;

@@ -151,7 +151,8 @@ static int cmp_sidrec(const void *a, const void *b)
 static inline uint32_t bsearch_find(const sidrec *arr, size_t n, uint64_t sid)
 {
     sidrec key = { sid, 0 };
-    const sidrec *r = bsearch(&key, arr, n, sizeof *arr, cmp_sidrec);
+    const sidrec *r = static_cast<const sidrec *>(
+        bsearch(&key, arr, n, sizeof *arr, cmp_sidrec));
     return r ? r->idx : UINT32_MAX;
 }
 
@@ -183,10 +184,14 @@ static inline uint32_t bsearch_find(const sidrec *arr, size_t n, uint64_t sid)
 static int bulkreads_run(mi_heap_t *heap, uint32_t lookups)
 {
     // Fixtures: 50k distinct long names.
-    record *records = mi_heap_malloc(heap, RECORDS * sizeof *records);
-    sidslot *sidmap = mi_heap_malloc(heap, MAP_CAP * sizeof *sidmap);
-    hashslot *hmap  = mi_heap_malloc(heap, MAP_CAP * sizeof *hmap);
-    sidrec  *sorted = mi_heap_malloc(heap, RECORDS * sizeof *sorted);
+    record *records = static_cast<record *>(
+        mi_heap_malloc(heap, RECORDS * sizeof *records));
+    sidslot *sidmap = static_cast<sidslot *>(
+        mi_heap_malloc(heap, MAP_CAP * sizeof *sidmap));
+    hashslot *hmap = static_cast<hashslot *>(
+        mi_heap_malloc(heap, MAP_CAP * sizeof *hmap));
+    sidrec *sorted = static_cast<sidrec *>(
+        mi_heap_malloc(heap, RECORDS * sizeof *sorted));
     if (!records || !sidmap || !hmap || !sorted) { printf("alloc failed\n"); return 1; }
     for (uint32_t s = 0; s < MAP_CAP; s++) { sidmap[s].idx = UINT32_MAX; hmap[s].idx = UINT32_MAX; }
 
@@ -196,7 +201,7 @@ static int bulkreads_run(mi_heap_t *heap, uint32_t lookups)
         size_t sn = rng_fill_printable(&rng, suffix, 3, 7);
         (void)sn;
         int n = snprintf(nameBuf, sizeof nameBuf, "assets/props/entity_%05u_%s.gltf", i, suffix);
-        char *nm = mi_heap_malloc(heap, (size_t)n + 1);
+        char *nm = static_cast<char *>(mi_heap_malloc(heap, (size_t)n + 1));
         if (nm == NULL) { printf("alloc failed\n"); return 1; }
         memcpy(nm, nameBuf, (size_t)n + 1);
         records[i].name  = nm;
@@ -244,9 +249,11 @@ static int bulkreads_run(mi_heap_t *heap, uint32_t lookups)
     qsort(sorted, RECORDS, sizeof *sorted, cmp_sidrec);
 
     // Query stream drawn once (RNG off timed path).
-    uint32_t *stream = mi_heap_malloc(heap, lookups * sizeof *stream);
+    uint32_t *stream = static_cast<uint32_t *>(
+        mi_heap_malloc(heap, lookups * sizeof *stream));
     size_t    rcap   = lookups / BATCH + 1;
-    uint64_t *rbuf   = mi_heap_malloc(heap, rcap * sizeof *rbuf);
+    uint64_t *rbuf = static_cast<uint64_t *>(
+        mi_heap_malloc(heap, rcap * sizeof *rbuf));
     if (!stream || !rbuf) { printf("alloc failed\n"); return 1; }
     for (uint32_t i = 0; i < lookups; i++)
         stream[i] = rng_below(&rng, RECORDS);
@@ -329,15 +336,19 @@ int main(int argc, char **argv)
 
     // One event stream, all representations from same indices.
     test_rng rng = rng_make(0x51D51D51u);
-    const char **asCstr = mi_heap_malloc(heap, events * sizeof *asCstr);
-    anostr_t   *asStr  = mi_heap_malloc(heap, events * sizeof *asStr);
-    anostr_sid *asSid  = mi_heap_malloc(heap, events * sizeof *asSid);
-    uint64_t   *buf    = mi_heap_malloc(heap, (events / BATCH + 1) * sizeof *buf);
+    const char **asCstr = static_cast<const char **>(
+        mi_heap_malloc(heap, events * sizeof *asCstr));
+    anostr_t *asStr = static_cast<anostr_t *>(
+        mi_heap_malloc(heap, events * sizeof *asStr));
+    anostr_sid *asSid = static_cast<anostr_sid *>(
+        mi_heap_malloc(heap, events * sizeof *asSid));
+    uint64_t *buf = static_cast<uint64_t *>(
+        mi_heap_malloc(heap, (events / BATCH + 1) * sizeof *buf));
     if (!asCstr || !asStr || !asSid || !buf) { printf("alloc failed\n"); return 1; }
     for (uint32_t i = 0; i < events; i++) {
         uint32_t t = rng_below(&rng, NTYPES);
         size_t   n = strlen(g_names[t]);
-        char *copy = mi_heap_malloc(heap, n + 1);
+        char *copy = static_cast<char *>(mi_heap_malloc(heap, n + 1));
         if (copy == NULL) { printf("alloc failed\n"); return 1; }
         memcpy(copy, g_names[t], n + 1);
         asCstr[i] = copy;
@@ -367,7 +378,8 @@ int main(int argc, char **argv)
 
     // Bulk keying: 20k identifiers, insert then re-key.
     char nameBuf[48];
-    anostr_t *bulk = mi_heap_malloc(heap, BULK_KEYS * sizeof *bulk);
+    anostr_t *bulk = static_cast<anostr_t *>(
+        mi_heap_malloc(heap, BULK_KEYS * sizeof *bulk));
     if (bulk == NULL) { printf("alloc failed\n"); return 1; }
     for (uint32_t i = 0; i < BULK_KEYS; i++) {
         int n = snprintf(nameBuf, sizeof nameBuf, "assets/props/entity_%05u.gltf", i);

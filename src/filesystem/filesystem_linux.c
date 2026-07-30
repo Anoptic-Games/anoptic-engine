@@ -107,7 +107,7 @@ ano_file *ano_fs_open_append(const char *path)
     if (fd < 0)
         return NULL;
 
-    ano_file *file = mi_malloc(sizeof *file);
+    ano_file *file = static_cast<ano_file *>(mi_malloc(sizeof *file));
     if (file == NULL) {
         close(fd);
         return NULL;
@@ -126,7 +126,7 @@ ano_file *ano_fs_open_trunc(const char *path)
     if (fd < 0)
         return NULL;
 
-    ano_file *file = mi_malloc(sizeof *file);
+    ano_file *file = static_cast<ano_file *>(mi_malloc(sizeof *file));
     if (file == NULL) {
         close(fd);
         return NULL;
@@ -141,7 +141,7 @@ int ano_fs_write(ano_file *file, const void *data, size_t length)
     if (file == NULL || (data == NULL && length != 0))
         return -1;
 
-    const char *cursor = data;
+    const char *cursor = static_cast<const char *>(data);
     size_t remaining = length;
     while (remaining > 0) {
         ssize_t written = write(file->fd, cursor, remaining);

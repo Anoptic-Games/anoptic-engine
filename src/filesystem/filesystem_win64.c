@@ -108,7 +108,7 @@ ano_file *ano_fs_open_append(const char *path)
     if (handle == INVALID_HANDLE_VALUE)
         return NULL;
 
-    ano_file *file = mi_malloc(sizeof *file);
+    ano_file *file = static_cast<ano_file *>(mi_malloc(sizeof *file));
     if (file == NULL) {
         CloseHandle(handle);
         return NULL;
@@ -140,7 +140,7 @@ int ano_fs_write(ano_file *file, const void *data, size_t length)
     if (file == NULL || (data == NULL && length != 0))
         return -1;
 
-    const char *cursor = data;
+    const char *cursor = static_cast<const char *>(data);
     size_t remaining = length;
     while (remaining > 0) {
         DWORD chunk = remaining > 0x7fffffff ? 0x7fffffff : (DWORD)remaining;

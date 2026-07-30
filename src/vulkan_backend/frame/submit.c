@@ -27,8 +27,8 @@ bool ano_frame_submit(uint64_t ordinal)
 			rendererState.hizTimeline, rendererState.textTimeline};
 		// Task cull joins hizTimeline wait when active. Async text @ FRAGMENT_SHADER.
 		VkPipelineStageFlags waitStages[3] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
+			static_cast<VkPipelineStageFlags>(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0)),
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
 		uint64_t waitValues[3] = {0, hizWaitValue, ordinal};
 		uint32_t waitCount = rendererState.asyncText ? 3u : (rendererState.asyncHiz ? 2u : 1u);
@@ -77,8 +77,8 @@ bool ano_frame_submit(uint64_t ordinal)
 			rendererState.hizTimeline, rendererState.lcTimeline, rendererState.textTimeline };
 		// hizTimeline @ EARLY_FRAG + TASK for meshlet cull. textTimeline @ FRAGMENT.
 		VkPipelineStageFlags bWaitStages[4] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
+			static_cast<VkPipelineStageFlags>(VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+				| (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0)),
 			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT };
 		uint64_t bWaitValues[4] = { 0, hizWaitValue, ordinal, ordinal };
 		uint32_t bWaitCount = rendererState.asyncText ? 4u : 3u;

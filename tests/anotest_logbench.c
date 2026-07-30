@@ -17,7 +17,7 @@
 #include "templates/scratch.h"      // scratch dirs, ANO_TEST_OUTDIR anchor
 
 #include <stdarg.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -56,18 +56,20 @@ typedef struct {
 static ano_loglevel_t map_level(log_types_t t)
 {
     switch (t) {
+    case LOG_DEBUG:
+    case LOG_INFO:   return ANO_INFO;
     case LOG_WARN:  return ANO_WARN;
     case LOG_ERROR: return ANO_ERROR;
     case LOG_FATAL: return ANO_FATAL;
-    default:        return ANO_INFO;
     }
+    return ANO_INFO;
 }
 
 __attribute__((format(printf, 4, 5)))
 static int ring_enqueue(log_types_t level, const char *file, int line, const char *fmt, ...)
 {
     va_list ap; va_start(ap, fmt);
-    int r = ano_log_vwrite(map_level(level), 0, file, line, fmt, ap);
+    int r = ano_log_vwrite(map_level(level), ANO_ROUTE_DEFAULT, file, line, fmt, ap);
     va_end(ap);
     return r;
 }
@@ -108,14 +110,14 @@ static double run_latency(const logger_api *api)
 
 // Multi-thread messages/sec, one concurrent flusher.
 
-static _Atomic bool g_flusher_stop;
+static ANO_ATOMIC(bool) g_flusher_stop;
 
 typedef struct { const logger_api *api; int count; int id; } prod_arg;
 typedef struct { const logger_api *api; } flush_arg;
 
 static void *producer(void *p)
 {
-    prod_arg *a = p;
+    prod_arg *a = static_cast<prod_arg *>(p);
     for (int i = 0; i < a->count; i++)
         a->api->enqueue(LOG_INFO, __FILE_NAME__, __LINE__, "thread %d message %d with payload", a->id, i);
     return NULL;
@@ -175,7 +177,7 @@ static inline test_rng bench_thread_rng(int id)
 
 static void *var_producer(void *p)
 {
-    prod_arg *a = p;
+    prod_arg *a = static_cast<prod_arg *>(p);
     test_rng rng = bench_thread_rng(a->id);
     char buf[VAR_MAX + 1];
     for (int i = 0; i < a->count; i++) {
@@ -188,7 +190,7 @@ static void *var_producer(void *p)
 // Mixed small+large 50/50 (MIX_SMALL / MIX_LARGE).
 static void *mix_producer(void *p)
 {
-    prod_arg *a = p;
+    prod_arg *a = static_cast<prod_arg *>(p);
     test_rng rng = bench_thread_rng(a->id);
     char buf[MIX_LARGE + 1];
     for (int i = 0; i < a->count; i++) {

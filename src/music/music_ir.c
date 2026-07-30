@@ -94,10 +94,6 @@ uint32_t ano_meter_strong_slots(AnoMeter m, int out[ANO_METER_MAX_SLOTS])
     return n;
 }
 
-const char *const ANO_LAYER_NAMES[ANO_MUSIC_LAYER_COUNT] = {
-    "pad", "bass", "melody", "counter", "arp", "perc",
-};
-
 // Gen params -> public bridge (layers list -> bitmask).
 AnoMusicalParams ano_gen_params_bridge(const AnoGenParams *p)
 {
@@ -187,26 +183,6 @@ AnoChord ano_ctx_chord_at(const AnoHarmonicContext *ctx, double beatOffset)
         if (ctx->chords[i].off <= beatOffset + 1e-9)
             current = ctx->chords[i].chord;
     return current;
-}
-
-const char *const ANO_PATCH_NAMES[ANO_PATCH_COUNT] = {
-    "", "warm", "bright", "morph", "breeze", "round", "driven", "bad_ground",
-    "soft", "hard", "mellow", "keys", "whistle", "pluck", "glass", "chimes",
-};
-
-uint32_t ano_music_patch_id(const char *name)
-{
-    if (!name)
-        return 0;
-    for (uint32_t i = 1; i < ANO_PATCH_COUNT; ++i)
-        if (strcmp(name, ANO_PATCH_NAMES[i]) == 0)
-            return i;
-    return 0;
-}
-
-const char *ano_music_patch_name(uint32_t id)
-{
-    return id < ANO_PATCH_COUNT ? ANO_PATCH_NAMES[id] : "";
 }
 
 AnoGenParams ano_gen_params_default(void)

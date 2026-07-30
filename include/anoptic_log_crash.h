@@ -30,6 +30,10 @@
 
 #include "anoptic_log.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Lifecycle Functions */
 
@@ -53,5 +57,9 @@ int ano_log_crash_thread_arm(void);
 
 // Release what ano_log_crash_thread_arm reserved, just before the thread exits. Safe to call unarmed.
 void ano_log_crash_thread_disarm(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // ANOPTIC_LOG_CRASH_H

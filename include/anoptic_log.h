@@ -16,6 +16,10 @@
 
 #include <stdarg.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Types */
 
@@ -29,6 +33,7 @@ typedef enum {
 
 // Route: when-where a record lands.
 typedef enum {
+    ANO_ROUTE_DEFAULT = 0,           // use the level's configured route
     ANO_FILE = 1 << 0,              // output file (terminal when none open)
     ANO_TERM = 1 << 1,              // stdout, ERROR+ to stderr, ANSI on tty
     ANO_BOTH = ANO_FILE | ANO_TERM,
@@ -73,6 +78,17 @@ void ano_log_set_route(ano_loglevel_t level, ano_logroute_t route);
 // Drain all buffered records on the calling thread.
 void ano_log_flush(void);
 
+#ifdef __cplusplus
+}
+
+[[nodiscard]] constexpr ano_logroute_t operator|(ano_logroute_t left,
+                                                  ano_logroute_t right) noexcept
+{
+    return static_cast<ano_logroute_t>(
+        static_cast<unsigned>(left) | static_cast<unsigned>(right));
+}
+#endif
+
 
 /* Call-site Macros */
 
@@ -80,15 +96,15 @@ void ano_log_flush(void);
 // _rlog : level + route
 // _olog : level + callsite file/line
 // _rolog: level + route + callsite
-#define ano_log(level, ...)                 ano_log_write((level), 0, NULL, 0, __VA_ARGS__)
+#define ano_log(level, ...)                 ano_log_write((level), ANO_ROUTE_DEFAULT, NULL, 0, __VA_ARGS__)
 #define ano_rlog(level, route, ...)         ano_log_write((level), (route), NULL, 0, __VA_ARGS__)
-#define ano_olog(level, ...)                ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)
+#define ano_olog(level, ...)                ano_log_write((level), ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, __VA_ARGS__)
 #define ano_rolog(level, route, ...)        ano_log_write((level), (route), __FILE_NAME__, __LINE__, __VA_ARGS__)
 
 #ifdef DEBUG_BUILD
-#define ano_debug_log(level, ...)           ano_log_write((level), 0, NULL, 0, __VA_ARGS__)
+#define ano_debug_log(level, ...)           ano_log_write((level), ANO_ROUTE_DEFAULT, NULL, 0, __VA_ARGS__)
 #define ano_debug_rlog(level, route, ...)   ano_log_write((level), (route), NULL, 0, __VA_ARGS__)
-#define ano_debug_olog(level, ...)          ano_log_write((level), 0, __FILE_NAME__, __LINE__, __VA_ARGS__)
+#define ano_debug_olog(level, ...)          ano_log_write((level), ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, __VA_ARGS__)
 #define ano_debug_rolog(level, route, ...)  ano_log_write((level), (route), __FILE_NAME__, __LINE__, __VA_ARGS__)
 #else
 #define ano_debug_log(...)  ((void)0)

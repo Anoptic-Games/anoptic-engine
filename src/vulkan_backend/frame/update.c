@@ -152,7 +152,7 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     // Update CullUBO. One frustum per view, derived from each view's camera.
     CullUBO* ubo = state->culling.ubo.mapped[frameIndex];
     for (uint32_t v = 0; v < ANO_VIEW_COUNT; ++v) {
-        GlobalUBO* viewUbo = state->frames[frameIndex].views[v].uniformMapped;
+        GlobalUBO* viewUbo = static_cast<GlobalUBO*>(state->frames[frameIndex].views[v].uniformMapped);
         multiplyMat4(ubo->views[v].viewProj, viewUbo->proj, viewUbo->view);
         extractFrustumPlanes(ubo->views[v].frustumPlanes, ubo->views[v].viewProj);
         // Screen-area cull knobs. scale = |proj[1][1]| * 0.5 * screenHeight, threshold squared.

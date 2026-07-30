@@ -32,12 +32,14 @@ static_assert(ANO_MOTIF_MAX
 // mode/cadence table-index ingress. In: any double. Out: true only in contract. NaN fails both.
 static bool mode_ok(double v)
 {
-    return v >= ANO_MODE_NONE && v < ANO_MODE_COUNT;
+    return v >= static_cast<double>(ANO_MODE_NONE)
+        && v < static_cast<double>(ANO_MODE_COUNT);
 }
 
 static bool cadence_ok(double v)
 {
-    return v >= ANO_CADENCE_AUTHENTIC && v <= ANO_CADENCE_DECEPTIVE;
+    return v >= static_cast<double>(ANO_CADENCE_AUTHENTIC)
+        && v <= static_cast<double>(ANO_CADENCE_DECEPTIVE);
 }
 
 AnoMusicConfig ano_music_config_default(void)
@@ -149,7 +151,7 @@ static void expand(const AnoMusicConfig *c, AnoEngineConfig *e)
 // One allocation; engine stays pointer-free (snapshot = bytes).
 AnoMusicEngine *ano_music_create(const AnoMusicConfig *cfg, uint64_t seed)
 {
-    AnoMusicEngine *e = mi_malloc(sizeof *e);
+    AnoMusicEngine *e = static_cast<AnoMusicEngine *>(mi_malloc(sizeof *e));
     if (!e)
         return NULL;
     AnoMusicConfig def;

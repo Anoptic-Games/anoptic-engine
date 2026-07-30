@@ -262,6 +262,12 @@ target_link_libraries(anotest_bridgebench PRIVATE anoptic_core)
 add_test(NAME anoptic_bridgebench COMMAND anotest_bridgebench)
 set_tests_properties(anoptic_bridgebench PROPERTIES DISABLED TRUE LABELS "optional;bench;audible")
 
+# Offline source-shape/mixer throughput. DISABLED; run from an -O3 build.
+add_executable(anotest_audiomixbench anotest_audiomixbench.c)
+target_link_libraries(anotest_audiomixbench PRIVATE anoptic_core)
+add_test(NAME anoptic_audiomixbench COMMAND anotest_audiomixbench)
+set_tests_properties(anoptic_audiomixbench PROPERTIES DISABLED TRUE LABELS "optional;bench;audio")
+
 add_executable(anotest_synthscene anotest_synthscene.c)
 target_link_libraries(anotest_synthscene PRIVATE anoptic_core)
 target_compile_definitions(anotest_synthscene PRIVATE

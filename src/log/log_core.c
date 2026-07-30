@@ -16,7 +16,7 @@
 #include <mimalloc.h>
 #include <limits.h>
 #include <stdarg.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -43,7 +43,7 @@ static atomic_bool  g_initialized;  // logger live (NOW / flush / config)
 static atomic_int   g_minLevel = INT_MAX;
 
 // Per-level default routes when no sink named. Pre-init FATAL -> NOW stderr.
-static _Atomic uint8_t g_routeDefault[4] = {
+static ANO_ATOMIC(uint8_t) g_routeDefault[4] = {
     ANO_FILE,               // INFO
     ANO_FILE,               // WARN
     ANO_FILE,               // ERROR
@@ -103,15 +103,36 @@ static inline char *put_u32(char *p, uint32_t v)
 static const char digLo[] = "0123456789abcdef";
 static const char digUp[] = "0123456789ABCDEF";
 
-// Unsigned v in base 8/10/16 into [p,end). NULL on overrun.
-static char *put_base(char *p, char *end, unsigned long long v, unsigned base, const char *digits)
+static inline char *put_reverse(char *p, char *end, const char *tmp, int i)
 {
-    char tmp[24];
-    int  i = 0;
-    do { tmp[i++] = digits[v % base]; v /= base; } while (v);
     if (p + i > end) return NULL;
     while (i) *p++ = tmp[--i];
     return p;
+}
+
+// Unsigned v in base 8/10/16 into [p,end). NULL on overrun.
+static char *put_base8(char *p, char *end, unsigned long long v, const char *digits)
+{
+    char tmp[24];
+    int  i = 0;
+    do { tmp[i++] = digits[v & 7u]; v >>= 3; } while (v);
+    return put_reverse(p, end, tmp, i);
+}
+
+static char *put_base10(char *p, char *end, unsigned long long v, const char *digits)
+{
+    char tmp[24];
+    int  i = 0;
+    do { tmp[i++] = digits[v % 10u]; v /= 10u; } while (v);
+    return put_reverse(p, end, tmp, i);
+}
+
+static char *put_base16(char *p, char *end, unsigned long long v, const char *digits)
+{
+    char tmp[24];
+    int  i = 0;
+    do { tmp[i++] = digits[v & 15u]; v >>= 4; } while (v);
+    return put_reverse(p, end, tmp, i);
 }
 
 // Flagless common conversions (d i u x X o c s + l/ll/z/t/h). Bytes written, or -1 -> vsnprintf fallback.
@@ -140,15 +161,16 @@ static int fast_format(char *out, int cap, const char *fmt, va_list ap)
                         : lng == 1 ? va_arg(ap, long) : (long long)va_arg(ap, int);
             if (v < 0) { if (p >= end) return -1; *p++ = '-'; }
             unsigned long long m = v < 0 ? 0ull - (unsigned long long)v : (unsigned long long)v;
-            p = put_base(p, end, m, 10, digLo);
+            p = put_base10(p, end, m, digLo);
             break;
         }
         case 'u': case 'x': case 'X': case 'o': {
             unsigned long long v = lng >= 2 ? va_arg(ap, unsigned long long)
                                  : lng == 1 ? va_arg(ap, unsigned long)
                                             : (unsigned long long)va_arg(ap, unsigned int);
-            unsigned base = c == 'o' ? 8u : c == 'u' ? 10u : 16u;
-            p = put_base(p, end, v, base, c == 'X' ? digUp : digLo);
+            p = c == 'o' ? put_base8(p, end, v, digLo)
+              : c == 'u' ? put_base10(p, end, v, digLo)
+                         : put_base16(p, end, v, c == 'X' ? digUp : digLo);
             break;
         }
         case 'c': { int ch = va_arg(ap, int); if (p >= end) return -1; *p++ = (char)ch; break; }
@@ -314,7 +336,7 @@ static int format_deferred(char *out, int cap, ano_loglevel_t level, const char 
                     if (plng >= 1) { memcpy(&v, b, 8); b += 8; } else { int iv; memcpy(&iv, b, 4); b += 4; v = iv; }
                     if (v < 0 && p < end) *p++ = '-';
                     unsigned long long m = v < 0 ? 0ull - (unsigned long long)v : (unsigned long long)v;
-                    char *q = put_base(p, end, m, 10, digLo); if (q) p = q;
+                    char *q = put_base10(p, end, m, digLo); if (q) p = q;
                 } else if (pc == 'c') {
                     int iv; memcpy(&iv, b, 4); b += 4; if (p < end) *p++ = (char)iv;
                 } else if (pc == 's') {
@@ -323,8 +345,10 @@ static int format_deferred(char *out, int cap, ano_loglevel_t level, const char 
                 } else {
                     unsigned long long v;
                     if (plng >= 1) { memcpy(&v, b, 8); b += 8; } else { unsigned uv; memcpy(&uv, b, 4); b += 4; v = uv; }
-                    unsigned base = pc == 'o' ? 8u : pc == 'u' ? 10u : 16u;
-                    char *q = put_base(p, end, v, base, pc == 'X' ? digUp : digLo); if (q) p = q;
+                    char *q = pc == 'o' ? put_base8(p, end, v, digLo)
+                            : pc == 'u' ? put_base10(p, end, v, digLo)
+                                       : put_base16(p, end, v, pc == 'X' ? digUp : digLo);
+                    if (q) p = q;
                 }
                 f = g;
                 continue;
@@ -472,11 +496,12 @@ static void console_color_init(void)
 static const char *ansi_for(ano_loglevel_t level)
 {
     switch (level) {
+    case ANO_INFO:  return NULL;
     case ANO_WARN:  return "\x1b[33m";      // yellow
     case ANO_ERROR: return "\x1b[31m";      // red
     case ANO_FATAL: return "\x1b[1;31m";    // bold red
-    default:        return NULL;
     }
+    return NULL;
 }
 
 // Echo one record to terminal (ERROR+ stderr). First 5 body bytes = level name, colored on tty.
@@ -827,7 +852,8 @@ int ano_log_init(void)
 
     g_ring.mask  = ANO_LOG_RING_LINES - 1;
     g_ring.shift = (uint32_t)__builtin_ctzll(ANO_LOG_RING_LINES);
-    g_ring.buf   = ano_aligned_malloc(ANO_LOG_RING_BYTES, ANO_LOG_RING_ALIGN);
+    g_ring.buf   = static_cast<char *>(
+        ano_aligned_malloc(ANO_LOG_RING_BYTES, ANO_LOG_RING_ALIGN));
     if (g_ring.buf == NULL) {
         ano_thread_cond_destroy(&g_wakeCv); ano_mutex_destroy(&g_wakeMtx);
         ano_mutex_destroy(&g_drainMtx); ano_mutex_destroy(&g_outFileMtx);
@@ -837,7 +863,7 @@ int ano_log_init(void)
     atomic_store(&g_ring.tail, 0);
     atomic_store(&g_ring.head, 0);
 
-    g_batch = mi_malloc(ANO_LOG_BATCH_CAP);
+    g_batch = static_cast<char *>(mi_malloc(ANO_LOG_BATCH_CAP));
     if (g_batch == NULL) {
         ano_aligned_free(g_ring.buf);
         ano_thread_cond_destroy(&g_wakeCv); ano_mutex_destroy(&g_wakeMtx);

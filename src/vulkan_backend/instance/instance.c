@@ -11,6 +11,7 @@
 #include <math.h>
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
+#include "cpp/ano_alloc.h"
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -184,7 +185,7 @@ const char** getRequiredExtensions(uint32_t* extensionsCount) // Returns extensi
 	totalExtensionCount += 1;
 	#endif
 
-	const char** extensions = calloc(totalExtensionCount, sizeof(char*));
+	const char** extensions = static_cast<const char**>(calloc(totalExtensionCount, sizeof(char*)));
 
 	uint32_t idx = 0;
 	for (uint32_t i = 0; i < glfwExtensionCount; i++)
@@ -222,9 +223,11 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
 	uint32_t layerCount;
 	vkEnumerateInstanceLayerProperties(&layerCount, NULL);
 
-	VkLayerProperties availableLayers[layerCount];
+	VkLayerProperties* availableLayers = ano::allocate<VkLayerProperties>(layerCount);
+	if (availableLayers == NULL)
+		return validationCount == 0;
 	vkEnumerateInstanceLayerProperties(&layerCount, availableLayers);
-	uint32_t availableLayerCount = sizeof(availableLayers) / sizeof(availableLayers[0]);
+	uint32_t availableLayerCount = layerCount;
 
 	for (uint32_t z = 0; z < availableLayerCount; z++) 
 	{
@@ -247,10 +250,11 @@ bool checkValidationLayerSupport(const char* validationLayers[], size_t validati
 	
 		if (!layerFound) 
 		{
+			free(availableLayers);
 			return false;
 		}
 	}
-	
+
+	free(availableLayers);
 	return true;
 }
-

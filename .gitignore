@@ -16,10 +16,11 @@
 !/COPYING.LESSER
 !/ATTRIBUTIONS.md
 
-# Engine sources: C23, module CMake lists, module notes
+# Engine sources: C23/C++23, module CMake lists, module notes
 !/src/
 !/src/**/
 !/src/**/*.c
+!/src/**/*.cpp
 !/src/**/*.h
 !/src/**/*.md
 !/src/**/CMakeLists.txt

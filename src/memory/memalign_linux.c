@@ -9,13 +9,13 @@
 #include <mimalloc.h>
 
 // Linux ano_aligned_malloc. Size or alignment 0 -> NULL.
-inline void* ano_aligned_malloc(size_t size, size_t alignment) {
+void* ano_aligned_malloc(size_t size, size_t alignment) {
     if (size == 0 || alignment == 0) return NULL;
     return mi_malloc_aligned(size, alignment);
 }
 
 // Linux ano_aligned_free.
-inline void ano_aligned_free(void* ptr) {
+void ano_aligned_free(void* ptr) {
     mi_free(ptr);
 }
 

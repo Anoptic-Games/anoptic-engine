@@ -11,7 +11,7 @@
 #include <vulkan/vulkan.h>
 #include "gpu_alloc.h"
 #include <stdbool.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <string.h>
 
 
@@ -27,6 +27,7 @@
 #include <anoptic_text.h>                // AnoFontBake + AnoGlyphInstance (text overlay)
 
 #define MAX_FRAMES_IN_FLIGHT 3
+#define ANO_WINDOWED_MONITOR UINT32_MAX
 
 // HDR linear render target: MSAA float, resolved then tonemapped to swapchain.
 #define ANO_HDR_COLOR_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
@@ -193,15 +194,15 @@ typedef struct WindowParameters
 {
     uint32_t width;
     uint32_t height;
-    uint32_t monitorIndex;        // Fullscreen monitor index, -1 for windowed
+    uint32_t monitorIndex;        // Fullscreen monitor index, ANO_WINDOWED_MONITOR for windowed
     bool borderless;         // Borderless
     // ... other parameters
 } WindowParameters;
 
 typedef struct VulkanSettings
 {
-	char* preferredDevice; // Physical GPU to use for rendering
-	uint32_t preferredMode;	// Frame present mode
+	const char* preferredDevice; // Physical GPU to use for rendering
+	VkPresentModeKHR preferredMode; // Frame present mode
 	uint32_t preferredMsaa;	// MSAA sample count (2/4/8), clamped to device support
 } VulkanSettings;
 
@@ -485,7 +486,7 @@ typedef struct PerFrameResources
     // UI overlay tables (bindings 4-10), host-visible. Alive with textOverlay.
     VkBuffer            uiFrameBuffer;
     GpuAllocation       uiFrameAlloc;
-    void*               uiFrameMapped;
+    uint8_t*            uiFrameMapped;
     uint32_t            uiSlotVersion;   // uiVersion this slot's tables last copied
     // Per-tile prim lists (§3.7): slot tile regions, keyed (version, grid).
     uint32_t            uiTileVersion;   // 0 = never built / invalid

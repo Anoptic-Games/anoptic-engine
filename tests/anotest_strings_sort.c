@@ -99,9 +99,10 @@ static int oracle_cmp(const void *a, const void *b)
 static bool check_against_oracle(const anostr_t *items, size_t n, const char *what,
                                  mi_heap_t *heap)
 {
-    anostr_t *mine = mi_heap_malloc(heap, n * sizeof *mine);
-    anostr_t *ref  = mi_heap_malloc(heap, n * sizeof *ref);
-    uint32_t *order = mi_heap_malloc(heap, n * sizeof *order);
+    anostr_t *mine = static_cast<anostr_t *>(mi_heap_malloc(heap, n * sizeof *mine));
+    anostr_t *ref = static_cast<anostr_t *>(mi_heap_malloc(heap, n * sizeof *ref));
+    uint32_t *order = static_cast<uint32_t *>(
+        mi_heap_malloc(heap, n * sizeof *order));
     if (mine == NULL || ref == NULL || order == NULL) {
         printf("FAIL: %s: oracle scratch alloc\n", what);
         failures++;
@@ -123,7 +124,7 @@ static bool check_against_oracle(const anostr_t *items, size_t n, const char *wh
 
     // sort_idx: valid permutation, stable on ties.
     anostr_sort_idx(items, n, order);
-    uint8_t *seen = mi_heap_zalloc(heap, n);
+    uint8_t *seen = static_cast<uint8_t *>(mi_heap_zalloc(heap, n));
     for (size_t i = 0; i < n; i++) {
         if (order[i] >= n || seen[order[i]]) {
             printf("FAIL: %s: order is not a permutation at %zu\n", what, i);

@@ -14,13 +14,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 
 
 /* Precision Timestamps */
 
 // Cache timebase frequency in ticks/s, once. ticks/sec = 1e9 * denom / numer.
-static _Atomic uint64_t cachedTimebaseFreq = 0;
+static ANO_ATOMIC(uint64_t) cachedTimebaseFreq = 0;
 
 // Resolve the timebase into cachedTimebaseFreq. The module's single validation point.
 //   out: void. cachedTimebaseFreq is nonzero on return.

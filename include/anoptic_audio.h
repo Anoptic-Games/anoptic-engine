@@ -14,6 +14,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Fixed shape */
 
@@ -60,6 +64,7 @@ typedef enum AnoAudioEffectKind
     ANO_AUDIO_FX_REVERB,     // predelay -> diffusers -> FDN -> shelf
     ANO_AUDIO_FX_PINGPONG,   // cross-feedback stereo delay
     ANO_AUDIO_FX_WIDTH,      // mid/side width (0 = mono)
+    ANO_AUDIO_FX_COUNT,
 } AnoAudioEffectKind;
 
 // Flat ACMD_FX_SET params. Continuous glide per-block. Modes/bypass instant.
@@ -183,6 +188,7 @@ typedef enum AnoAudioSourceKind
 {
     ANO_AUDIO_SOURCE_TONE = 0, // sine at desc.freqHz
     ANO_AUDIO_SOURCE_BUFFER,   // registered buffer_id
+    ANO_AUDIO_SOURCE_COUNT,
 } AnoAudioSourceKind;
 
 typedef enum AnoAudioSourceFlags
@@ -197,6 +203,7 @@ typedef enum AnoAudioFilterMode
     ANO_AUDIO_FILTER_LOWPASS,
     ANO_AUDIO_FILTER_HIGHPASS,
     ANO_AUDIO_FILTER_BANDPASS,
+    ANO_AUDIO_FILTER_COUNT,
 } AnoAudioFilterMode;
 
 // Partial-update masks. Masked params retarget through a ~30 ms one-pole.
@@ -431,5 +438,9 @@ bool ano_audio_wav_write(const char *path, const float *interleaved,
 // Logic thread only.
 float *ano_audio_wav_load(const char *path, uint32_t targetRate,
                           uint64_t *outFrames, uint32_t *outChannels);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // ANOPTIC_AUDIO_H

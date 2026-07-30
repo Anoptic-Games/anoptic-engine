@@ -39,7 +39,7 @@ static void bb_modmap_build(void)
 // Inputs: ucontext. Outputs: pc, fp, lr on aarch64 (0 elsewhere).
 static void bb_crash_regs(void *uctx, uintptr_t *pc, uintptr_t *fp, uintptr_t *lr)
 {
-    const ucontext_t *uc = uctx;
+    const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
 #if defined(__x86_64__)
     *pc = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
     *fp = (uintptr_t)uc->uc_mcontext.gregs[REG_RBP];

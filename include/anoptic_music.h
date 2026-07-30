@@ -14,6 +14,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Six layers, canonical order, fixed.
 typedef enum AnoMusicLayer
 {
@@ -482,5 +486,9 @@ int ano_music_next_bar(const AnoMusicEngine *e);
 size_t ano_music_snapshot_size(void);
 bool   ano_music_snapshot(const AnoMusicEngine *e, void *buf, size_t cap);
 bool   ano_music_restore(AnoMusicEngine *e, const void *buf, size_t len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // ANOPTIC_MUSIC_H

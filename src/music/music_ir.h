@@ -12,6 +12,7 @@
 #include <anoptic_music.h>
 
 #include "music_theory.h"
+#include "music_vocab.h"
 
 #define ANO_MUSIC_GRID 0.25 // 16th-note grid, in quarter-note beats
 
@@ -39,8 +40,6 @@ uint32_t ano_meter_strong_slots(AnoMeter m, int out[ANO_METER_MAX_SLOTS]); // we
 
 
 /* Annotated Events */
-
-extern const char *const ANO_LAYER_NAMES[ANO_MUSIC_LAYER_COUNT]; // "pad", ...
 
 bool ano_note_event_valid(const AnoNoteEvent *ev);
 
@@ -120,8 +119,6 @@ AnoChord ano_ctx_chord_at(const AnoHarmonicContext *ctx, double beatOffset);
 
 
 /* Tier-2 Parameters */
-
-extern const char *const ANO_PATCH_NAMES[ANO_PATCH_COUNT]; // "" first
 
 // Multiplier knobs are double (see music_theory.h).
 // layers ordered for gate/conductor: pad/bass/melody/perc/arp (not a bitmask).

@@ -20,55 +20,26 @@ static inline int pymod(int a, int m)
 
 /* Scales */
 
-const char *const ANO_MODE_NAMES[ANO_MODE_COUNT] = {
-    "ionian", "dorian", "phrygian", "lydian", "mixolydian", "aeolian", "locrian",
-};
-
-// Row k is ionian rotated k degrees, each offset folded so the row starts at pitch class 0.
-static const uint8_t MODE_INTERVALS[ANO_MODE_COUNT][7] = {
-    { 0, 2, 4, 5, 7, 9, 11 }, // ionian
-    { 0, 2, 3, 5, 7, 9, 10 }, // dorian
-    { 0, 1, 3, 5, 7, 8, 10 }, // phrygian
-    { 0, 2, 4, 6, 7, 9, 11 }, // lydian
-    { 0, 2, 4, 5, 7, 9, 10 }, // mixolydian
-    { 0, 2, 3, 5, 7, 8, 10 }, // aeolian
-    { 0, 1, 3, 5, 6, 8, 10 }, // locrian
-};
-
-_Static_assert(sizeof MODE_INTERVALS / sizeof MODE_INTERVALS[0] == (size_t)ANO_MODE_COUNT,
-               "one row per AnoMode: ano_mode_intervals subscripts this table by mode");
-_Static_assert(sizeof MODE_INTERVALS[0] == 7,
-               "7 offsets per row: ano_scale_pcs fills out[7] from the returned row");
-
 static const char *const TONIC_NAMES[12] = {
     "C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B",
 };
 
-int ano_mode_brightness(AnoMode mode)
+static inline uint8_t scale_tonic(AnoScale s)
 {
-    switch (mode) {
-    case ANO_MODE_LYDIAN:     return 3;
-    case ANO_MODE_IONIAN:     return 2;
-    case ANO_MODE_MIXOLYDIAN: return 1;
-    case ANO_MODE_DORIAN:     return 0;
-    case ANO_MODE_AEOLIAN:    return -1;
-    case ANO_MODE_PHRYGIAN:   return -2;
-    default:                  return -1; // BRIGHTNESS.get(mode, -1): locrian absent
-    }
+    return (uint8_t)(s.tonic % 12u);
 }
 
-// Input: mode in [0, ANO_MODE_COUNT). Output: 7 read-only ascending semitone offsets.
-// Invariant: immutable constant data.
-const uint8_t *ano_mode_intervals(AnoMode mode)
+static inline AnoMode scale_mode(AnoScale s)
 {
-    return MODE_INTERVALS[mode];
+    return s.mode < (uint8_t)ANO_MODE_COUNT ? (AnoMode)s.mode : ANO_MODE_IONIAN;
 }
 
 void ano_scale_pcs(AnoScale s, uint8_t out[7])
 {
-    const uint8_t *iv = ano_mode_intervals((AnoMode)s.mode);
+    const uint8_t *iv = ano_mode_intervals(scale_mode(s));
+    const uint8_t tonic = scale_tonic(s);
     for (int i = 0; i < 7; ++i)
-        out[i] = (uint8_t)((s.tonic + iv[i]) % 12);
+        out[i] = (uint8_t)((tonic + iv[i]) % 12);
 }
 
 bool ano_scale_contains(AnoScale s, int midi)
@@ -95,9 +66,11 @@ int ano_scale_degree_of(AnoScale s, int midi)
 
 int ano_scale_pitch_at(AnoScale s, int degree, int octave)
 {
-    int step  = (degree - 1) % 7;
-    int octUp = (degree - 1) / 7;
-    return (octave + 1 + octUp) * 12 + s.tonic + ano_mode_intervals((AnoMode)s.mode)[step];
+    int zeroBased = degree - 1;
+    int step = pymod(zeroBased, 7);
+    int octUp = (zeroBased - step) / 7;
+    return (octave + 1 + octUp) * 12 + scale_tonic(s)
+         + ano_mode_intervals(scale_mode(s))[step];
 }
 
 int ano_snap_to_scale(AnoScale s, int pitch)
@@ -125,7 +98,8 @@ int ano_diatonic_shift(AnoScale s, int pitch, int steps)
 
 const char *ano_scale_name(AnoScale s, char *buf, uint32_t cap)
 {
-    snprintf(buf, cap, "%s %s", TONIC_NAMES[s.tonic], ANO_MODE_NAMES[s.mode]);
+    snprintf(buf, cap, "%s %s", TONIC_NAMES[scale_tonic(s)],
+             ano_mode_name(scale_mode(s)));
     return buf;
 }
 

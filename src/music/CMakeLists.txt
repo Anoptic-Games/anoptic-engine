@@ -1,6 +1,8 @@
 # Music generation core. -ffp-contract=off: bit-parity with CPython float op order.
 set(ANO_MUSIC_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/music_det.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_modes.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/music_vocab.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/music_theory.c
         ${CMAKE_CURRENT_SOURCE_DIR}/music_harmony.c
         ${CMAKE_CURRENT_SOURCE_DIR}/music_voicing.c

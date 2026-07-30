@@ -14,7 +14,6 @@
 #include <anoptic_time.h>
 
 #define ANO_AUDIO_TAU_F  6.28318530717958647692f // 2*pi
-#define ANO_AUDIO_PI4_F  0.78539816339744830962f // pi/4
 
 static inline float clampf(float v, float lo, float hi)
 {
@@ -36,7 +35,7 @@ bool ano_audio_graph_init(AnoAudioMixer *mx, const AnoAudioBusDesc *layout)
                 gain = layout[b].gain;
         }
         bus->parent = b == 0u ? 0u : parent;
-        bus->mix = mi_heap_calloc(mx->heap, samples, sizeof(float));
+        bus->mix = static_cast<float *>(mi_heap_calloc(mx->heap, samples, sizeof(float)));
         if (!bus->mix)
             return false;
         ano_audio_smooth_snap(&bus->gain, gain);
@@ -103,91 +102,6 @@ static void source_spatialize(AnoAudioMixer *mx, AnoAudioSource *s)
         s->airLp = 0.0f;
 }
 
-/* Voice rendering */
-
-// PLAYING/STOPPING into bus mix. May flip RETIRING mid-block.
-// Smoothers advance once per frame so a skipped sample can never shift them.
-static void source_render(AnoAudioSource *s, float *mix, uint32_t frames, float fsInv)
-{
-    const bool loop       = (s->flags & ANO_AUDIO_SOURCE_LOOP) != 0u;
-    const bool positional = (s->flags & ANO_AUDIO_SOURCE_POSITIONAL) != 0u;
-
-    for (uint32_t i = 0; i < frames; ++i) {
-        // duration expiry begins the same release ramp a STOP does
-        if (s->remaining == 0u && s->state == ANO_AUDIO_SRC_PLAYING) {
-            s->state = ANO_AUDIO_SRC_STOPPING;
-            s->gain.target = 0.0f;
-        }
-        float g = ano_audio_smooth_step(&s->gain);
-        if (s->state == ANO_AUDIO_SRC_STOPPING && g < ANO_AUDIO_RETIRE_EPS) {
-            s->state = ANO_AUDIO_SRC_RETIRING;
-            return;
-        }
-        float p   = ano_audio_smooth_step(&s->pan);
-        float sg  = ano_audio_smooth_step(&s->spatGain);
-        float amp = g * sg;
-
-        float vl, vr;
-        if (s->kind == ANO_AUDIO_SOURCE_TONE) {
-            float f = ano_audio_smooth_step(&s->freq);
-            s->phase += (double)(f * fsInv);
-            if (s->phase >= 1.0)
-                s->phase -= 1.0;
-            vl = vr = sinf((float)s->phase * ANO_AUDIO_TAU_F);
-        } else { // BUFFER
-            float r = ano_audio_smooth_step(&s->rate);
-            uint64_t i0 = (uint64_t)s->cursor;
-            if (i0 >= s->bufFrames) {
-                if (!loop) {
-                    // data ended: release ramp over silence
-                    if (s->state == ANO_AUDIO_SRC_PLAYING) {
-                        s->state = ANO_AUDIO_SRC_STOPPING;
-                        s->gain.target = 0.0f;
-                    }
-                    vl = vr = 0.0f;
-                    goto place;
-                }
-                while (s->cursor >= (double)s->bufFrames)
-                    s->cursor -= (double)s->bufFrames;
-                i0 = (uint64_t)s->cursor;
-            }
-            uint64_t i1 = i0 + 1u;
-            if (i1 >= s->bufFrames)
-                i1 = loop ? 0u : s->bufFrames - 1u;
-            float fr = (float)(s->cursor - (double)i0);
-            const float *d = s->bufData;
-            if (s->bufChannels == 1u) {
-                float v = d[i0] + (d[i1] - d[i0]) * fr;
-                vl = vr = v;
-            } else {
-                vl = d[2u * i0] + (d[2u * i1] - d[2u * i0]) * fr;
-                vr = d[2u * i0 + 1u] + (d[2u * i1 + 1u] - d[2u * i0 + 1u]) * fr;
-            }
-            s->cursor += (double)r;
-        place:;
-        }
-
-        if (positional && s->bufChannels <= 1u) {
-            s->airLp += s->airCoef * (vl - s->airLp);
-            vl = vr = s->airLp;
-        }
-
-        if (s->kind == ANO_AUDIO_SOURCE_BUFFER && s->bufChannels == 2u) {
-            // stereo: linear balance
-            float bl = p > 0.0f ? 1.0f - p : 1.0f;
-            float br = p < 0.0f ? 1.0f + p : 1.0f;
-            mix[2u * i]      += vl * amp * bl;
-            mix[2u * i + 1u] += vr * amp * br;
-        } else {
-            // mono: constant-power
-            float a = (p + 1.0f) * ANO_AUDIO_PI4_F;
-            mix[2u * i]      += vl * amp * cosf(a);
-            mix[2u * i + 1u] += vr * amp * sinf(a);
-        }
-        s->remaining--; // the UINT64_MAX sentinel counts down; 2^64 frames never arrives
-    }
-}
-
 /* Command application */
 
 static AnoAudioBufferSlot *buffer_find(AnoAudioMixer *mx, uint32_t buffer_id, uint32_t state)
@@ -202,8 +116,8 @@ static AnoAudioBufferSlot *buffer_find(AnoAudioMixer *mx, uint32_t buffer_id, ui
 static void buffer_reject(AnoAudioMixer *mx, uint32_t buffer_id, const void *block)
 {
     if (mx->bridge) {
-        AnoAudioEvent evt = { .kind = AEVT_BUFFER_RETIRED,
-                              .u.buffer = { .buffer_id = buffer_id, .block = (void *)block } };
+        AnoAudioEvent evt = { .kind = AEVT_BUFFER_RETIRED };
+        evt.u.buffer = { .buffer_id = buffer_id, .block = (void *)block };
         if (ano_audio_emit_event(mx->bridge, &evt))
             return;
     }
@@ -382,7 +296,8 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
         }
         if (!cmd->block)
             return;
-        const AnoAudioBlockHeader *h = cmd->block;
+        const AnoAudioBlockHeader *h =
+            static_cast<const AnoAudioBlockHeader *>(cmd->block);
         if (h->frames == 0u || h->channels < 1u || h->channels > 2u) {
             ano_debug_log(ANO_WARN, "audio: buffer %u rejected (bad header).", cmd->source_id);
             buffer_reject(mx, cmd->source_id, cmd->block);
@@ -493,7 +408,7 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
         AnoAudioSource *s = &mx->sources[i];
         if (s->state == ANO_AUDIO_SRC_PLAYING || s->state == ANO_AUDIO_SRC_STOPPING) {
             source_spatialize(mx, s);
-            source_render(s, mx->buses[s->bus].mix, frames, fsInv);
+            ano_audio_source_render(s, mx->buses[s->bus].mix, frames, fsInv);
             ++active;
         }
     }
@@ -550,7 +465,8 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
         if (s->state != ANO_AUDIO_SRC_RETIRING)
             continue;
         if (mx->bridge) {
-            AnoAudioEvent evt = { .kind = AEVT_SOURCE_RETIRED, .u.source_id = s->source_id };
+            AnoAudioEvent evt = { .kind = AEVT_SOURCE_RETIRED };
+            evt.u.source_id = s->source_id;
             if (!ano_audio_emit_event(mx->bridge, &evt))
                 continue; // events ring full: keep the slot, retry next block
         }
@@ -571,8 +487,8 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out)
         if (inUse)
             continue;
         if (slot->owned && mx->bridge) {
-            AnoAudioEvent evt = { .kind = AEVT_BUFFER_RETIRED,
-                                  .u.buffer = { .buffer_id = slot->buffer_id, .block = slot->block } };
+            AnoAudioEvent evt = { .kind = AEVT_BUFFER_RETIRED };
+            evt.u.buffer = { .buffer_id = slot->buffer_id, .block = slot->block };
             if (!ano_audio_emit_event(mx->bridge, &evt))
                 continue; // retry next block; the block stays valid meanwhile
         }
@@ -625,7 +541,7 @@ static void publish_stats(AnoAudioMixer *mx, uint64_t cpuNs)
 
 void *ano_audio_mixer_main(void *arg)
 {
-    AnoAudioMixer *mx = arg;
+    AnoAudioMixer *mx = static_cast<AnoAudioMixer *>(arg);
 
     // Ring depth in block periods (= full consumer queue). capacity >= 2 (ring_init floors it).
     const uint64_t ringBlocks = (uint64_t)mx->blockRing.mask + 1u;
@@ -695,7 +611,8 @@ bool ano_audio_render_offline(const AnoAudioOfflineDesc *desc, float *out, uint6
     mi_heap_t *heap LOCALHEAPATTR = mi_heap_new();
     if (!heap)
         return false;
-    AnoAudioMixer *mx = mi_heap_malloc_aligned(heap, sizeof *mx, _Alignof(AnoAudioMixer));
+    AnoAudioMixer *mx = static_cast<AnoAudioMixer *>(
+        mi_heap_malloc_aligned(heap, sizeof *mx, _Alignof(AnoAudioMixer)));
     if (!mx)
         return false;
     memset(mx, 0, sizeof *mx);
@@ -712,7 +629,8 @@ bool ano_audio_render_offline(const AnoAudioOfflineDesc *desc, float *out, uint6
     mx->generatorCommands = d.generatorCommands;
     if (!ano_audio_graph_init(mx, d.busLayout))
         return false;
-    float *scratch = mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float));
+    float *scratch = static_cast<float *>(
+        mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float)));
     if (!scratch)
         return false;
 

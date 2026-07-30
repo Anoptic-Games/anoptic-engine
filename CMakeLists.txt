@@ -27,6 +27,12 @@ set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
+# C+Ultra: C-shaped first-party sources use the C++26 frontend without renaming.
+set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 # Emit compile_commands.json for clangd.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -146,6 +152,15 @@ target_include_directories(anoptic_core PUBLIC
 target_link_libraries(anoptic_core PUBLIC mimalloc-static Threads::Threads)
 # PRIVATE: FreeType types stay out of public headers.
 target_link_libraries(anoptic_core PRIVATE freetype)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_link_options(anoptic_core INTERFACE
+            "$<$<LINK_LANGUAGE:CXX>:-nostdlib++>")
+    if(ANOPTIC_SANITIZE STREQUAL "")
+        target_link_options(anoptic_core INTERFACE
+                "$<$<LINK_LANGUAGE:CXX>:-rtlib=compiler-rt>")
+    endif()
+endif()
 
 # POSIX + misc/XSI feature-test macros, set once globally.
 if(UNIX)
@@ -319,3 +334,77 @@ if(ANOPTIC_TESTS)
     enable_testing()
     add_subdirectory(${CMAKE_SOURCE_DIR}/tests)
 endif()
+
+# Every first-party implementation and test uses the C++26 frontend. Source/interface
+# filenames remain .c/.h; external dependencies retain their declared languages.
+function(ano_enable_cplus_ultra target)
+    get_target_property(ANO_TARGET_SOURCES ${target} SOURCES)
+    if(NOT ANO_TARGET_SOURCES)
+        return()
+    endif()
+
+    get_target_property(ANO_TARGET_SOURCE_DIR ${target} SOURCE_DIR)
+    set(ANO_EXTERNAL_ROOT "${CMAKE_SOURCE_DIR}/external")
+    foreach(ANO_SOURCE IN LISTS ANO_TARGET_SOURCES)
+        if(ANO_SOURCE MATCHES "^\\$<")
+            continue()
+        endif()
+        if(IS_ABSOLUTE "${ANO_SOURCE}")
+            set(ANO_SOURCE_ABS "${ANO_SOURCE}")
+        else()
+            cmake_path(ABSOLUTE_PATH ANO_SOURCE
+                    BASE_DIRECTORY "${ANO_TARGET_SOURCE_DIR}"
+                    NORMALIZE
+                    OUTPUT_VARIABLE ANO_SOURCE_ABS)
+        endif()
+        cmake_path(IS_PREFIX CMAKE_SOURCE_DIR "${ANO_SOURCE_ABS}"
+                NORMALIZE ANO_IN_SOURCE_TREE)
+        cmake_path(IS_PREFIX ANO_EXTERNAL_ROOT "${ANO_SOURCE_ABS}"
+                NORMALIZE ANO_IN_EXTERNAL)
+        if(ANO_IN_SOURCE_TREE AND NOT ANO_IN_EXTERNAL
+                AND ANO_SOURCE_ABS MATCHES "\\.c$")
+            set_source_files_properties("${ANO_SOURCE_ABS}"
+                    TARGET_DIRECTORY ${target}
+                    PROPERTIES LANGUAGE CXX)
+        endif()
+    endforeach()
+
+    target_compile_options(${target} PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-Werror=format>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-Werror=switch-enum>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-Werror=implicit-fallthrough>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-Werror=return-type>")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:CXX>:-Werror=c99-designator>"
+                "$<$<COMPILE_LANGUAGE:CXX>:-Werror=dangling>"
+                "$<$<COMPILE_LANGUAGE:CXX>:-Werror=reorder-init-list>"
+                "$<$<COMPILE_LANGUAGE:CXX>:-Werror=vla-cxx-extension>"
+                "$<$<COMPILE_LANGUAGE:CXX>:-Werror=writable-strings>")
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:CXX>:-Werror=vla>"
+                "$<$<COMPILE_LANGUAGE:CXX>:-Werror=write-strings>")
+    endif()
+endfunction()
+
+set(ANO_FIRST_PARTY_TARGETS anoptic_core)
+if(TARGET anoptic_render)
+    list(APPEND ANO_FIRST_PARTY_TARGETS anoptic_render)
+endif()
+if(TARGET anopticengine)
+    list(APPEND ANO_FIRST_PARTY_TARGETS anopticengine)
+endif()
+if(ANOPTIC_TESTS)
+    get_property(ANO_TEST_TARGETS
+            DIRECTORY "${CMAKE_SOURCE_DIR}/tests"
+            PROPERTY BUILDSYSTEM_TARGETS)
+    list(APPEND ANO_FIRST_PARTY_TARGETS ${ANO_TEST_TARGETS})
+endif()
+foreach(ANO_TARGET IN LISTS ANO_FIRST_PARTY_TARGETS)
+    if(TARGET ${ANO_TARGET})
+        ano_enable_cplus_ultra(${ANO_TARGET})
+    endif()
+endforeach()

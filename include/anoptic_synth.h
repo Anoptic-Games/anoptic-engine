@@ -16,6 +16,10 @@
 #include <anoptic_audio.h>
 #include <anoptic_music.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Console Shape */
 
@@ -174,5 +178,9 @@ uint32_t ano_synth_console_setup(AnoAudioOfflineEvent *out, uint32_t cap);
 #define ANO_SYNTH_BAR_CMDS (ANO_MUSIC_LAYER_COUNT + 3u)
 uint32_t ano_synth_console_automation(const AnoSynth *s, AnoAudioOfflineEvent *out,
                                       uint32_t cap);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // ANOPTIC_SYNTH_H

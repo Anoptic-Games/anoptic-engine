@@ -21,53 +21,72 @@ static int clamp_velocity(double v)
 
 AnoModifier ano_mod_swing(double amount)
 {
-    return (AnoModifier){ .kind = ANO_MOD_SWING, .u.swing = { amount } };
+    AnoModifier modifier = { .kind = ANO_MOD_SWING };
+    modifier.u.swing = { amount };
+    return modifier;
 }
 
 AnoModifier ano_mod_humanize(double tSigma, double vSigma)
 {
-    return (AnoModifier){ .kind = ANO_MOD_HUMANIZE, .u.humanize = { tSigma, vSigma } };
+    AnoModifier modifier = { .kind = ANO_MOD_HUMANIZE };
+    modifier.u.humanize = { tSigma, vSigma };
+    return modifier;
 }
 
 AnoModifier ano_mod_articulate(void)
 {
-    return (AnoModifier){ .kind = ANO_MOD_ARTICULATE, .u.articulate = { false, 0.0 } };
+    AnoModifier modifier = { .kind = ANO_MOD_ARTICULATE };
+    modifier.u.articulate = { false, 0.0 };
+    return modifier;
 }
 
 AnoModifier ano_mod_articulate_gate(double gate)
 {
-    return (AnoModifier){ .kind = ANO_MOD_ARTICULATE, .u.articulate = { true, gate } };
+    AnoModifier modifier = { .kind = ANO_MOD_ARTICULATE };
+    modifier.u.articulate = { true, gate };
+    return modifier;
 }
 
 AnoModifier ano_mod_accent(void)
 {
-    return (AnoModifier){ .kind = ANO_MOD_ACCENT, .u.accent = { false, 0.0 } };
+    AnoModifier modifier = { .kind = ANO_MOD_ACCENT };
+    modifier.u.accent = { false, 0.0 };
+    return modifier;
 }
 
 AnoModifier ano_mod_accent_depth(double depth)
 {
-    return (AnoModifier){ .kind = ANO_MOD_ACCENT, .u.accent = { true, depth } };
+    AnoModifier modifier = { .kind = ANO_MOD_ACCENT };
+    modifier.u.accent = { true, depth };
+    return modifier;
 }
 
 AnoModifier ano_mod_perform(double hairpin, double contour, double agogic, double lag)
 {
-    return (AnoModifier){ .kind = ANO_MOD_PERFORM,
-                          .u.perform = { hairpin, contour, agogic, 0.05, lag } };
+    AnoModifier modifier = { .kind = ANO_MOD_PERFORM };
+    modifier.u.perform = { hairpin, contour, agogic, 0.05, lag };
+    return modifier;
 }
 
 AnoModifier ano_mod_echo(void)
 {
-    return (AnoModifier){ .kind = ANO_MOD_ECHO, .u.echo = { 0.75, 0.55, 2, 24 } };
+    AnoModifier modifier = { .kind = ANO_MOD_ECHO };
+    modifier.u.echo = { 0.75, 0.55, 2, 24 };
+    return modifier;
 }
 
 AnoModifier ano_mod_strum(double spread)
 {
-    return (AnoModifier){ .kind = ANO_MOD_STRUM, .u.strum = { spread } };
+    AnoModifier modifier = { .kind = ANO_MOD_STRUM };
+    modifier.u.strum = { spread };
+    return modifier;
 }
 
 AnoModifier ano_mod_transpose(int octaves, int steps)
 {
-    return (AnoModifier){ .kind = ANO_MOD_TRANSPOSE, .u.transpose = { octaves, steps } };
+    AnoModifier modifier = { .kind = ANO_MOD_TRANSPOSE };
+    modifier.u.transpose = { octaves, steps };
+    return modifier;
 }
 
 static uint32_t apply_swing(const AnoModifier *m, AnoMusicEvent *ev, uint32_t n,

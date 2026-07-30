@@ -52,17 +52,19 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 		state->tonemapCache = VK_NULL_HANDLE;
 
 	// Unwind idiom: hold blobs/modules until fail/tail; refused load clears buffer (loadFile dangles on short read).
-	struct Buffer vertCode = {0}, fragCode = {0};
+	struct Buffer vertCode = {}, fragCode = {};
 	VkShaderModule vertModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE;
-	if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode)) { vertCode.data = NULL; goto fail; }
-	if (!loadFile("resources/shaders/tonemap.frag.spv", &fragCode)) { fragCode.data = NULL; goto fail; }
+
+	bool ok = [&]() -> bool {
+	if (!loadFile("resources/shaders/tonemap.vert.spv", &vertCode)) { vertCode.data = NULL; return false; }
+	if (!loadFile("resources/shaders/tonemap.frag.spv", &fragCode)) { fragCode.data = NULL; return false; }
 	vertModule = createShaderModule(ctx->device, &vertCode);
 	fragModule = createShaderModule(ctx->device, &fragCode);
 
 	VkPipelineShaderStageCreateInfo stages[2];
 	if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
 		|| !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
-		goto fail;
+		return false;
 
 	// No vertex buffers, fullscreen triangle from gl_VertexIndex.
 	VkPipelineVertexInputStateCreateInfo vertexInput = {};
@@ -133,23 +135,16 @@ bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 	pipelineInfo.renderPass = VK_NULL_HANDLE;
 
 	VkResult r = vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo, NULL, &state->tonemapPipeline);
+	return r == VK_SUCCESS;
+	}();
 
 	ano_aligned_free(vertCode.data);
 	ano_aligned_free(fragCode.data);
 	vkDestroyShaderModule(ctx->device, vertModule, NULL);
 	vkDestroyShaderModule(ctx->device, fragModule, NULL);
 
-	if (r != VK_SUCCESS)
-	{
+	if (!ok)
 		ano_log(ANO_FATAL, "Failed to create tonemap pipeline!");
-		return false;
-	}
-	return true;
+	return ok;
 
-fail:
-	ano_aligned_free(vertCode.data);
-	ano_aligned_free(fragCode.data);
-	vkDestroyShaderModule(ctx->device, vertModule, NULL);
-	vkDestroyShaderModule(ctx->device, fragModule, NULL);
-	return false;
 }

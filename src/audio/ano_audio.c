@@ -39,8 +39,21 @@ static const AnoAudioDeviceApi *backend_api(AnoAudioBackend which)
     case ANO_AUDIO_BACKEND_PIPEWIRE: return ano_audio_device_pipewire();
     case ANO_AUDIO_BACKEND_ALSA:     return ano_audio_device_alsa();
 #endif
-    default: return NULL;
+    case ANO_AUDIO_BACKEND_AUTO:
+#if !defined(_WIN32)
+    case ANO_AUDIO_BACKEND_WASAPI:
+    case ANO_AUDIO_BACKEND_DSOUND:
+#endif
+#if !defined(__APPLE__)
+    case ANO_AUDIO_BACKEND_COREAUDIO:
+#endif
+#if !defined(__linux__)
+    case ANO_AUDIO_BACKEND_PIPEWIRE:
+    case ANO_AUDIO_BACKEND_ALSA:
+#endif
+        return NULL;
     }
+    return NULL;
 }
 
 // ANO_AUDIO_BACKEND env override.
@@ -109,13 +122,18 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
         ano_log(ANO_WARN, "audio: busCount %u clamped to %u.", buses, ANO_AUDIO_MAX_BUSES);
         buses = ANO_AUDIO_MAX_BUSES;
     }
+    AnoAudioMixer *mx;
+    AnoAudioBridge *bridge;
+    uint32_t blockStride;
+    AnoAudioBackend want;
 
     mi_heap_t *heap = mi_heap_new();
     if (!heap)
         return false;
 
     // ring cursors carry _Alignas(ANO_THREAD_LINE); heap owner must request it
-    AnoAudioMixer *mx = mi_heap_malloc_aligned(heap, sizeof *mx, _Alignof(AnoAudioMixer));
+    mx = static_cast<AnoAudioMixer *>(
+        mi_heap_malloc_aligned(heap, sizeof *mx, _Alignof(AnoAudioMixer)));
     if (!mx)
         goto fail_heap;
     memset(mx, 0, sizeof *mx);
@@ -135,7 +153,8 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     atomic_init(&mx->mixerRun, false);
     atomic_init(&mx->deviceRun, false);
 
-    AnoAudioBridge *bridge = mi_heap_malloc_aligned(heap, sizeof *bridge, _Alignof(AnoAudioBridge));
+    bridge = static_cast<AnoAudioBridge *>(
+        mi_heap_malloc_aligned(heap, sizeof *bridge, _Alignof(AnoAudioBridge)));
     if (!bridge)
         goto fail_heap;
     memset(bridge, 0, sizeof *bridge);
@@ -143,11 +162,13 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
         goto fail_heap;
     mx->bridge = bridge;
 
-    const uint32_t blockStride = bf * ANO_AUDIO_CHANNELS * (uint32_t)sizeof(float);
+    blockStride = bf * ANO_AUDIO_CHANNELS * (uint32_t)sizeof(float);
     if (!ano_audio_ring_init(&mx->blockRing, heap, devBlocks, blockStride))
         goto fail_heap;
-    mx->blockScratch  = mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float));
-    mx->deviceScratch = mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float));
+    mx->blockScratch = static_cast<float *>(
+        mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float)));
+    mx->deviceScratch = static_cast<float *>(
+        mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float)));
     if (!mx->blockScratch || !mx->deviceScratch)
         goto fail_heap;
     if (!ano_audio_graph_init(mx, c.busLayout)) {
@@ -156,7 +177,7 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     }
 
     // AUTO cascades to null. Named backend must open.
-    AnoAudioBackend want = backend_env_override((AnoAudioBackend)c.backend);
+    want = backend_env_override((AnoAudioBackend)c.backend);
     if (want == ANO_AUDIO_BACKEND_AUTO) {
         static const AnoAudioBackend cascade[] = {
 #if defined(_WIN32)
@@ -318,7 +339,8 @@ bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,
     if (frames > (SIZE_MAX - sizeof(AnoAudioBlockHeader)) / stride)
         return false;
     uint64_t bytes64 = frames * stride;
-    AnoAudioBlockHeader *h = mi_malloc(sizeof *h + (size_t)bytes64);
+    AnoAudioBlockHeader *h = static_cast<AnoAudioBlockHeader *>(
+        mi_malloc(sizeof *h + (size_t)bytes64));
     if (!h)
         return false;
     h->frames   = frames;

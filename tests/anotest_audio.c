@@ -84,8 +84,8 @@ static void make_material(void)
 
 // Offline score: tone retargets, looping positional click, filter sweep, stereo bed, moving listener, stops/expiries.
 static const AnoAudioOfflineEvent k_events[] = {
-    { .frame = 0, .cmd = { .kind = ACMD_BUS_SET, .bus = 1,
-        .fields = ANO_AUDIO_FIELD_GAIN, .gain = 0.9f } },
+    { .frame = 0, .cmd = { .kind = ACMD_BUS_SET,
+        .fields = ANO_AUDIO_FIELD_GAIN, .bus = 1, .gain = 0.9f } },
     { .frame = 0, .cmd = { .kind = ACMD_FX_SET, .bus = 1, .fxSlot = 0,
         .paramId = ANO_AUDIO_P_FILTER_CUTOFF, .value = 8000.0f } },
     { .frame = 0, .cmd = { .kind = ACMD_FX_SET, .bus = 1, .fxSlot = 0,
@@ -103,7 +103,7 @@ static const AnoAudioOfflineEvent k_events[] = {
         .paramId = ANO_AUDIO_P_FILTER_CUTOFF, .value = 1200.0f } },
     { .frame = 12000, .cmd = { .kind = ACMD_SOURCE_UPDATE, .source_id = 1,
         .fields = ANO_AUDIO_FIELD_GAIN | ANO_AUDIO_FIELD_FREQ | ANO_AUDIO_FIELD_PAN,
-        .gain = 0.2f, .freqHz = 660.0f, .pan = 0.5f } },
+        .gain = 0.2f, .pan = 0.5f, .freqHz = 660.0f } },
     { .frame = 12000, .cmd = { .kind = ACMD_SOURCE_UPDATE, .source_id = 3,
         .fields = ANO_AUDIO_FIELD_POSITION | ANO_AUDIO_FIELD_RATE,
         .rate = 0.8f, .position = { -3.0f, 0.0f, -1.0f } } },
@@ -158,8 +158,8 @@ static float peak_of(const float *buf, uint64_t samples)
 
 static void test_offline_determinism(uint32_t soak)
 {
-    float *golden = mi_malloc(SAMPLES * sizeof(float));
-    float *again  = mi_malloc(SAMPLES * sizeof(float));
+    float *golden = static_cast<float *>(mi_malloc(SAMPLES * sizeof(float)));
+    float *again = static_cast<float *>(mi_malloc(SAMPLES * sizeof(float)));
     if (!golden || !again) {
         CHECK(false, "test buffers failed to allocate");
         return;
@@ -195,7 +195,7 @@ static void test_offline_determinism(uint32_t soak)
 
 static void test_wav(void)
 {
-    float *buf = mi_malloc(SAMPLES * sizeof(float));
+    float *buf = static_cast<float *>(mi_malloc(SAMPLES * sizeof(float)));
     if (!buf) {
         CHECK(false, "wav buffer failed to allocate");
         return;
@@ -316,8 +316,9 @@ static void test_live_world(void)
     // Buffer: register -> play -> retire -> release -> AEVT_BUFFER_RETIRED.
     CHECK(ano_audio_buffer_register(b, 42, g_click, CLICK_FRAMES, 1), "buffer registers");
     AnoAudioCommand play = { .kind = ACMD_SOURCE_PLAY, .source_id = 7,
-        .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .buffer_id = 42, .bus = 1, .gain = 0.6f,
-                  .flags = ANO_AUDIO_SOURCE_POSITIONAL, .position = { 1.0f, 0.0f, -1.0f } } };
+        .desc = { .kind = ANO_AUDIO_SOURCE_BUFFER, .bus = 1, .buffer_id = 42,
+                  .flags = ANO_AUDIO_SOURCE_POSITIONAL, .gain = 0.6f,
+                  .position = { 1.0f, 0.0f, -1.0f } } };
     AnoAudioListener l = { .pos = {0, 0, 0}, .forward = {0, 0, -1}, .up = {0, 1, 0}, .seq = 1 };
     ano_audio_publish_listener(b, &l);
     CHECK(ano_audio_submit(b, &play), "submit buffer PLAY");
@@ -432,6 +433,33 @@ static void test_buffer_register_size_wrap(void)
     ano_audio_shutdown();
 }
 
+static void test_source_kind_boundary(void)
+{
+    const AnoAudioOfflineEvent event = {
+        .cmd = {
+            .kind = ACMD_SOURCE_PLAY,
+            .source_id = 1,
+            .desc = {
+                .kind = ANO_AUDIO_SOURCE_COUNT,
+                .gain = 1.0f,
+                .freqHz = 440.0f,
+            },
+        },
+    };
+    const AnoAudioOfflineDesc desc = {
+        .sampleRate = 48000,
+        .blockFrames = 32,
+        .busCount = 1,
+        .events = &event,
+        .eventCount = 1,
+    };
+    float mix[64] = { 0 };
+    CHECK(ano_audio_render_offline(&desc, mix, 32),
+          "offline render accepts an invalid-kind command batch");
+    CHECK(peak_of(mix, 64) == 0.0f,
+          "invalid source kind is rejected before the hot source state");
+}
+
 int main(int argc, char **argv)
 {
     scratch_anchor_to_exe();
@@ -447,6 +475,7 @@ int main(int argc, char **argv)
     test_wav_write_size_wrap();
     test_live_world();
     test_buffer_register_size_wrap();
+    test_source_kind_boundary();
 
     if (failures) {
         printf("anotest_audio: %d FAILURE(S)\n", failures);

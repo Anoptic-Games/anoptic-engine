@@ -185,7 +185,8 @@ int main(void)
             ano_music_advance_bar(fresh, &pb);
         CHECK(ano_music_snapshot(fresh, snapB, sz), "snapshot the rebuild");
         if (memcmp(snap, snapB, sz) != 0) {
-            const unsigned char *x = snap, *y = snapB;
+            const unsigned char *x = static_cast<const unsigned char *>(snap);
+            const unsigned char *y = static_cast<const unsigned char *>(snapB);
             size_t first = sz, n = 0;
             for (size_t i = 0; i < sz; ++i)
                 if (x[i] != y[i]) { if (first == sz) first = i; n++; }

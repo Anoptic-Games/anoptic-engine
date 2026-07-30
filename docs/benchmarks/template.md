@@ -4,6 +4,7 @@
 - Specs come from CIM/registry CPU: Get-CimInstance Win32_Processor. GPU name+driver: Win32_VideoController. VRAM: HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000 HardwareInformation.qwMemorySize (Win32_VideoController.AdapterRAM caps at 4 GB, ignore it). RAM: Win32_PhysicalMemory. Board/BIOS: Win32_BaseBoard, Win32_BIOS. OS build: HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion (DisplayVersion + UBR). Scale: HKCU\Control Panel\Desktop\WindowMetrics AppliedDPI / 96.
 - NVIDIA marketing driver = last 5 digits of the Windows version, e.g. 32.0.15.7261 -> 572.61.
 - Numbers: paste the harness table verbatim; it already drops warmup (first 2 s by elapsed time 〜 window cadence scales with fps) and takes per-point medians, including the frametime lows. Discard any BG!! row (a background window mismeasures the GPU passes).
+- Executable comparisons: use the Windows driver's --compare-exe mode, paste every raw pair row and the paired summary, and identify A/B commits. Do not subtract two whole sweeps run in sequence.
 - The res column is the harness render column: the realized swapchain extent from the engine's res= profile line. Rows are named by it. The sweep is display-derived, so the top row is the display max and its label varies per machine.
 - Resolution check is mandatory: swap MiB must scale ~linearly with render pixel count (near-constant MiB per megapixel). swap cross-checks res; a render/swap disagreement means an engine accounting bug.
 - Carry the harness display line (panel, mode, scale, largest realizable framebuffer) into System/Mode.
@@ -57,3 +58,13 @@ wall fps = median per-window throughput from [frame] (ANO_PERF_WINDOW_FRAMES = 1
 GPU ms = median GPU-pass total (upload + compute + shadow + lighting + composite). GPU cap = 1000 / GPU ms. wall/cap ≥ 0.9 → GPU-bound, else CPU/present. swap MiB = swapchain resident VRAM.
 
 Resolution check: <swap MiB per megapixel of render pixels across the sweep; the top-row-to-1080p swap ratio against the same rows' pixel ratio>. Render column = engine-created extent.
+
+## Paired comparison
+
+Omit this section for a single-build run. A = <commit/build/path>; B = <commit/build/path>. <N> adjacent pairs per resolution in the driver's ABBA/BAAB balanced order, <duration> s per process.
+
+| res | A fps | B fps | B - A | paired 95% CI | A DWM % | B DWM % | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| <render WxH> | <fps> | <fps> | <percent> | <low, high> | <aggregate percent> | <aggregate percent> | <neutral, B faster, or B slower> |
+
+DWM % is the one-Hz sum across DWM's Windows GPU Engine instances. It is compositor exposure for diagnosing session drift, not an engine-FPS correction.

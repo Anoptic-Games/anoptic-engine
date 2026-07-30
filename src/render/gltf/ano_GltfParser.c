@@ -2,13 +2,25 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include "ano_GltfParser.h"
+#include "cpp/ano_alloc.h"
 #include <string.h>
 #include <assert.h>
-#include <anoptic_memory.h>
 #include <anoptic_log.h>
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wswitch-enum"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wswitch-enum"
+#endif
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 extern GpuAllocator stagingAllocator;
 extern RendererState rendererState;
@@ -44,7 +56,7 @@ static inline size_t gltf_span(size_t n, size_t sz)
 // Inputs: blk over one zeroed allocation; n/sz exactly as summed during sizing.
 // Output: zeroed 16-aligned sub-array for n elements of sz bytes.
 // Invariant: cur never passes end while every carve was a sizing term.
-static void* gltf_carve(GltfBlock* blk, size_t n, size_t sz)
+static void* gltf_carve_bytes(GltfBlock* blk, size_t n, size_t sz)
 {
     size_t bytes = gltf_span(n, sz);
 #ifdef DEBUG_BUILD
@@ -53,6 +65,12 @@ static void* gltf_carve(GltfBlock* blk, size_t n, size_t sz)
     void* p = blk->cur;
     blk->cur += bytes;
     return p;
+}
+
+template<ano::Data T>
+[[nodiscard]] static T* gltf_carve(GltfBlock* blk, size_t n)
+{
+    return static_cast<T*>(gltf_carve_bytes(blk, n, sizeof(T)));
 }
 
 // Inputs: prim. Outputs: *pos/*norm/*tex accessors, NULL when absent (last texcoord wins).
@@ -135,7 +153,7 @@ static void scratch_extents(ValidatedGltf g, size_t* maxVerts, size_t* maxIdx)
 
 ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 {
-    cgltf_options options = {0};
+    cgltf_options options = {};
     cgltf_data* data = NULL;
     cgltf_result result = cgltf_parse_file(&options, fileName, &data);
     
@@ -165,19 +183,19 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     // Persistent ModelAsset block (one calloc, one free at unload).
     size_t primsTotal, childTotal, rootTotal;
     size_t assetBytes = asset_block_size(gltf, &primsTotal, &childTotal, &rootTotal);
-    void* assetBase = calloc(1, assetBytes);
+    uint8_t* assetBase = ano::allocate_zero<uint8_t>(assetBytes);
     if (!assetBase) {
         ano_log(ANO_ERROR, "Failed to allocate %zu-byte asset block for: %s", assetBytes, fileName);
         cgltf_free(data);
         return NULL;
     }
-    GltfBlock assetBlk = { assetBase, (uint8_t*)assetBase + assetBytes };
-    ModelAsset*     asset     = gltf_carve(&assetBlk, 1, sizeof(ModelAsset));
-    ModelMesh*      meshPool  = gltf_carve(&assetBlk, data->meshes_count, sizeof(ModelMesh));
-    ModelPrimitive* primPool  = gltf_carve(&assetBlk, primsTotal, sizeof(ModelPrimitive));
-    ModelNode*      nodePool  = gltf_carve(&assetBlk, data->nodes_count, sizeof(ModelNode));
-    uint32_t*       childPool = gltf_carve(&assetBlk, childTotal, sizeof(uint32_t));
-    uint32_t*       rootPool  = gltf_carve(&assetBlk, rootTotal, sizeof(uint32_t));
+    GltfBlock assetBlk = { assetBase, assetBase + assetBytes };
+    ModelAsset*     asset     = gltf_carve<ModelAsset>(&assetBlk, 1);
+    ModelMesh*      meshPool  = gltf_carve<ModelMesh>(&assetBlk, data->meshes_count);
+    ModelPrimitive* primPool  = gltf_carve<ModelPrimitive>(&assetBlk, primsTotal);
+    ModelNode*      nodePool  = gltf_carve<ModelNode>(&assetBlk, data->nodes_count);
+    uint32_t*       childPool = gltf_carve<uint32_t>(&assetBlk, childTotal);
+    uint32_t*       rootPool  = gltf_carve<uint32_t>(&assetBlk, rootTotal);
     strncpy(asset->name, fileName, 63);
 
     // Scratch block (LOCALHEAPATTR): verts/indices (widest prim) + image slots + staging.
@@ -192,20 +210,20 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         + gltf_span(data->images_count, sizeof(uint32_t))          // imageUsage
                         + gltf_span(maxStaging, sizeof(VkBuffer));                 // stagingBuffers
     mi_heap_t* scratchHeap LOCALHEAPATTR = mi_heap_new();
-    void* scratchBase = scratchHeap ? mi_heap_calloc(scratchHeap, 1, scratchBytes) : NULL;
+    uint8_t* scratchBase = scratchHeap ? ano::heap_allocate_zero<uint8_t>(scratchHeap, scratchBytes) : NULL;
     if (!scratchBase) {
         ano_log(ANO_ERROR, "Failed to allocate %zu-byte scratch block for: %s", scratchBytes, fileName);
         free(assetBase);
         cgltf_free(data);
         return NULL;
     }
-    GltfBlock scratchBlk = { scratchBase, (uint8_t*)scratchBase + scratchBytes };
-    Vertex*            vertices       = gltf_carve(&scratchBlk, maxVerts, sizeof(Vertex));
-    uint32_t*          indices        = gltf_carve(&scratchBlk, maxIdx, sizeof(uint32_t));
-    uint32_t*          colorIndex     = gltf_carve(&scratchBlk, data->images_count, sizeof(uint32_t));
-    uint32_t*          dataIndex      = gltf_carve(&scratchBlk, data->images_count, sizeof(uint32_t));
-    TextureUsageFlags* imageUsage     = gltf_carve(&scratchBlk, data->images_count, sizeof(uint32_t));
-    VkBuffer*          stagingBuffers = gltf_carve(&scratchBlk, maxStaging, sizeof(VkBuffer));
+    GltfBlock scratchBlk = { scratchBase, scratchBase + scratchBytes };
+    Vertex*            vertices       = gltf_carve<Vertex>(&scratchBlk, maxVerts);
+    uint32_t*          indices        = gltf_carve<uint32_t>(&scratchBlk, maxIdx);
+    uint32_t*          colorIndex     = gltf_carve<uint32_t>(&scratchBlk, data->images_count);
+    uint32_t*          dataIndex      = gltf_carve<uint32_t>(&scratchBlk, data->images_count);
+    TextureUsageFlags* imageUsage     = gltf_carve<TextureUsageFlags>(&scratchBlk, data->images_count);
+    VkBuffer*          stagingBuffers = gltf_carve<VkBuffer>(&scratchBlk, maxStaging);
 
     // Seed ANO_BINDLESS_NONE.
     static_assert(ANO_BINDLESS_NONE == 0xFFFFFFFFu, "0xFF fill must equal ANO_BINDLESS_NONE");
