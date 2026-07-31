@@ -24,10 +24,10 @@
 #include "templates/sanopts.h"   // ASan alt-stack opt-out; see header
 
 // Ring head/tail on separate cache lines (render_bridge transport twin).
-_Static_assert(offsetof(AnoAudioRing, head) - offsetof(AnoAudioRing, tail) >= ANO_CACHE_LINE,
+static_assert(offsetof(AnoAudioRing, head) - offsetof(AnoAudioRing, tail) >= ANO_CACHE_LINE,
                "audio SPSC head/tail must live on separate cache lines");
 #define ANO_MIN_LINE (ANO_CACHE_LINE < ANO_THREAD_LINE ? ANO_CACHE_LINE : ANO_THREAD_LINE)
-_Static_assert(_Alignof(AnoAudioRing) >= ANO_MIN_LINE,
+static_assert(alignof(AnoAudioRing) >= ANO_MIN_LINE,
                "audio SPSC ring must be cache-line aligned");
 
 static int failures = 0;

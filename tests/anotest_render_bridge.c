@@ -22,11 +22,11 @@
 
 #include "templates/sanopts.h"   // ASan alt-stack opt-out; see header
 
-_Static_assert(offsetof(AnoSpscRing, head) - offsetof(AnoSpscRing, tail) >= ANO_CACHE_LINE,
+static_assert(offsetof(AnoSpscRing, head) - offsetof(AnoSpscRing, tail) >= ANO_CACHE_LINE,
                "SPSC head/tail must live on separate cache lines");
 // Alignas floor: lesser of ANO_CACHE_LINE and ANO_THREAD_LINE.
 #define ANO_MIN_LINE (ANO_CACHE_LINE < ANO_THREAD_LINE ? ANO_CACHE_LINE : ANO_THREAD_LINE)
-_Static_assert(_Alignof(AnoSpscRing) >= ANO_MIN_LINE,
+static_assert(alignof(AnoSpscRing) >= ANO_MIN_LINE,
                "SPSC ring must be cache-line aligned");
 
 static int failures = 0;
@@ -581,9 +581,9 @@ static void test_bulk_alignment(mi_heap_t *heap)
         RenderCommand c;
         if (!ano_spsc_pop(&b.commands, &c)) { CHECK(false, "bulk align: command popped"); continue; }
         const RenderUpdateBatch *u = c.update;
-        CHECK(((uintptr_t)u->transforms    % _Alignof(mat4)) == 0u
-              && ((uintptr_t)u->motion        % _Alignof(AnoMotionDescriptor)) == 0u
-              && ((uintptr_t)u->instance_data % _Alignof(AnoInstanceData)) == 0u,
+        CHECK(((uintptr_t)u->transforms    % alignof(mat4)) == 0u
+              && ((uintptr_t)u->motion        % alignof(AnoMotionDescriptor)) == 0u
+              && ((uintptr_t)u->instance_data % alignof(AnoInstanceData)) == 0u,
               "bulk align: over-aligned sub-arrays sit on their own alignment");
         ano_render_command_release(&c);
     }
@@ -689,7 +689,7 @@ int main(void)
     test_shutdown_during_backpressure(heap);
 
     // Cap 16: frequent full/empty + wrap over ITEMS (TSan-interesting).
-    AnoRenderBridge bridge; // stack: _Alignas on the ring propagates -> 64-aligned
+    AnoRenderBridge bridge; // stack: alignas on the ring propagates -> 64-aligned
     CHECK(ano_render_bridge_init(&bridge, heap, 16, 16), "bridge init");
 
     ConsumerCtx ctx = { .b = &bridge };

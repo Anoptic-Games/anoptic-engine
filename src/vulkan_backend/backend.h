@@ -26,9 +26,9 @@ extern VulkanContext ctx;
 #define ANO_STATIC_LIGHT_COUNT     64u
 
 // Static count below ANO_RENDER_NO_LIGHT; light_registry_init takes capacity - ANO_STATIC_LIGHT_COUNT (vulkanMaster.c).
-_Static_assert(ANO_STATIC_LIGHT_COUNT < ANO_RENDER_NO_LIGHT,
+static_assert(ANO_STATIC_LIGHT_COUNT < ANO_RENDER_NO_LIGHT,
                "absent-light sentinel fell inside the static row domain");
-_Static_assert(ANO_STATIC_LIGHT_COUNT < PALETTE_CAPACITY,
+static_assert(ANO_STATIC_LIGHT_COUNT < PALETTE_CAPACITY,
                "static region must leave the light palette room for the runtime registry");
 
 // Release static frustum blocks for this palette row; clear ShadowLightInfo. Cursor does not rewind. Command path only.

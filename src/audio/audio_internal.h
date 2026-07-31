@@ -124,7 +124,7 @@ struct AnoAudioMixer
     float       *blockScratch;  // mixer render target before push
     float       *deviceScratch; // device pop / pull carry (one backend at a time)
     // Own cache line.
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) underruns; // device increments; mixer reports in telemetry
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) underruns; // device increments; mixer reports in telemetry
 
     const AnoAudioDeviceApi *device;
     void       *deviceState; // backend-private; allocated in start, freed in stop

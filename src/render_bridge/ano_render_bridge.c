@@ -19,7 +19,7 @@
 /* SPSC */
 
 // Events-ring element size (copied per push/pop). Cap at 32 B.
-_Static_assert(sizeof(RenderEvent) <= 32u, "RenderEvent grew past 32 bytes; revisit the events ring");
+static_assert(sizeof(RenderEvent) <= 32u, "RenderEvent grew past 32 bytes; revisit the events ring");
 
 // Smallest power of two >= v, floor of 2. Returns 0 on overflow (v > 2^31).
 static uint32_t next_pow2_u32(uint32_t v)
@@ -172,11 +172,11 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
 
 // Pack: ids, pad to ANO_BULK_OVERALIGN, then over-aligned sub-arrays (mat4 / motion / userdata).
 #define ANO_BULK_OVERALIGN 16u
-_Static_assert(sizeof(mat4) % ANO_BULK_OVERALIGN == 0u
+static_assert(sizeof(mat4) % ANO_BULK_OVERALIGN == 0u
                    && sizeof(AnoMotionDescriptor) % ANO_BULK_OVERALIGN == 0u
                    && sizeof(AnoInstanceData) % ANO_BULK_OVERALIGN == 0u,
                "one pad after the id array carries every over-aligned bulk sub-array only while each is a whole number of ANO_BULK_OVERALIGN units");
-_Static_assert(alignof(mat4) <= ANO_BULK_OVERALIGN
+static_assert(alignof(mat4) <= ANO_BULK_OVERALIGN
                    && alignof(AnoMotionDescriptor) <= ANO_BULK_OVERALIGN
                    && alignof(AnoInstanceData) <= ANO_BULK_OVERALIGN,
                "a bulk sub-array wants stricter alignment than the pack provides");
@@ -274,7 +274,7 @@ AnoRenderSubmitResult ano_render_submit_bulk_destroy(AnoRenderBridge *bridge, co
 /* Screen Text */
 
 // Clamp caps packed size at compile time.
-_Static_assert(ANO_RENDER_TEXT_MAX <= (SIZE_MAX - sizeof(RenderTextBlock)) / sizeof(AnoGlyphInstance),
+static_assert(ANO_RENDER_TEXT_MAX <= (SIZE_MAX - sizeof(RenderTextBlock)) / sizeof(AnoGlyphInstance),
                "a full screen-text block must fit size_t");
 
 // Packs header + instances into one render-owned block. count 0 -> clear.
@@ -364,7 +364,7 @@ static bool ui_prim_valid(const AnoUiPrim *p, uint32_t clips, uint32_t paints, u
 }
 
 // Cap refusals bound packed size at compile time.
-_Static_assert((size_t)ANO_RENDER_UI_MAX_PRIMS  * sizeof(AnoUiPrim)
+static_assert((size_t)ANO_RENDER_UI_MAX_PRIMS  * sizeof(AnoUiPrim)
              + (size_t)ANO_RENDER_UI_MAX_CLIPS  * sizeof(AnoUiClip)
              + (size_t)ANO_RENDER_UI_MAX_PAINTS * sizeof(AnoUiPaint)
              + (size_t)ANO_RENDER_UI_MAX_STOPS  * sizeof(AnoUiStop)
@@ -479,7 +479,7 @@ static_assert(std::same_as<std::remove_cvref_t<decltype(((AnoViewState *)nullptr
            && std::same_as<std::remove_cvref_t<decltype(((AnoViewState *)nullptr)->up[0])>, float>
            && std::same_as<std::remove_cvref_t<decltype(((AnoViewState *)nullptr)->fovYDeg)>, float>,
               "view pose guard assumes float eye/center/up/fovYDeg");
-_Static_assert(sizeof ((AnoViewState *)0)->eye    == 3u * sizeof(float)
+static_assert(sizeof ((AnoViewState *)0)->eye    == 3u * sizeof(float)
                    && sizeof ((AnoViewState *)0)->center == 3u * sizeof(float)
                    && sizeof ((AnoViewState *)0)->up     == 3u * sizeof(float),
                "view pose guard reads 3-component eye/center/up");

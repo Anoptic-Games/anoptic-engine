@@ -84,9 +84,9 @@ int pthread_spin_unlock(pthread_spinlock_t *lock) {
 #define ANO_BAR_YIELDS  64u
 #define ANO_BAR_PARK_NS 1000L
 
-_Static_assert(sizeof(unsigned int) * CHAR_BIT >= 2u * ANO_BAR_SHIFT,
+static_assert(sizeof(unsigned int) * CHAR_BIT >= 2u * ANO_BAR_SHIFT,
                "barrier state word must hold a phase half and an arrival half");
-_Static_assert(ATOMIC_INT_LOCK_FREE == 2,
+static_assert(ATOMIC_INT_LOCK_FREE == 2,
                "the barrier spins on atomic_uint; a lock-backed atomic would deadlock it");
 
 // in: spin tally, bumped in place. out: void. relax -> sched_yield -> short park, by tally.

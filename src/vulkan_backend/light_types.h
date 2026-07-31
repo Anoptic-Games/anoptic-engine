@@ -28,7 +28,7 @@ typedef enum LightType
 
 // LightType count: RendererState.shadowTypeUsed + bridge/apply.c seam gate. Widen both on add.
 enum { LIGHT_TYPE_COUNT = 3u };
-_Static_assert(LIGHT_TYPE_SPOT + 1 == LIGHT_TYPE_COUNT,
+static_assert(LIGHT_TYPE_SPOT + 1 == LIGHT_TYPE_COUNT,
                "LightType grew: widen shadowTypeUsed and shadow_static_budget()");
 
 typedef struct LightData
@@ -55,7 +55,7 @@ typedef struct LightData
     float       localDir[3];
     uint32_t    pad3;
 } LightData; // 80 bytes
-_Static_assert(sizeof(LightData) == 80, "LightData must be 80B (5x vec4) to match the GLSL std430 mirrors");
+static_assert(sizeof(LightData) == 80, "LightData must be 80B (5x vec4) to match the GLSL std430 mirrors");
 
 // Runtime light lifecycle over dynamic palette [base, base+capacity). Cull count = base+highWater. Render-thread only.
 enum { LIGHT_ROW_FREE = 0u, LIGHT_ROW_LIVE = 1u, LIGHT_ROW_QUARANTINED = 2u };

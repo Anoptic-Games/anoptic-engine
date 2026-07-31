@@ -74,7 +74,7 @@ void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device);
 // Mesh refusal sentinel. Outside [0, ANO_MAX_MESHES). Same word as NO_MESH_INDEX / ANO_RENDER_NO_MESH.
 // Not slot 0 (FALLBACK_MESH_INDEX).
 #define ANO_MESH_NONE 0xFFFFFFFFu
-_Static_assert(ANO_MESH_NONE >= ANO_MAX_MESHES, "mesh refusal fell inside the grantable slot domain");
+static_assert(ANO_MESH_NONE >= ANO_MAX_MESHES, "mesh refusal fell inside the grantable slot domain");
 
 // Upload mesh into one pool slot (staging -> device-local).
 // out: meshes[] index, or ANO_MESH_NONE on full/fail. Slot commits only on success.

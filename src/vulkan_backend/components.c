@@ -20,7 +20,7 @@ const PipelineType ano_draw_pipelines[] = {
 };
 
 // drawSlotOf map: 16 entries (cull.comp uvec4[4]).
-_Static_assert(PIPELINE_FLAT_MASKED < 16, "material-carried pipeline types must fit the 16-entry drawSlotOf map (CullUBO/cull.comp)");
+static_assert(PIPELINE_FLAT_MASKED < 16, "material-carried pipeline types must fit the 16-entry drawSlotOf map (CullUBO/cull.comp)");
 
 // out: draw-pipeline count (== per-view draw-slot stride)
 uint32_t ano_draw_pipeline_count(void) {

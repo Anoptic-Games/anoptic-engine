@@ -508,7 +508,7 @@ static bool collate_sort_core(sort_rec_t *recs, sort_rec_t *tmp, size_t n,
 }
 
 // Stable index-sort fallback for allocation failure. Thread-local ctx.
-static _Thread_local const anostr_t *fb_items_;
+static thread_local const anostr_t *fb_items_;
 
 static int fb_order_cmp_(const void *a, const void *b)
 {

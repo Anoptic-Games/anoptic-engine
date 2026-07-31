@@ -190,7 +190,7 @@ static int fast_format(char *out, int cap, const char *fmt, va_list ap)
 
 // Compose "<LEVEL> <file>:<line>:  <message>" into out (no time, no newline). NULL file omits callsite.
 // Length clamped to cap-1. Prefix hand-rolled; message via fast_format / vsnprintf. format(printf, 6, 0).
-__attribute__((format(printf, 6, 0)))
+__attribute__((format(ANO_PRINTF_FORMAT_KIND, 6, 0)))
 static int format_line(char *out, int cap, ano_loglevel_t level,
                        const char *file, int line, const char *fmt, va_list ap)
 {
@@ -679,7 +679,7 @@ static void *drainer_main(void *arg)
 /* Paths behind ano_log_vwrite (sinks already resolved). */
 
 // Buffered: capture or eager-format, publish to ring. Drainer routes by sink bits on tag.
-__attribute__((format(printf, 5, 0)))
+__attribute__((format(ANO_PRINTF_FORMAT_KIND, 5, 0)))
 static int log_buffered(ano_loglevel_t level, uint8_t sinks, const char *file, int line,
                         const char *fmt, va_list args)
 {
@@ -748,7 +748,7 @@ static int log_buffered(ano_loglevel_t level, uint8_t sinks, const char *file, i
 }
 
 // NOW: eager format, drain for order, write-through + fsync if file open. Bypasses ring, skips severity gate.
-__attribute__((format(printf, 5, 0)))
+__attribute__((format(ANO_PRINTF_FORMAT_KIND, 5, 0)))
 static int log_now(ano_loglevel_t level, uint8_t sinks, const char *file, int line,
                    const char *fmt, va_list args)
 {

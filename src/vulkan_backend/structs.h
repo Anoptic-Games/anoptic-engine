@@ -83,7 +83,7 @@
 #define ANO_SHADOW_RT_POINT_COUNT  2u  // runtime point casters (6 frustums each)
 #define ANO_SHADOW_RT_FRUSTUM_COUNT (ANO_SHADOW_RT_SINGLE_COUNT + ANO_SHADOW_RT_POINT_COUNT * ANO_SHADOW_CUBE_FACES) // 16
 #define ANO_SHADOW_FRUSTUM_COUNT (ANO_SHADOW_STATIC_FRUSTUM_COUNT + ANO_SHADOW_RT_FRUSTUM_COUNT) // 42
-_Static_assert(ANO_SHADOW_FRUSTUM_COUNT <= 64u, "MoverBound.exposeMask is a u64 frustum bitmask; shadow_sample.glsl's viewProj UBO is mat4[64]");
+static_assert(ANO_SHADOW_FRUSTUM_COUNT <= 64u, "MoverBound.exposeMask is a u64 frustum bitmask; shadow_sample.glsl's viewProj UBO is mat4[64]");
 // Fixed bound of the sampling-viewProj UBO array (shadow_sample.glsl declares mat4[64]).
 #define ANO_SHADOW_SAMPLE_VP_CAP 64u
 #define ANO_SHADOW_RT_SINGLE_BASE ANO_SHADOW_STATIC_FRUSTUM_COUNT                          // single-pool first slot

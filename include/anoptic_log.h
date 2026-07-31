@@ -20,6 +20,13 @@
 extern "C" {
 #endif
 
+// MinGW's plain printf checker models legacy MSVCRT; Anoptic targets UCRT and C99 formats.
+#if defined(__MINGW32__)
+#define ANO_PRINTF_FORMAT_KIND gnu_printf
+#else
+#define ANO_PRINTF_FORMAT_KIND printf
+#endif
+
 
 /* Types */
 
@@ -56,12 +63,12 @@ void ano_log_scope_release(const int *initStatus);
 int ano_log_write(ano_loglevel_t level, ano_logroute_t route,
                   const char* sourceFile, int lineNumber,
                   /* printFormat MUST be a string literal. */
-                  const char* printFormat, ...) __attribute__((format(printf, 5, 6)));
+                  const char* printFormat, ...) __attribute__((format(ANO_PRINTF_FORMAT_KIND, 5, 6)));
 
 // va_list variant for wrappers.
 int ano_log_vwrite(ano_loglevel_t level, ano_logroute_t route,
                    const char* sourceFile, int lineNumber,
-                   const char* printFormat, va_list args) __attribute__((format(printf, 5, 0)));
+                   const char* printFormat, va_list args) __attribute__((format(ANO_PRINTF_FORMAT_KIND, 5, 0)));
 
 
 /* Configuration Functions */

@@ -197,11 +197,11 @@ struct AnoSynth
     uint32_t        cmdHead, cmdTail;
 
     // Transport handshake (logic -> mixer), own ANO_THREAD_LINE.
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) startFrame; // IDLE = generator touches nothing
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) startFrame; // IDLE = generator touches nothing
     ANO_ATOMIC(uint64_t) transportEpoch; // logic bumps per transport_start; staged-reset ticket
 
     // Mixer-owned below. epochSeen gates hook writes off the logic pair above.
-    _Alignas(ANO_THREAD_LINE) uint64_t epochSeen; // last epoch whose reset has run
+    alignas(ANO_THREAD_LINE) uint64_t epochSeen; // last epoch whose reset has run
     uint32_t noteCursor, barCursor;
     uint32_t dropped;
     AnoSynthVoice *voices;

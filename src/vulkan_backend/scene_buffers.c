@@ -390,7 +390,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
 }
 
 // ANO_MESH_NONE / NO_MESH_INDEX / ANO_RENDER_NO_MESH must be one absent-mesh word.
-_Static_assert(ANO_MESH_NONE == NO_MESH_INDEX && ANO_MESH_NONE == ANO_RENDER_NO_MESH,
+static_assert(ANO_MESH_NONE == NO_MESH_INDEX && ANO_MESH_NONE == ANO_RENDER_NO_MESH,
                "mesh refusal must spell the absent-mesh word its consuming lanes read");
 
 bool createFallbackResources(VulkanContext* ctx, RendererState* state)

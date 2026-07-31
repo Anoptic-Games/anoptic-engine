@@ -328,7 +328,7 @@ int bb_install(void)
 }
 
 // sigaltstack is thread-local: bb_install arms main only. Others arm at spawn / disarm at exit. Idempotent.
-static _Thread_local char *bb_threadAltStack;
+static thread_local char *bb_threadAltStack;
 
 int bb_thread_arm(void)
 {

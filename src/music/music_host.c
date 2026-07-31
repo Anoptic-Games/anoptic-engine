@@ -270,7 +270,7 @@ void ano_music_clear_override(AnoMusicEngine *e, const char *param)
 
 void ano_music_advance_bar(AnoMusicEngine *e, AnoMusicBar *out)
 {
-    static _Thread_local AnoBarResult r; // 33 KB: too fat for the audio stack
+    static thread_local AnoBarResult r; // 33 KB: too fat for the audio stack
     int keyBefore = e->scale.tonic;
     ano_engine_advance_bar(e, &r);
 

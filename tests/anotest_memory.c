@@ -62,11 +62,11 @@ static void test_scoped_heap_aligned(void)
     const uint32_t count = 4096;
     mem_chariot_t *chariots = static_cast<mem_chariot_t *>(
         mi_heap_zalloc_aligned(memHeap, (size_t)count * sizeof(mem_chariot_t),
-                              _Alignof(mem_chariot_t)));
+                              alignof(mem_chariot_t)));
     CHECK(chariots != NULL, "aligned zalloc returned non-NULL");
     if (!chariots) return;
 
-    CHECK(((uintptr_t)chariots % _Alignof(mem_chariot_t)) == 0, "allocation is aligned");
+    CHECK(((uintptr_t)chariots % alignof(mem_chariot_t)) == 0, "allocation is aligned");
     CHECK(chariots[0].lo == 0 && chariots[0].hi == 0 && chariots[0].uuid == 0,
           "zalloc zero-initialized the block");
 

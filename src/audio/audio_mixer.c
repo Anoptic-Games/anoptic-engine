@@ -612,7 +612,7 @@ bool ano_audio_render_offline(const AnoAudioOfflineDesc *desc, float *out, uint6
     if (!heap)
         return false;
     AnoAudioMixer *mx = static_cast<AnoAudioMixer *>(
-        mi_heap_malloc_aligned(heap, sizeof *mx, _Alignof(AnoAudioMixer)));
+        mi_heap_malloc_aligned(heap, sizeof *mx, alignof(AnoAudioMixer)));
     if (!mx)
         return false;
     memset(mx, 0, sizeof *mx);

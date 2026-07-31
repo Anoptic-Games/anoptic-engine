@@ -64,9 +64,9 @@ typedef struct DisplayState
 // head/tail on separate ANO_THREAD_LINE regions; ring owner must match that align.
 typedef struct AnoSpscRing
 {
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) tail; // producer-owned: next write index
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) head; // consumer-owned: next read index
-    _Alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1 (immutable after init)
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) tail; // producer-owned: next write index
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) head; // consumer-owned: next read index
+    alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1 (immutable after init)
     uint32_t                          stride;       // element size in bytes
     uint8_t                          *buffer;       // capacity * stride bytes
 } AnoSpscRing;
@@ -172,9 +172,9 @@ static inline bool ano_seqpub_load(const ANO_ATOMIC(uint64_t) *value, const ANO_
 
 /* Bridge */
 
-_Static_assert(sizeof(ANO_ATOMIC(uint64_t)) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
-_Static_assert(sizeof(RenderSnapshot) % 8u == 0, "seqlock lane copies whole 64-bit words");
-_Static_assert(sizeof(AnoViewState)   % 8u == 0, "seqlock lane copies whole 64-bit words");
+static_assert(sizeof(ANO_ATOMIC(uint64_t)) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
+static_assert(sizeof(RenderSnapshot) % 8u == 0, "seqlock lane copies whole 64-bit words");
+static_assert(sizeof(AnoViewState)   % 8u == 0, "seqlock lane copies whole 64-bit words");
 
 // Completes the opaque AnoRenderBridge declared in anoptic_render.h.
 struct AnoRenderBridge
@@ -185,9 +185,9 @@ struct AnoRenderBridge
     // Latest-wins lanes. snapshot: render->logic. viewState: logic->render.
     // Atomic word lanes; typed access only via publish/acquire copies.
     // One ANO_THREAD_LINE per direction; version leads its words.
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) snapshotVersion; // render publishes
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) snapshotVersion; // render publishes
     ANO_ATOMIC(uint64_t) snapshot[sizeof(RenderSnapshot) / sizeof(uint64_t)];
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) viewStateVersion; // logic publishes
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) viewStateVersion; // logic publishes
     ANO_ATOMIC(uint64_t) viewState[sizeof(AnoViewState) / sizeof(uint64_t)];
     bool viewRejectWarned; // publisher-private: degenerate-pose warning once (never read by render)
 };

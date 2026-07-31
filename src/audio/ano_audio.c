@@ -14,12 +14,12 @@
 #include <anoptic_log.h>
 
 // Ring element size budget.
-_Static_assert(sizeof(AnoAudioEvent) <= 32u, "AnoAudioEvent grew past 32 bytes; revisit the events ring");
-_Static_assert(sizeof(AnoAudioCommand) <= 192u, "AnoAudioCommand grew past 192 bytes; revisit the command ring");
+static_assert(sizeof(AnoAudioEvent) <= 32u, "AnoAudioEvent grew past 32 bytes; revisit the events ring");
+static_assert(sizeof(AnoAudioCommand) <= 192u, "AnoAudioCommand grew past 192 bytes; revisit the command ring");
 
 // Header + interleaved payload share one alloc; header must not misalign float payload.
-_Static_assert(_Alignof(AnoAudioBlockHeader) >= _Alignof(float)
-                   && sizeof(AnoAudioBlockHeader) % _Alignof(float) == 0u,
+static_assert(alignof(AnoAudioBlockHeader) >= alignof(float)
+                   && sizeof(AnoAudioBlockHeader) % alignof(float) == 0u,
                "AnoAudioBlockHeader must not misalign the payload sharing its allocation");
 
 // Audio world singleton.
@@ -131,9 +131,9 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     if (!heap)
         return false;
 
-    // ring cursors carry _Alignas(ANO_THREAD_LINE); heap owner must request it
+    // ring cursors carry alignas(ANO_THREAD_LINE); heap owner must request it
     mx = static_cast<AnoAudioMixer *>(
-        mi_heap_malloc_aligned(heap, sizeof *mx, _Alignof(AnoAudioMixer)));
+        mi_heap_malloc_aligned(heap, sizeof *mx, alignof(AnoAudioMixer)));
     if (!mx)
         goto fail_heap;
     memset(mx, 0, sizeof *mx);
@@ -154,7 +154,7 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     atomic_init(&mx->deviceRun, false);
 
     bridge = static_cast<AnoAudioBridge *>(
-        mi_heap_malloc_aligned(heap, sizeof *bridge, _Alignof(AnoAudioBridge)));
+        mi_heap_malloc_aligned(heap, sizeof *bridge, alignof(AnoAudioBridge)));
     if (!bridge)
         goto fail_heap;
     memset(bridge, 0, sizeof *bridge);

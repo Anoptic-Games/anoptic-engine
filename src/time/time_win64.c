@@ -330,7 +330,7 @@ int ano_busywait(uint64_t ns) {
 #define ANO_SLEEP_SPIN_TAIL_NS 1000000ULL
 
 // Per-thread waitable timer. NULL = unset, INVALID_HANDLE_VALUE = unsupported.
-static _Thread_local HANDLE tlSleepTimer = NULL;
+static thread_local HANDLE tlSleepTimer = NULL;
 
 // FLS slot: closes timer at thread exit. Allocated once via CAS.
 static DWORD       gSleepTimerFls = FLS_OUT_OF_INDEXES;

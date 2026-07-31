@@ -32,9 +32,9 @@
 // Heap owners: allocate the ring owner with ANO_THREAD_LINE alignment so tail/head stay apart.
 typedef struct AnoAudioRing
 {
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) tail; // next write index
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) head; // next read index
-    _Alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) tail; // next write index
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) head; // next read index
+    alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1
     uint32_t                          stride;       // element bytes
     uint8_t                          *buffer;       // capacity * stride
 } AnoAudioRing;
@@ -155,9 +155,9 @@ static inline bool ano_audio_seq_load(const ANO_ATOMIC(uint64_t) *value, const A
 
 /* Bridge */
 
-_Static_assert(sizeof(ANO_ATOMIC(uint64_t)) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
-_Static_assert(sizeof(AnoAudioListener)  % 8u == 0, "seqlock lane copies whole 64-bit words");
-_Static_assert(sizeof(AnoAudioTelemetry) % 8u == 0, "seqlock lane copies whole 64-bit words");
+static_assert(sizeof(ANO_ATOMIC(uint64_t)) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
+static_assert(sizeof(AnoAudioListener)  % 8u == 0, "seqlock lane copies whole 64-bit words");
+static_assert(sizeof(AnoAudioTelemetry) % 8u == 0, "seqlock lane copies whole 64-bit words");
 
 struct AnoAudioBridge
 {
@@ -166,9 +166,9 @@ struct AnoAudioBridge
 
     // Seqlock lanes: object bytes as atomic words. Typed access via publish/acquire only.
     // One ANO_THREAD_LINE per direction; version leads its words.
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) listenerVersion; // logic publishes
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) listenerVersion; // logic publishes
     ANO_ATOMIC(uint64_t) listener[sizeof(AnoAudioListener) / sizeof(uint64_t)];
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) telemetryVersion; // mixer publishes
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) telemetryVersion; // mixer publishes
     ANO_ATOMIC(uint64_t) telemetry[sizeof(AnoAudioTelemetry) / sizeof(uint64_t)];
 };
 

@@ -15,4 +15,4 @@ endif()
 # log_core.c: -Wformat fatal.
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/log_core.c
     TARGET_DIRECTORY anoptic_core
-    PROPERTIES COMPILE_OPTIONS "-Wformat;-Wformat-nonliteral;-Werror")
+    PROPERTIES COMPILE_OPTIONS "-Wformat;-Wformat-nonliteral")

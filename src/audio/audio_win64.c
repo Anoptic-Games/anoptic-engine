@@ -60,9 +60,9 @@ typedef struct AnoWfxExt
     GUID  SubFormat;
 } AnoWfxExt;
 
-_Static_assert(offsetof(AnoWfxExt, Samples) == 18, "extensible fields start at 18");
-_Static_assert(offsetof(AnoWfxExt, dwChannelMask) == 20, "channel mask at 20");
-_Static_assert(offsetof(AnoWfxExt, SubFormat) == 24, "subformat at 24");
+static_assert(offsetof(AnoWfxExt, Samples) == 18, "extensible fields start at 18");
+static_assert(offsetof(AnoWfxExt, dwChannelMask) == 20, "channel mask at 20");
+static_assert(offsetof(AnoWfxExt, SubFormat) == 24, "subformat at 24");
 
 static const GUID ANO_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT =
     { 0x00000003, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };

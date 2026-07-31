@@ -27,9 +27,9 @@ AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
     mi_heap_t *heap = mi_heap_new();
     if (!heap)
         return NULL;
-    // zalloc_aligned: honors _Alignas(ANO_THREAD_LINE) members
+    // zalloc_aligned: honors alignas(ANO_THREAD_LINE) members
     AnoSynth *s = static_cast<AnoSynth *>(
-        mi_heap_zalloc_aligned(heap, sizeof *s, _Alignof(AnoSynth)));
+        mi_heap_zalloc_aligned(heap, sizeof *s, alignof(AnoSynth)));
     if (!s) {
         mi_heap_destroy(heap);
         return NULL;

@@ -27,7 +27,7 @@ AnoVoicingConfig ano_voicing_config_default(void)
 typedef struct Cand { int p[MAX_VOICES]; } Cand;
 
 // Cand.p and ano_voice_chord out[6] share extent
-_Static_assert(MAX_VOICES == 6, "Cand.p and ano_voice_chord's out[6] index the same slots");
+static_assert(MAX_VOICES == 6, "Cand.p and ano_voice_chord's out[6] index the same slots");
 // pc multisets: double root-then-fifth (never third); drop fifth-then-root; at most two.
 // Row fills <= voices slots. Returns 0 iff pcCount == 0.
 static uint32_t pc_options(const uint8_t *pcs, uint32_t pcCount, uint32_t voices,

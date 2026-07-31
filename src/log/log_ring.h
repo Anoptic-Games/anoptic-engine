@@ -33,8 +33,8 @@ typedef struct {
     ANO_ATOMIC(uint64_t) tag;   // 0 = free, nonzero = committed. Publish last (release), read first (acquire).
     uint64_t timestamp;     // raw ticks, rendered at drain
 } log_marker_t;
-_Static_assert(sizeof(log_marker_t) == ANO_LOG_HDR, "marker is 16 bytes");
-_Static_assert(ANO_LOG_HDR <= ANO_CACHE_LINE, "marker fits in one cache line");
+static_assert(sizeof(log_marker_t) == ANO_LOG_HDR, "marker is 16 bytes");
+static_assert(ANO_LOG_HDR <= ANO_CACHE_LINE, "marker fits in one cache line");
 
 // View punned over `tag`. Thread-local only. Shared word always accessed atomically.
 typedef union {
@@ -47,11 +47,11 @@ typedef union {
     };
     uint64_t w;
 } log_word_t;
-_Static_assert(sizeof(log_word_t) == 8, "commit word is 8 bytes");
+static_assert(sizeof(log_word_t) == 8, "commit word is 8 bytes");
 
 typedef struct {
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) tail;    // producer reserve cursor, cache lines
-    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) head;    // consumer drain cursor, cache lines
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) tail;    // producer reserve cursor, cache lines
+    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) head;    // consumer drain cursor, cache lines
     uint64_t    mask;   // N-1, N = capacity in cache lines, pow2
     uint32_t    shift;  // log2(N), cycle = pos >> shift
     char        *buf;   // N*ANO_CL bytes, cache-line aligned
