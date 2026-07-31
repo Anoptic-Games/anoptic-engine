@@ -86,7 +86,7 @@ int pthread_spin_unlock(pthread_spinlock_t *lock) {
 
 static_assert(sizeof(unsigned int) * CHAR_BIT >= 2u * ANO_BAR_SHIFT,
                "barrier state word must hold a phase half and an arrival half");
-static_assert(ATOMIC_INT_LOCK_FREE == 2,
+static_assert(__atomic_always_lock_free(sizeof(unsigned int), 0),
                "the barrier spins on atomic_uint; a lock-backed atomic would deadlock it");
 
 // in: spin tally, bumped in place. out: void. relax -> sched_yield -> short park, by tally.
@@ -98,8 +98,10 @@ static inline void ano_bar_backoff(unsigned *spins) {
         ANO_CPU_RELAX();
     else if (i < ANO_BAR_SPINS + ANO_BAR_YIELDS)
         sched_yield();
-    else
-        nanosleep(&(struct timespec){ .tv_nsec = ANO_BAR_PARK_NS }, NULL);
+    else {
+        const struct timespec park = { .tv_sec = 0, .tv_nsec = ANO_BAR_PARK_NS };
+        nanosleep(&park, NULL);
+    }
 }
 
 // in: barrier, attr (ignored), count (1..ANO_BAR_MASK). out: 0, or EINVAL outside that domain.

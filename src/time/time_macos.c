@@ -34,7 +34,7 @@ static void initialize_timebase(void) {
         printf("Failed to query mach timebase.\n");
         abort();   // no timebase, no engine; trips the crash blackbox
     }
-    cachedTimebaseFreq = freq;
+    atomic_store_explicit(&cachedTimebaseFreq, freq, memory_order_release);
 
     #ifdef DEBUG_BUILD
     printf("\nTimebase Frequency: %llu (numer=%u denom=%u)\n\n",
@@ -45,9 +45,12 @@ static void initialize_timebase(void) {
 // Timebase frequency in ticks/s, resolved on first use.
 //   out: uint64_t ticks/s, never 0
 static inline uint64_t timebase_freq(void) {
-    if (cachedTimebaseFreq == 0)
+    uint64_t freq = atomic_load_explicit(&cachedTimebaseFreq, memory_order_acquire);
+    if (freq == 0) {
         initialize_timebase();
-    return cachedTimebaseFreq;
+        freq = atomic_load_explicit(&cachedTimebaseFreq, memory_order_acquire);
+    }
+    return freq;
 }
 
 // Bare timebase counter, no conversion. mach_absolute_time() is a register read.
