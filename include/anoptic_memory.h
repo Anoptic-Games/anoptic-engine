@@ -9,7 +9,9 @@
 #include <stddef.h>
 #include <stdlib.h> // before mimalloc-override.h (MinGW _msize/_aligned_msize)
 #include <mimalloc.h>
-#if !defined(__APPLE__)
+#if defined(__APPLE__)
+#include <unistd.h> // before mimalloc-override.h (Darwin valloc)
+#else
 #include <malloc.h>
 #endif
 #include <mimalloc-override.h>

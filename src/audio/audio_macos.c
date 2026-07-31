@@ -28,8 +28,8 @@ static OSStatus coreaudio_render(void *user, AudioUnitRenderActionFlags *flags,
                                  UInt32 frames, AudioBufferList *io)
 {
     (void)flags; (void)ts; (void)bus; (void)frames;
-    AnoAudioMixer     *mx = user;
-    AnoCoreAudioState *st = mx->deviceState;
+    AnoAudioMixer     *mx = static_cast<AnoAudioMixer *>(user);
+    AnoCoreAudioState *st = static_cast<AnoCoreAudioState *>(mx->deviceState);
     for (UInt32 i = 0; i < io->mNumberBuffers; ++i) {
         AudioBuffer *b = &io->mBuffers[i];
         if (b->mNumberChannels == ANO_AUDIO_CHANNELS && b->mData) {
@@ -55,9 +55,26 @@ static void coreaudio_teardown(AnoCoreAudioState *st)
 
 static bool coreaudio_start(AnoAudioMixer *mx)
 {
-    AnoCoreAudioState *st = mi_heap_calloc(mx->heap, 1, sizeof *st);
+    AnoCoreAudioState *st = static_cast<AnoCoreAudioState *>(
+        mi_heap_calloc(mx->heap, 1, sizeof *st));
     if (!st)
         return false;
+
+    AudioStreamBasicDescription fmt = {
+        .mSampleRate       = (Float64)mx->sampleRate,
+        .mFormatID         = kAudioFormatLinearPCM,
+        .mFormatFlags      = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+        .mBytesPerPacket   = ANO_AUDIO_CHANNELS * sizeof(float),
+        .mFramesPerPacket  = 1,
+        .mBytesPerFrame    = ANO_AUDIO_CHANNELS * sizeof(float),
+        .mChannelsPerFrame = ANO_AUDIO_CHANNELS,
+        .mBitsPerChannel   = 32,
+    };
+    AURenderCallbackStruct cb = {
+        .inputProc = coreaudio_render,
+        .inputProcRefCon = mx,
+    };
+    UInt32 maxSlice = 4096;
 
     AudioComponentDescription desc = {
         .componentType         = kAudioUnitType_Output,
@@ -71,26 +88,14 @@ static bool coreaudio_start(AnoAudioMixer *mx)
         goto fail;
     st->unitLive = true;
 
-    AudioStreamBasicDescription fmt = {
-        .mSampleRate       = (Float64)mx->sampleRate,
-        .mFormatID         = kAudioFormatLinearPCM,
-        .mFormatFlags      = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-        .mBytesPerPacket   = ANO_AUDIO_CHANNELS * sizeof(float),
-        .mFramesPerPacket  = 1,
-        .mBytesPerFrame    = ANO_AUDIO_CHANNELS * sizeof(float),
-        .mChannelsPerFrame = ANO_AUDIO_CHANNELS,
-        .mBitsPerChannel   = 32,
-    };
     if (AudioUnitSetProperty(st->unit, kAudioUnitProperty_StreamFormat,
                              kAudioUnitScope_Input, 0, &fmt, sizeof fmt) != noErr)
         goto fail;
 
-    AURenderCallbackStruct cb = { .inputProc = coreaudio_render, .inputProcRefCon = mx };
     if (AudioUnitSetProperty(st->unit, kAudioUnitProperty_SetRenderCallback,
                              kAudioUnitScope_Input, 0, &cb, sizeof cb) != noErr)
         goto fail;
 
-    UInt32 maxSlice = 4096;
     AudioUnitSetProperty(st->unit, kAudioUnitProperty_MaximumFramesPerSlice,
                          kAudioUnitScope_Global, 0, &maxSlice, sizeof maxSlice);
 
@@ -117,7 +122,7 @@ fail:
 
 static void coreaudio_stop(AnoAudioMixer *mx)
 {
-    AnoCoreAudioState *st = mx->deviceState;
+    AnoCoreAudioState *st = static_cast<AnoCoreAudioState *>(mx->deviceState);
     if (!st)
         return;
     atomic_store_explicit(&mx->deviceRun, false, memory_order_release);

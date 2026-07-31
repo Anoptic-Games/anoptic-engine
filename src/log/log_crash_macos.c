@@ -37,7 +37,7 @@ static void bb_modmap_build(void)
 // Inputs: ucontext. Outputs: pc, fp, lr on arm64 (0 elsewhere). Darwin getters for arm64e thread state.
 static void bb_crash_regs(void *uctx, uintptr_t *pc, uintptr_t *fp, uintptr_t *lr)
 {
-    const ucontext_t *uc = uctx;
+    const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
 #if defined(__arm64__) || defined(__aarch64__)
     *pc = (uintptr_t)__darwin_arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
     *fp = (uintptr_t)__darwin_arm_thread_state64_get_fp(uc->uc_mcontext->__ss);
