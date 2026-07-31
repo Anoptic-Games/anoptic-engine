@@ -1,5 +1,7 @@
 # C++26 full reference comparison
 
+Status: superseded by `docs/2026-07-30-cplus-ultra-whole-engine-report.md`. This file records the earlier C++-island pilot and its pre-migration measurements.
+
 Date: 2026-07-30
 
 Reference: `origin/module-audio` at `e2dbe3b84283bd250731eb3a94baad68046fae1c`
