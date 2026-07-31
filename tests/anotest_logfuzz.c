@@ -17,7 +17,7 @@
 #include "templates/rng.h"      // per-thread deterministic xorshift
 #include "templates/scratch.h"  // scratch dirs + line-count oracle
 
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,9 +51,9 @@ static char PATH_A[96], PATH_B[96];
 #define MAX_CONTENT    600      // > one ring entry, < message cap
 
 // Drop-nothing oracle: total enqueued.
-static _Atomic uint64_t g_enqueued;
-static _Atomic int      g_worker_fail;
-static _Atomic bool     g_stop;
+static ANO_ATOMIC(uint64_t) g_enqueued;
+static ANO_ATOMIC(int)      g_worker_fail;
+static ANO_ATOMIC(bool)     g_stop;
 static int              g_iters = DEFAULT_ITERS;
 
 // One deferred-formatter enqueue via fixed (literal-fmt, typed-arg) template.
@@ -71,24 +71,24 @@ static void formatter_case(test_rng *s)
     const char *sv = strs[rng_below(s, sizeof strs / sizeof strs[0])];
 
     switch (rng_below(s, 18)) {
-    case 0:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt d=%d", i); break;
-    case 1:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt u=%u", u); break;
-    case 2:  ano_log_write(ANO_WARN,  0, __FILE_NAME__, __LINE__, "fmt x=%x", u); break;
-    case 3:  ano_log_write(ANO_WARN,  0, __FILE_NAME__, __LINE__, "fmt X=%X", u); break;
-    case 4:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt o=%o", u); break;
-    case 5:  ano_log_write(ANO_ERROR, 0, __FILE_NAME__, __LINE__, "fmt lld=%lld", ll); break;
-    case 6:  ano_log_write(ANO_ERROR, 0, __FILE_NAME__, __LINE__, "fmt llu=%llu", ull); break;
-    case 7:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt f=%.3f", d); break;
-    case 8:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt e=%e", d); break;
-    case 9:  ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt g=%g", d); break;
-    case 10: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt c=%c", ch); break;
-    case 11: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt s=[%s]", sv); break;
-    case 12: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt wd=[%*d]", w, i); break;
-    case 13: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt pf=[%.*f]", pr, d); break;
-    case 14: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt wpf=[%*.*f]", w, pr, d); break;
-    case 15: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt mix=%d/%s/%x", i, sv, u); break;
-    case 16: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt zpd=[%05d]", i); break;
-    case 17: ano_log_write(ANO_INFO,  0, __FILE_NAME__, __LINE__, "fmt ws=[%-8.3s]", sv); break;
+    case 0:  ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt d=%d", i); break;
+    case 1:  ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt u=%u", u); break;
+    case 2:  ano_log_write(ANO_WARN,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt x=%x", u); break;
+    case 3:  ano_log_write(ANO_WARN,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt X=%X", u); break;
+    case 4:  ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt o=%o", u); break;
+    case 5:  ano_log_write(ANO_ERROR, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt lld=%lld", ll); break;
+    case 6:  ano_log_write(ANO_ERROR, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt llu=%llu", ull); break;
+    case 7:  ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt f=%.3f", d); break;
+    case 8:  ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt e=%e", d); break;
+    case 9:  ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt g=%g", d); break;
+    case 10: ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt c=%c", ch); break;
+    case 11: ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt s=[%s]", sv); break;
+    case 12: ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt wd=[%*d]", w, i); break;
+    case 13: ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt pf=[%.*f]", pr, d); break;
+    case 14: ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt wpf=[%*.*f]", w, pr, d); break;
+    case 15: ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt mix=%d/%s/%x", i, sv, u); break;
+    case 16: ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt zpd=[%05d]", i); break;
+    case 17: ano_log_write(ANO_INFO,  ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__, "fmt ws=[%-8.3s]", sv); break;
     }
 }
 
@@ -120,7 +120,8 @@ static void *producer(void *arg)
         } else {
             // Variable-length random CONTENT, logged safely as "%s".
             rng_fill_printable(&s, content, 1, MAX_CONTENT);
-            if (ano_log_write(lvl, 0, __FILE_NAME__, __LINE__, "%s", content) < 0)
+            if (ano_log_write(lvl, ANO_ROUTE_DEFAULT, __FILE_NAME__, __LINE__,
+                              "%s", content) < 0)
                 atomic_fetch_add(&g_worker_fail, 1);   // never expected: 0 or 1 only
             local++;
         }

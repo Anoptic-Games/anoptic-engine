@@ -35,7 +35,7 @@ void enumerateMonitors(Monitors* monitors) // Instance creation helper
 		return; // headless host, or every display lost
 	}
 
-	MonitorInfo* infos = mi_malloc((size_t)count * sizeof(MonitorInfo));
+	MonitorInfo* infos = static_cast<MonitorInfo*>(mi_malloc((size_t)count * sizeof(MonitorInfo)));
 	if (infos == NULL)
 	{
 		ano_log(ANO_ERROR, "Failed to allocate monitor info for %d monitors!", count);
@@ -59,8 +59,9 @@ static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
 	count++;
 	rendererState.framebufferResized = true; // swapchain recreate stays render-owned
 	// Forward to logic
-	AnoInputEvent ie = { .kind = ANO_INPUT_FRAMEBUFFER_RESIZE,
-	                     .u.resize = { (uint32_t)width, (uint32_t)height } };
+	AnoInputEvent ie = { .kind = ANO_INPUT_FRAMEBUFFER_RESIZE };
+	ie.u.resize.width = (uint32_t)width;
+	ie.u.resize.height = (uint32_t)height;
 	forward_input(&ie);
 }
 
@@ -75,7 +76,8 @@ static void forward_input(const AnoInputEvent* ie)
 	uint32_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed); // render is the sole producer
 	uint32_t head = atomic_load_explicit(&r->head, memory_order_acquire);
 	if ((tail - head) + ANO_INPUT_RING_RESERVE > r->mask) return; // keep headroom for lossless facts
-	RenderEvent ev = { .kind = REVENT_INPUT, .u.input = *ie };
+	RenderEvent ev = { .kind = REVENT_INPUT };
+	ev.u.input = *ie;
 	(void)ano_render_emit_event(&rendererState.bridge, &ev); // room checked above
 }
 
@@ -122,32 +124,40 @@ static void cursorPosCallback(GLFWwindow* window, double x, double y)
 	rendererState.cursorY = (float)y;
 	// Logic hit-tests in overlay logical units: framebuffer px / content scale.
 	float s = rendererState.uiScale > 0.0f ? rendererState.uiScale : 1.0f;
-	AnoInputEvent ie = { .kind = ANO_INPUT_CURSOR_POS,
-	                     .u.cursor = { (float)x / s, (float)y / s } };
+	AnoInputEvent ie = { .kind = ANO_INPUT_CURSOR_POS };
+	ie.u.cursor.x = (float)x / s;
+	ie.u.cursor.y = (float)y / s;
 	forward_input(&ie);
 }
 static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
 {
 	(void)window;
-	AnoInputEvent ie = { .kind = ANO_INPUT_MOUSE_BUTTON, .u.button = { button, action, mods } };
+	AnoInputEvent ie = { .kind = ANO_INPUT_MOUSE_BUTTON };
+	ie.u.button.button = button;
+	ie.u.button.action = action;
+	ie.u.button.mods = mods;
 	forward_input(&ie);
 }
 static void scrollCallback(GLFWwindow* window, double dx, double dy)
 {
 	(void)window;
-	AnoInputEvent ie = { .kind = ANO_INPUT_SCROLL, .u.scroll = { (float)dx, (float)dy } };
+	AnoInputEvent ie = { .kind = ANO_INPUT_SCROLL };
+	ie.u.scroll.dx = (float)dx;
+	ie.u.scroll.dy = (float)dy;
 	forward_input(&ie);
 }
 static void windowFocusCallback(GLFWwindow* window, int focused)
 {
 	(void)window;
-	AnoInputEvent ie = { .kind = ANO_INPUT_FOCUS, .u.focus = { focused } };
+	AnoInputEvent ie = { .kind = ANO_INPUT_FOCUS };
+	ie.u.focus.focused = focused;
 	forward_input(&ie);
 }
 static void charCallback(GLFWwindow* window, unsigned int codepoint)
 {
 	(void)window;
-	AnoInputEvent ie = { .kind = ANO_INPUT_CHAR, .u.ch = { codepoint } };
+	AnoInputEvent ie = { .kind = ANO_INPUT_CHAR };
+	ie.u.ch.codepoint = codepoint;
 	forward_input(&ie);
 }
 
@@ -155,7 +165,11 @@ static void charCallback(GLFWwindow* window, unsigned int codepoint)
 static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
 	(void)window;
-	AnoInputEvent ie = { .kind = ANO_INPUT_KEY, .u.key = { key, scancode, action, mods } };
+	AnoInputEvent ie = { .kind = ANO_INPUT_KEY };
+	ie.u.key.key = key;
+	ie.u.key.scancode = scancode;
+	ie.u.key.action = action;
+	ie.u.key.mods = mods;
 	forward_input(&ie);
 	if (key == GLFW_KEY_L && action == GLFW_PRESS) {
 		AnoLightingMode next = (AnoLightingMode)(((uint32_t)ano_render_get_lighting_mode() + 1u) % (uint32_t)ANO_LIGHTING_MODE_COUNT);
@@ -224,7 +238,7 @@ GLFWwindow* initWindow(VulkanContext* ctx, Monitors* monitors) // Initializes a 
 		resolution.height = mode->height;
 	}
 
-	if (monitorIndex == -1) // -1 wraps to UINT32_MAX: windowed (structs.h)
+	if (monitorIndex == ANO_WINDOWED_MONITOR)
 	{
 		chosenMonitor = NULL;
 	}
@@ -281,5 +295,3 @@ void cleanupMonitors(Monitors* monitors)
 		free(infos);
 	}
 }
-
-

@@ -541,7 +541,7 @@ static void mel_cadence_statement(const AnoMotif *motif, const AnoHarmonicContex
                   ANO_MUSIC_TIE_NONE);
     }
     int target = placed[n - 1].pitch;
-    out->state = *state;
+    memcpy(&out->state, state, sizeof out->state);
     out->state.prevPitch = target;
     out->state.prevAnchor = target;
     out->state.pendingTie = ANO_NEAR_NONE;
@@ -672,7 +672,7 @@ static void mel_cadence_bar(const AnoHarmonicContext *ctx, AnoMeter meter,
             if (strongMask >> slot & 1u)
                 guard_observe(guard, slot, out->events[i].core.pitch);
         }
-    out->state = *state;
+    memcpy(&out->state, state, sizeof out->state);
     out->state.prevPitch = target;
     out->state.prevAnchor = target;
     out->state.pendingTie = ANO_NEAR_NONE;
@@ -698,8 +698,8 @@ void ano_generate_melody(const AnoHarmonicContext *ctx, AnoMeter meter,
                          AnoMusicRng *anacrusisRng, AnoMusicRng *syncopateRng,
                          AnoMelodyResult *out)
 {
-    *out = (AnoMelodyResult){ 0 };
-    out->state = *state;
+    memset(out, 0, sizeof *out);
+    memcpy(&out->state, state, sizeof out->state);
     int lo = params->registerCenter - cfg->rangeSemitones;
     int hi = params->registerCenter + cfg->rangeSemitones;
     if (lifecycle == ANO_MEL_COMPLETED)
@@ -761,12 +761,7 @@ void ano_generate_melody(const AnoHarmonicContext *ctx, AnoMeter meter,
         && ano_phrase_slot(pos) == ANO_SLOT_FREE
         && ano_music_random(rng) < restProb) {
         // a pending tie dissolves here (orphan "out" = plain note)
-        out->state = (AnoMelodyState){
-            .prevPitch = state->prevPitch, .prevAnchor = state->prevAnchor,
-            .hasPrevOuter = state->hasPrevOuter, .outerT = state->outerT,
-            .outerMelody = state->outerMelody, .outerBass = state->outerBass,
-            .pendingTie = ANO_NEAR_NONE,
-        };
+        out->state.pendingTie = ANO_NEAR_NONE;
         return;
     }
 
@@ -923,13 +918,11 @@ void ano_generate_melody(const AnoHarmonicContext *ctx, AnoMeter meter,
             out->events[out->eventCount++] = dbl[i];
     }
 
-    out->state = (AnoMelodyState){
-        .prevPitch = placedN ? placed[placedN - 1].pitch : state->prevPitch,
-        .prevAnchor = anchor,
-        .hasPrevOuter = guard ? guard->hasPrev : state->hasPrevOuter,
-        .outerT = guard ? guard->prevT : state->outerT,
-        .outerMelody = guard ? guard->prevM : state->outerMelody,
-        .outerBass = guard ? guard->prevB : state->outerBass,
-        .pendingTie = pendingOut,
-    };
+    out->state.prevPitch = placedN ? placed[placedN - 1].pitch : state->prevPitch;
+    out->state.prevAnchor = anchor;
+    out->state.hasPrevOuter = guard ? guard->hasPrev : state->hasPrevOuter;
+    out->state.outerT = guard ? guard->prevT : state->outerT;
+    out->state.outerMelody = guard ? guard->prevM : state->outerMelody;
+    out->state.outerBass = guard ? guard->prevB : state->outerBass;
+    out->state.pendingTie = pendingOut;
 }

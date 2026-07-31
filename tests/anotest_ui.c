@@ -70,12 +70,12 @@ static double oracle_cov(inside_fn f, void *u, double px, double py, double cx, 
 typedef struct { double hx, hy; double r[4]; double w; } RrShape;
 static bool pred_fill(double x, double y, void *u)
 {
-    RrShape *s = u;
+    RrShape *s = static_cast<RrShape *>(u);
     return inside_rrect(x, y, s->hx, s->hy, s->r);
 }
 static bool pred_ring(double x, double y, void *u)
 {
-    RrShape *s = u;
+    RrShape *s = static_cast<RrShape *>(u);
     return inside_ring(x, y, s->hx, s->hy, s->r, s->w);
 }
 
@@ -237,14 +237,14 @@ typedef double (*truth_fn)(void *u, int px, int py);
 typedef struct { inside_fn f; void *u; double cx, cy; } SsTruth;
 static double truth_ss(void *u, int px, int py)
 {
-    SsTruth *t = u;
+    SsTruth *t = static_cast<SsTruth *>(u);
     return oracle_cov(t->f, t->u, px, py, t->cx, t->cy);
 }
 
 typedef struct { double minx, miny, maxx, maxy; } RectTruth; // absolute canvas coords
 static double truth_rect(void *u, int px, int py)
 {
-    RectTruth *t = u;
+    RectTruth *t = static_cast<RectTruth *>(u);
     double ox = fmax(0.0, fmin(px + 1.0, t->maxx) - fmax((double)px, t->minx));
     double oy = fmax(0.0, fmin(py + 1.0, t->maxy) - fmax((double)py, t->miny));
     return ox * oy;
@@ -656,8 +656,8 @@ static void shadow_case(const char *name, double hw, double hh, double corner, d
     int W = (int)(2 * hw) + 2 * pad, H = (int)(2 * hh) + 2 * pad;
     int sw = W * ss, sh = H * ss;
     double cx = W / 2.0, cy = H / 2.0;
-    double *mask = malloc((size_t)sw * sh * sizeof(double));
-    double *tmp = malloc((size_t)sw * sh * sizeof(double));
+    double *mask = static_cast<double *>(malloc((size_t)sw * sh * sizeof(double)));
+    double *tmp = static_cast<double *>(malloc((size_t)sw * sh * sizeof(double)));
     double r4[4] = { corner, corner, corner, corner };
     for (int y = 0; y < sh; y++)
         for (int x = 0; x < sw; x++)
@@ -666,7 +666,7 @@ static void shadow_case(const char *name, double hw, double hh, double corner, d
     // Separable Gaussian at SS resolution, kernel normalized.
     double sigss = sigma * ss;
     int kr = (int)ceil(4.0 * sigss);
-    double *kern = malloc((size_t)(2 * kr + 1) * sizeof(double));
+    double *kern = static_cast<double *>(malloc((size_t)(2 * kr + 1) * sizeof(double)));
     double ksum = 0.0;
     for (int i = -kr; i <= kr; i++)
         ksum += kern[i + kr] = exp(-(double)i * i / (2.0 * sigss * sigss));
@@ -804,10 +804,10 @@ static double tiles_check(const AnoUiScene *s, const char *name)
     uint32_t tilesX = (uint32_t)(((int32_t)ceilf(hi[0]) - ox + 7) / 8);
     uint32_t tilesY = (uint32_t)(((int32_t)ceilf(hi[1]) - oy + 7) / 8);
     uint32_t nTiles = tilesX * tilesY;
-    uint32_t *offsets = malloc((size_t)(nTiles + 1) * 4);
-    uint32_t *cursor = malloc((size_t)nTiles * 4);
+    uint32_t *offsets = static_cast<uint32_t *>(malloc((size_t)(nTiles + 1) * 4));
+    uint32_t *cursor = static_cast<uint32_t *>(malloc((size_t)nTiles * 4));
     uint32_t entryCap = 1u << 20;
-    uint32_t *entries = malloc((size_t)entryCap * 4);
+    uint32_t *entries = static_cast<uint32_t *>(malloc((size_t)entryCap * 4));
     bool ok = false;
     uint32_t nEntries = ano_ui_tile_build(s, ox, oy, tilesX, tilesY, offsets, nTiles + 1,
                                           entries, entryCap, cursor, &ok);
@@ -963,7 +963,8 @@ static void test_path_contour_bound(void)
 
     // One real triangle (qn > 0, valid bbox) then many empty contours
     uint32_t nseg = 4u + EMPTY_MOVES;
-    AnoUiPathSeg *segs = malloc((size_t)nseg * sizeof *segs);
+    AnoUiPathSeg *segs = static_cast<AnoUiPathSeg *>(
+        malloc((size_t)nseg * sizeof *segs));
     CHECK(segs != NULL, "empty-contour buffer allocated");
     if (segs != NULL) {
         segs[0] = (AnoUiPathSeg){ ANO_UI_SEG_MOVE, {  0.0f,  0.0f } };
@@ -1355,7 +1356,7 @@ static int demo_compare(int argc, char **argv)
     AnoUiBuilder b;
     demo_build(prims, clips, paints, stops, curves, &b);
     AnoUiScene s = ano_ui_scene(&b);
-    uint8_t *row = malloc((size_t)w * 3);
+    uint8_t *row = static_cast<uint8_t *>(malloc((size_t)w * 3));
     double sum2 = 0.0;
     int worst = 0, wx = 0, wy = 0;
     for (int py = 0; py < h; py++) {

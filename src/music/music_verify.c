@@ -165,7 +165,7 @@ static const char *sname(AnoScale s, char *buf)
 
 static const char *lname(const AnoMusicEvent *e)
 {
-    return ANO_LAYER_NAMES[e->core.layer];
+    return ano_music_layer_name(e->core.layer);
 }
 
 static const char *csym(const AnoHarmonicContext *c)
@@ -905,7 +905,7 @@ static void lint_capacity(const AnoMusicEvent *ev, uint32_t n, AnoLintReport *ou
             vio(out, "capacity", -1,
                 "%u %s events exceed the linter's %d-event line buffer 〜 the "
                 "layer rules would silently see a truncated line",
-                per[l], ANO_LAYER_NAMES[l], LINT_MAX_LINE);
+                per[l], ano_music_layer_name(l), LINT_MAX_LINE);
 }
 
 void ano_lint(const AnoMusicEvent *events, uint32_t n,

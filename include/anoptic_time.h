@@ -10,6 +10,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Timestamps */
 
@@ -61,5 +65,8 @@ int ano_busywait(uint64_t ns);
 // Sleep for us microseconds via OS facilities. Yields to the scheduler.
 int ano_sleep(uint64_t us);
 
+#ifdef __cplusplus
+}
+#endif
 
 #endif // ANOPTIC_TIME_H

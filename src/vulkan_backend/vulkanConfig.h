@@ -14,7 +14,7 @@
 /* Write Functions */
 
 // Preferred GPU by name; matched at instance init
-bool requestDevice(char* deviceName);
+bool requestDevice(const char* deviceName);
 
 // Prefer this present mode when available at swapchain create.
 bool requestPresentMode(VkPresentModeKHR presentMode);
@@ -37,7 +37,7 @@ bool setVulkanDebug(bool debug);
 /* Read Functions */
 
 // Retrieves the current preferred GPU
-char* getChosenDevice();
+const char* getChosenDevice();
 
 // Ditto but for the present mode
 VkPresentModeKHR getChosenPresentMode();

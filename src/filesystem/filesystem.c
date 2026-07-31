@@ -10,7 +10,7 @@
 
 #include <anoptic_time.h>
 
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -21,7 +21,7 @@
 // Output: "YYYY-MM-DD_XXXXXX" (local date + low 6 digits of raw ticks), static storage.
 const char *ano_fs_session_stamp(void)
 {
-    static _Atomic int state;   // 0 unset, 1 building, 2 ready
+    static ANO_ATOMIC(int) state;   // 0 unset, 1 building, 2 ready
     static char stamp[24];      // "YYYY-MM-DD_XXXXXX" is 17 + NUL
     if (atomic_load_explicit(&state, memory_order_acquire) != 2) {
         int expect = 0;

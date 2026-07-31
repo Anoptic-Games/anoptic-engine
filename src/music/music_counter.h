@@ -9,6 +9,8 @@
 #ifndef ANO_MUSIC_COUNTER_H
 #define ANO_MUSIC_COUNTER_H
 
+#include <string.h>
+
 #include "music_ir.h"
 #include "music_motif.h" // ANO_NEAR_NONE
 
@@ -35,9 +37,11 @@ typedef struct AnoCounterState
     int    vsBassC, vsBassB;
 } AnoCounterState;
 
-static inline AnoCounterState ano_counter_state_init(void)
+static inline void ano_counter_state_init(AnoCounterState *state)
 {
-    return (AnoCounterState){ .prevPitch = ANO_NEAR_NONE, .guidePc = -1 };
+    memset(state, 0, sizeof *state);
+    state->prevPitch = ANO_NEAR_NONE;
+    state->guidePc = -1;
 }
 
 typedef struct AnoCounterResult

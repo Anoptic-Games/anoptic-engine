@@ -63,7 +63,7 @@ typedef struct {
 
 static void *producer(void *p)
 {
-    prod_arg *a = p;
+    prod_arg *a = static_cast<prod_arg *>(p);
     for (int i = 0; i < a->count; i++) {
         uint64_t t0 = tick_now();
         ano_log(ANO_INFO, "tail bench thread %d message %d with payload", a->id, i);
@@ -105,7 +105,8 @@ int main(int argc, char **argv)
 
     tick_calibrate();
 
-    uint64_t *buf = malloc((size_t)MAXP * (size_t)g_msgs * sizeof *buf);
+    uint64_t *buf = static_cast<uint64_t *>(
+        malloc((size_t)MAXP * (size_t)g_msgs * sizeof *buf));
     if (buf == NULL) {
         fprintf(stderr, "logtail: sample buffer allocation failed\n");
         return 0;   // benchmark, not a test: never fails the suite

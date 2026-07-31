@@ -45,8 +45,8 @@ const RenderPassDef ano_frame_passes[] = {
     {
         .type       = PASS_COMPUTE,
         .prototype  = PIPELINE_COMPUTE_LIGHTCULL,
-        .dispatchX  = 0,  // runtime cluster count
         .perView    = true,
+        .dispatchX  = 0,  // runtime cluster count
     },
     // 4a. Depth pre-pass (perView). Opaque geometry depth-only, lays down nearest depth for EQUAL shading.
     {
@@ -79,8 +79,8 @@ const RenderPassDef ano_frame_passes[] = {
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // EQUAL-test against the pre-pass depth
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // transmission pass loads this depth
-        .depthBarrierBefore     = true,                             // wait on BOTH pre-passes' depth writes
         .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
+        .depthBarrierBefore     = true,                             // wait on BOTH pre-passes' depth writes
     },
     // 4c. Opaque two-sided lane. Same shading as 4 with cullMode NONE, LOADs 4's color/id.
     {
@@ -104,8 +104,8 @@ const RenderPassDef ano_frame_passes[] = {
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,
-        .depthBarrierBefore     = true,
         .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
+        .depthBarrierBefore     = true,
     },
     // 5. Transmissive geometry (depth-sorted "over" lane)
     {
@@ -117,8 +117,8 @@ const RenderPassDef ano_frame_passes[] = {
         .colorLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,
         .depthLoadOp            = VK_ATTACHMENT_LOAD_OP_LOAD,        // test against opaque depth (no write)
         .depthStoreOp           = VK_ATTACHMENT_STORE_OP_STORE,      // additive pass below loads this depth
-        .depthBarrierBefore     = true,                             // wait on the masked lane's depth writes
         .resolveMode            = VK_RESOLVE_MODE_NONE,             // resolve once, in the LAST color pass (additive)
+        .depthBarrierBefore     = true,                             // wait on the masked lane's depth writes
     },
     // 6. Additive glows (ONE/ONE). Last; depth test no write. Carries MSAA->HDR resolve.
     {

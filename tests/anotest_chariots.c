@@ -62,7 +62,7 @@ typedef struct {
 int autoStringTest() {
 
     uint8_t someBytes[1024];
-    uint8_t* stackBytes = ano_salloc(42);
+        uint8_t* stackBytes = static_cast<uint8_t *>(ano_salloc(42));
 
     if (true) {
         int intVar __attribute__((__cleanup__(intCleanup))) = 64; // This SIMPLETON here...
@@ -72,12 +72,12 @@ int autoStringTest() {
     if (true) {
         mi_heap_t *memHeap LOCALHEAPATTR = mi_heap_new();
 
-        mem_chariot_t *memChariots = mi_heap_zalloc_aligned(memHeap,
-                                                    4096 * 8192 * sizeof(mem_chariot_t),
-                                                    sizeof(mem_chariot_t));
-        mem_chariot_t **memPanzers = mi_heap_zalloc_aligned(memHeap,
-                                                    4096 * sizeof(mem_chariot_t),
-                                                    sizeof(mem_chariot_t));
+        mem_chariot_t *memChariots = static_cast<mem_chariot_t *>(
+            mi_heap_zalloc_aligned(memHeap, 4096 * 8192 * sizeof(mem_chariot_t),
+                                  sizeof(mem_chariot_t)));
+        mem_chariot_t **memPanzers = static_cast<mem_chariot_t **>(
+            mi_heap_zalloc_aligned(memHeap, 4096 * sizeof(mem_chariot_t),
+                                  sizeof(mem_chariot_t)));
         ano_void *memWagens = mi_heap_zalloc_aligned(memHeap,
                                                     4096 * sizeof(mem_chariot_t),
                                                     sizeof(mem_chariot_t));

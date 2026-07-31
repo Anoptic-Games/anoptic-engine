@@ -13,6 +13,7 @@
 #include "vulkan_backend/instance/pipeline.h"
 #include "vulkan_backend/texture/texture.h"
 #include "vulkan_backend/vertex/vertex.h"
+#include "cpp/ano_alloc.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -343,43 +344,42 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
         return false;
 
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].type = PIPELINE_COMPUTE_TEXTRASTER;
-    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations = calloc(1, sizeof(PipelineImplementation));
+    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations =
+        ano::allocate_zero<PipelineImplementation>(1);
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].supportedFeatures = PBR_FEATURE_NONE;
     if (state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations == NULL)
         return false;
     state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementationCount = 1;
 
-    // Unwind idiom: the blob and module are held to the tail discharge, so refusals in between take
-    // `goto fail`; free(NULL) and destroying VK_NULL_HANDLE are both no-ops.
-    struct Buffer code = {0};
+    // The build lambda owns no resources; the tail discharges the borrowed blob/module once.
+    struct Buffer code = {};
     if (!loadFile("resources/shaders/textraster.comp.spv", &code))
         return false;
     VkShaderModule module = createShaderModule(ctx->device, &code);
+    bool built = [&]() {
+        VkPipelineCacheCreateInfo cacheInfo = {};
+        cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL,
+                                  &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache) != VK_SUCCESS)
+            state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache = VK_NULL_HANDLE;
 
-    VkPipelineCacheCreateInfo cacheInfo = {};
-    cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache) != VK_SUCCESS)
-        state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache = VK_NULL_HANDLE;
+        VkComputePipelineCreateInfo pipelineInfo = {};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout;
+        if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, module, NULL, &pipelineInfo.stage))
+            return false;
 
-    VkComputePipelineCreateInfo pipelineInfo = {};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout;
-    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, module, NULL, &pipelineInfo.stage))
-        goto fail;
-
-    VkResult r = vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache,
-                                          1, &pipelineInfo, NULL,
-                                          &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].pipeline);
-    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
-
+        VkResult result = vkCreateComputePipelines(
+            ctx->device, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache,
+            1, &pipelineInfo, NULL,
+            &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].pipeline);
+        state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].bindPoint =
+            VK_PIPELINE_BIND_POINT_COMPUTE;
+        return result == VK_SUCCESS;
+    }();
     ano_aligned_free(code.data);
     vkDestroyShaderModule(ctx->device, module, NULL);
-    return r == VK_SUCCESS;
-
-fail:
-    ano_aligned_free(code.data);
-    vkDestroyShaderModule(ctx->device, module, NULL);
-    return false;
+    return built;
 }
 
 // Blend pipeline shared by both text lanes: premultiplied src-over, bufferless triangles,
@@ -391,113 +391,102 @@ static bool text_build_blend_pipeline(VulkanContext* ctx, RendererState* state,
                                       VkPipelineLayout layout, VkSampleCountFlagBits samples,
                                       VkFormat colorFormat, VkFormat depthFormat, VkPipeline* out)
 {
-    // Unwind idiom: blobs and modules are held to the tail discharge, so refusals in between take
-    // `goto fail`; free(NULL) and destroying VK_NULL_HANDLE are both no-ops. A refused load clears
-    // its own buffer first: loadFile leaves data dangling on a short read.
-    struct Buffer vertCode = {0}, fragCode = {0};
+    // The build lambda owns no resources; the tail discharges both blobs/modules once.
+    struct Buffer vertCode = {}, fragCode = {};
     VkShaderModule vertModule = VK_NULL_HANDLE, fragModule = VK_NULL_HANDLE;
     if (!loadFile(vertPath, &vertCode))
         return false;
-    if (!loadFile(fragPath, &fragCode))
-    {
-        fragCode.data = NULL;
-        goto fail;
-    }
-    vertModule = createShaderModule(ctx->device, &vertCode);
-    fragModule = createShaderModule(ctx->device, &fragCode);
+    bool built = [&]() {
+        if (!loadFile(fragPath, &fragCode)) {
+            fragCode.data = NULL;
+            return false;
+        }
+        vertModule = createShaderModule(ctx->device, &vertCode);
+        fragModule = createShaderModule(ctx->device, &fragCode);
 
-    VkPipelineShaderStageCreateInfo stages[2];
-    if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
-        || !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
-        goto fail;
+        VkPipelineShaderStageCreateInfo stages[2];
+        if (!ano_pipeline_stage(VK_SHADER_STAGE_VERTEX_BIT, vertModule, NULL, &stages[0])
+            || !ano_pipeline_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, NULL, &stages[1]))
+            return false;
 
-    VkPipelineVertexInputStateCreateInfo vertexInput = {};
-    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
-    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkPipelineViewportStateCreateInfo viewportState = {};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-    VkPipelineRasterizationStateCreateInfo rasterizer = {};
-    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.cullMode = VK_CULL_MODE_NONE; // world sign readable from both sides
-    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterizer.lineWidth = 1.0f;
-    VkPipelineMultisampleStateCreateInfo multisampling = {};
-    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.rasterizationSamples = samples;
+        VkPipelineVertexInputStateCreateInfo vertexInput = {};
+        vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo viewportState = {};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rasterizer = {};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.cullMode = VK_CULL_MODE_NONE; // world sign readable from both sides
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo multisampling = {};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = samples;
 
-    // Premultiplied src-over: out = src.rgb + (1 - src.a) * dst.rgb.
-    VkPipelineColorBlendAttachmentState blendAttachment = {};
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-                                   | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    blendAttachment.blendEnable = VK_TRUE;
-    blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-    blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendAttachmentState blendAttachment = {};
+        blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                                       | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        blendAttachment.blendEnable = VK_TRUE;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
-    VkPipelineColorBlendStateCreateInfo colorBlending = {};
-    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &blendAttachment;
+        VkPipelineColorBlendStateCreateInfo colorBlending = {};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &blendAttachment;
 
-    // Depth-tested against the scene, no write. No depth format, no depth state.
-    VkPipelineDepthStencilStateCreateInfo depthStencil = {};
-    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    if (depthFormat != VK_FORMAT_UNDEFINED)
-    {
-        depthStencil.depthTestEnable = VK_TRUE;
-        depthStencil.depthWriteEnable = VK_FALSE;
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-    }
+        VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        if (depthFormat != VK_FORMAT_UNDEFINED) {
+            depthStencil.depthTestEnable = VK_TRUE;
+            depthStencil.depthWriteEnable = VK_FALSE;
+            depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        }
 
-    VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dynamicState = {};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = dynamicStates;
+        VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState = {};
+        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = 2;
+        dynamicState.pDynamicStates = dynamicStates;
 
-    VkPipelineRenderingCreateInfo renderingInfo = {};
-    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &colorFormat;
-    renderingInfo.depthAttachmentFormat = depthFormat;
+        VkPipelineRenderingCreateInfo renderingInfo = {};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachmentFormats = &colorFormat;
+        renderingInfo.depthAttachmentFormat = depthFormat;
 
-    VkGraphicsPipelineCreateInfo pipelineInfo = {};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.pNext = &renderingInfo;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = stages;
-    pipelineInfo.pVertexInputState = &vertexInput;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = layout;
+        VkGraphicsPipelineCreateInfo pipelineInfo = {};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.pNext = &renderingInfo;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = stages;
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = layout;
 
-    VkResult r = vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo,
-                                           NULL, out);
+        return vkCreateGraphicsPipelines(ctx->device, state->tonemapCache, 1, &pipelineInfo,
+                                         NULL, out) == VK_SUCCESS;
+    }();
     ano_aligned_free(vertCode.data);
     ano_aligned_free(fragCode.data);
     vkDestroyShaderModule(ctx->device, vertModule, NULL);
     vkDestroyShaderModule(ctx->device, fragModule, NULL);
-    return r == VK_SUCCESS;
-
-fail:
-    ano_aligned_free(vertCode.data);
-    ano_aligned_free(fragCode.data);
-    vkDestroyShaderModule(ctx->device, vertModule, NULL);
-    vkDestroyShaderModule(ctx->device, fragModule, NULL);
-    return false;
+    return built;
 }
 
 // Composite blend pipeline: tonemap's twin, premultiplied src-over, overlay.frag samples the overlay image.
@@ -679,7 +668,7 @@ bool ano_vk_text_init(VulkanContext* ctx, RendererState* state)
     // Pending canonical text: full frame-buffer capacity, dies with textHeap.
     // ANO_TEXT_DEMO pins the torture text, else a boot line replaced by the mirror.
     uint32_t cap = ANO_TEXT_FRAME_BYTES / (uint32_t)sizeof(AnoGlyphInstance);
-    state->textPending = mi_heap_malloc(state->textHeap, (size_t)cap * sizeof(AnoGlyphInstance));
+    state->textPending = ano::heap_allocate<AnoGlyphInstance>(state->textHeap, cap);
     if (state->textPending == NULL)
     {
         ano_log(ANO_WARN, "Text overlay disabled: pending-text allocation failed.");
@@ -900,12 +889,15 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
 
     // Prior readers retired with the frame fence. UNDEFINED discards stale contents.
     VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    VkImageMemoryBarrier toClear = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = fr->textOverlayImage,
-        .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .subresourceRange = range };
+    VkImageMemoryBarrier toClear = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    toClear.srcAccessMask = 0;
+    toClear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toClear.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    toClear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toClear.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toClear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toClear.image = fr->textOverlayImage;
+    toClear.subresourceRange = range;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, NULL, 0, NULL, 1, &toClear);
 
@@ -913,12 +905,15 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
     vkCmdClearColorImage(cmd, fr->textOverlayImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                          &transparent, 1, &range);
 
-    VkImageMemoryBarrier toCompute = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = fr->textOverlayImage,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-        .subresourceRange = range };
+    VkImageMemoryBarrier toCompute = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    toCompute.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toCompute.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    toCompute.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toCompute.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toCompute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toCompute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toCompute.image = fr->textOverlayImage;
+    toCompute.subresourceRange = range;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, NULL, 0, NULL, 1, &toCompute);
 
@@ -996,13 +991,15 @@ static void text_record_raster(RendererState* state, VkCommandBuffer cmd, uint32
         vkCmdDispatch(cmd, gx, gy, 1);
     }
 
-    VkImageMemoryBarrier toSample = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_GENERAL, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = fr->textOverlayImage,
-        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-        .dstAccessMask = asyncQueue ? 0 : VK_ACCESS_SHADER_READ_BIT,
-        .subresourceRange = range };
+    VkImageMemoryBarrier toSample = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    toSample.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    toSample.dstAccessMask = static_cast<VkAccessFlags>(asyncQueue ? 0 : VK_ACCESS_SHADER_READ_BIT);
+    toSample.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toSample.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toSample.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSample.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toSample.image = fr->textOverlayImage;
+    toSample.subresourceRange = range;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          asyncQueue ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          0, 0, NULL, 0, NULL, 1, &toSample);

@@ -11,6 +11,7 @@
 #include <math.h>
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
+#include "cpp/ano_alloc.h"
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -387,10 +388,14 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 
 		uint32_t qfCount = 0;
 		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalDevice, &qfCount, NULL);
-		VkQueueFamilyProperties qfProps[qfCount];
-		vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalDevice, &qfCount, qfProps);
-		uint32_t gf = ctx->queueFamilyIndices.graphicsFamily;
-		state->timestampValidBits = (gf < qfCount) ? qfProps[gf].timestampValidBits : 0u;
+		state->timestampValidBits = 0u;
+		VkQueueFamilyProperties* qfProps = ano::allocate<VkQueueFamilyProperties>(qfCount);
+		if (qfProps != NULL) {
+			vkGetPhysicalDeviceQueueFamilyProperties(ctx->physicalDevice, &qfCount, qfProps);
+			uint32_t gf = ctx->queueFamilyIndices.graphicsFamily;
+			state->timestampValidBits = (gf < qfCount) ? qfProps[gf].timestampValidBits : 0u;
+			free(qfProps);
+		}
 		if (state->timestampPeriodNs <= 0.0f) state->timestampValidBits = 0u;
 
 		for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -416,11 +421,10 @@ bool createSyncObjects(VulkanContext* ctx, RendererState* state)
 			ano_log(ANO_FATAL, "Failed to create picking readback buffer!");
 			return false;
 		}
-		state->frames[i].pickReadbackMapped = state->frames[i].pickReadbackAlloc.mapped;
+		state->frames[i].pickReadbackMapped = static_cast<uint32_t*>(state->frames[i].pickReadbackAlloc.mapped);
 		*state->frames[i].pickReadbackMapped = 0xFFFFFFFFu;
 	}
 	state->lastPickRenderId = ANO_RENDER_NO_PICK;
 
 	return true;
 }
-

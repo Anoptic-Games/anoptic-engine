@@ -233,7 +233,7 @@ static void bake_push_quad(BakeCollect *c, double x0, double y0, double x1, doub
         c->oom = true;
         return;
     }
-    con->quads = q;
+    con->quads = static_cast<AnoQuad *>(q);
     con->quads[con->count++] = (AnoQuad){ .x = { x0, x1, x2 }, .y = { y0, y1, y2 } };
 }
 
@@ -254,7 +254,7 @@ static void bake_close_contour(BakeCollect *c)
 
 static int bake_move_to(const FT_Vector *to, void *user)
 {
-    BakeCollect *c = user;
+    BakeCollect *c = static_cast<BakeCollect *>(user);
     bake_close_contour(c);
     void *p = bake_grow(c->scratch, c->contours, &c->contourCap, c->contourCount + 1u,
                         sizeof(BakeContour));
@@ -263,7 +263,7 @@ static int bake_move_to(const FT_Vector *to, void *user)
         c->oom = true;
         return 1;
     }
-    c->contours = p;
+    c->contours = static_cast<BakeContour *>(p);
     c->contours[c->contourCount++] = (BakeContour){ 0 };
     c->startX = c->curX = to->x * c->invUpem;
     c->startY = c->curY = to->y * c->invUpem;
@@ -273,7 +273,7 @@ static int bake_move_to(const FT_Vector *to, void *user)
 
 static int bake_line_to(const FT_Vector *to, void *user)
 {
-    BakeCollect *c = user;
+    BakeCollect *c = static_cast<BakeCollect *>(user);
     double x = to->x * c->invUpem, y = to->y * c->invUpem;
     if (x != c->curX || y != c->curY)
         bake_push_quad(c, c->curX, c->curY, (c->curX + x) * 0.5, (c->curY + y) * 0.5, x, y);
@@ -284,7 +284,7 @@ static int bake_line_to(const FT_Vector *to, void *user)
 
 static int bake_conic_to(const FT_Vector *control, const FT_Vector *to, void *user)
 {
-    BakeCollect *c = user;
+    BakeCollect *c = static_cast<BakeCollect *>(user);
     double cx = control->x * c->invUpem, cy = control->y * c->invUpem;
     double x = to->x * c->invUpem, y = to->y * c->invUpem;
     bake_push_quad(c, c->curX, c->curY, cx, cy, x, y);
@@ -296,7 +296,7 @@ static int bake_conic_to(const FT_Vector *control, const FT_Vector *to, void *us
 static int bake_cubic_to(const FT_Vector *c1, const FT_Vector *c2, const FT_Vector *to,
                          void *user)
 {
-    BakeCollect *c = user;
+    BakeCollect *c = static_cast<BakeCollect *>(user);
     double px[4] = { c->curX, c1->x * c->invUpem, c2->x * c->invUpem, to->x * c->invUpem };
     double py[4] = { c->curY, c1->y * c->invUpem, c2->y * c->invUpem, to->y * c->invUpem };
     AnoQuad parts[16];
@@ -340,7 +340,7 @@ static bool stream_push(mi_heap_t *heap, StreamVec *s, uint32_t val)
     void *p = bake_grow(heap, s->v, &s->cap, s->count + 1u, sizeof(uint32_t));
     if (p == NULL)
         return false;
-    s->v = p;
+    s->v = static_cast<uint32_t *>(p);
     s->v[s->count++] = val;
     return true;
 }
@@ -449,8 +449,10 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
         ano_log(ANO_WARN, "text: kern extraction skipped (bake %u > 1024 slots)", glyphCount);
         return 0;
     }
-    uint32_t *slotGids = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(uint32_t));
-    int32_t  *dense = mi_heap_zalloc(scratch, (size_t)glyphCount * glyphCount * sizeof(int32_t));
+    uint32_t *slotGids = static_cast<uint32_t *>(
+        mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(uint32_t)));
+    int32_t *dense = static_cast<int32_t *>(
+        mi_heap_zalloc(scratch, (size_t)glyphCount * glyphCount * sizeof(int32_t)));
     if (slotGids == NULL || dense == NULL)
         return ENOMEM;
 
@@ -471,7 +473,7 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
         FT_ULong glen = 0;
         if (FT_Load_Sfnt_Table(face, TTAG_GPOS, 0, NULL, &glen) != FT_Err_Ok || glen < 10u)
             continue; // no GPOS
-        uint8_t *blob = mi_heap_malloc(scratch, glen);
+        uint8_t *blob = static_cast<uint8_t *>(mi_heap_malloc(scratch, glen));
         if (blob == NULL)
             return ENOMEM;
         if (FT_Load_Sfnt_Table(face, TTAG_GPOS, 0, blob, &glen) != FT_Err_Ok)
@@ -485,7 +487,8 @@ static int bake_kerns(mi_heap_t *scratch, mi_heap_t *heap, const AnoGlyphEntry *
         nz += dense[i] != 0;
     if (nz == 0)
         return 0;
-    AnoKernPair *pairs = mi_heap_malloc(heap, (size_t)nz * sizeof(AnoKernPair));
+    AnoKernPair *pairs = static_cast<AnoKernPair *>(
+        mi_heap_malloc(heap, (size_t)nz * sizeof(AnoKernPair)));
     if (pairs == NULL)
         return ENOMEM;
     uint32_t w = 0;
@@ -534,27 +537,38 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
     uint32_t       kernCount = 0;
     StreamVec      stream = { 0 }; // scratch-backed
     int            rc = ENOMEM;    // arms refine. ENOMEM is the default
+    FT_Face       *slotFace = NULL;
+    uint32_t      *slotCp = NULL;
+    double        *slotInvUpem = NULL;
+    uint32_t       slot = 0;
+    int            kerr = 0;
+    FT_Face        metricsFace = NULL;
+    double         metricsInv = 0.0;
 
     // First acquisition. Arms below stay in this heap's scope.
     mi_heap_t *scratch LOCALHEAPATTR = mi_heap_new();
     if (scratch == NULL)
         goto fail;
 
-    glyphs = mi_heap_zalloc(heap, (size_t)glyphCount * sizeof(AnoGlyphEntry));
-    map = mi_heap_malloc(heap, (size_t)rangeCount * sizeof(AnoGlyphRange));
+    glyphs = static_cast<AnoGlyphEntry *>(
+        mi_heap_zalloc(heap, (size_t)glyphCount * sizeof(AnoGlyphEntry)));
+    map = static_cast<AnoGlyphRange *>(
+        mi_heap_malloc(heap, (size_t)rangeCount * sizeof(AnoGlyphRange)));
     if (glyphs == NULL || map == NULL)
         goto fail;
 
     // Per-slot face/codepoint/upem for glyph loop + kern pass.
-    FT_Face  *slotFace = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(FT_Face));
-    uint32_t *slotCp = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(uint32_t));
-    double   *slotInvUpem = mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(double));
+    slotFace = static_cast<FT_Face *>(
+        mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(FT_Face)));
+    slotCp = static_cast<uint32_t *>(
+        mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(uint32_t)));
+    slotInvUpem = static_cast<double *>(
+        mi_heap_malloc(scratch, (size_t)glyphCount * sizeof(double)));
     if (slotFace == NULL || slotCp == NULL || slotInvUpem == NULL)
         goto fail;
-    uint32_t slot = 0;
     for (uint32_t r = 0; r < rangeCount; r++)
     {
-        FT_Face face = ano_text_face(ranges[r].font);
+        FT_Face face = static_cast<FT_Face>(ano_text_face(ranges[r].font));
         double  inv = 1.0 / (double)face->units_per_EM;
         map[r] = (AnoGlyphRange){ .first = ranges[r].first, .last = ranges[r].last,
                                   .slotBase = slot };
@@ -632,7 +646,7 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
                     void *g = bake_grow(scratch, mono, &mcap, mcount + 1u, sizeof(AnoQuad));
                     if (g == NULL)
                         goto fail;
-                    mono = g;
+                    mono = static_cast<AnoQuad *>(g);
                     mono[mcount++] = parts[p];
                 }
             }
@@ -645,8 +659,8 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
     }
 
     // bake_kerns consumes slotFace destructively.
-    int kerr = bake_kerns(scratch, heap, glyphs, (uint32_t)glyphCount, slotFace, slotCp,
-                          slotInvUpem, &kerns, &kernCount);
+    kerr = bake_kerns(scratch, heap, glyphs, (uint32_t)glyphCount, slotFace, slotCp,
+                      slotInvUpem, &kerns, &kernCount);
     if (kerr != 0)
     {
         rc = kerr;
@@ -655,14 +669,15 @@ int ano_text_font_bake_ranges(const AnoBakeRange *ranges, uint32_t rangeCount,
 
     if (stream.count > 0)
     {
-        points = mi_heap_malloc(heap, (size_t)stream.count * sizeof(uint32_t));
+        points = static_cast<uint32_t *>(
+            mi_heap_malloc(heap, (size_t)stream.count * sizeof(uint32_t)));
         if (points == NULL)
             goto fail;
         memcpy(points, stream.v, (size_t)stream.count * sizeof(uint32_t));
     }
 
-    FT_Face metricsFace = ano_text_face(ranges[0].font);
-    double  metricsInv = 1.0 / (double)metricsFace->units_per_EM;
+    metricsFace = static_cast<FT_Face>(ano_text_face(ranges[0].font));
+    metricsInv = 1.0 / (double)metricsFace->units_per_EM;
     out->points     = points;
     out->pointCount = stream.count;
     out->glyphs     = glyphs;

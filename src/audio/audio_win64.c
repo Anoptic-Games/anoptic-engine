@@ -17,6 +17,7 @@
 
 #include "audio_internal.h"
 #include "audio_pull.h"
+#include "cpp/ano_alloc.h"
 #include "dsp/noise.h" // TPDF dither (DSound s16)
 
 #include <anoptic_log.h>
@@ -221,7 +222,7 @@ typedef struct AnoWasapiState
     HANDLE  (WINAPI *avSet)(const char *, DWORD *);
     BOOL    (WINAPI *avRevert)(HANDLE);
 
-    _Atomic int  init; // AnoWinInit
+    ANO_ATOMIC(int)  init; // AnoWinInit
     AnoAudioPull pull;
 } AnoWasapiState;
 
@@ -282,8 +283,8 @@ typedef struct AnoWasapiState
 
 static void *wasapi_main(void *arg)
 {
-    AnoAudioMixer  *mx = arg;
-    AnoWasapiState *st = mx->deviceState;
+    AnoAudioMixer  *mx = static_cast<AnoAudioMixer *>(arg);
+    AnoWasapiState *st = static_cast<AnoWasapiState *>(mx->deviceState);
 
     AnoIMMDeviceEnumerator *enumr  = NULL;
     AnoIMMDevice           *dev    = NULL;
@@ -292,6 +293,10 @@ static void *wasapi_main(void *arg)
     HANDLE evt = NULL, mmcss = NULL;
     UINT32 bufferFrames = 0;
     bool   viaClient3 = false, started = false, comUp = false;
+    AnoWfxExt wfx = wfx_f32_stereo(mx->sampleRate);
+    AnoWfx *mix = NULL;
+    uint32_t mixRate = 0, mixChannels = 0;
+    uint32_t refusals = 0, packetRefusals = 0;
 
     if (FAILED(st->coInit(NULL, 0 /* COINIT_MULTITHREADED */)))
         goto fail;
@@ -305,11 +310,7 @@ static void *wasapi_main(void *arg)
                                 (void **)&client)))
         goto fail;
 
-    AnoWfxExt wfx = wfx_f32_stereo(mx->sampleRate);
-
     // Client3 only when mix rate/channels match (no AUTOCONVERTPCM on that path).
-    AnoWfx *mix = NULL;
-    uint32_t mixRate = 0, mixChannels = 0;
     if (SUCCEEDED(client->v->GetMixFormat(client, &mix)) && mix) {
         mixRate     = mix->nSamplesPerSec;
         mixChannels = mix->nChannels;
@@ -370,8 +371,6 @@ static void *wasapi_main(void *arg)
     atomic_store_explicit(&st->init, ANO_WIN_INIT_OK, memory_order_release);
 
     // Terminal loop exit falls through fail: (same unwind as init). deviceRun/init stay. Audio silent.
-    uint32_t refusals       = 0;
-    uint32_t packetRefusals = 0;
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
         DWORD waited = WaitForSingleObject(evt, 2000);
         if (waited == WAIT_FAILED) {
@@ -433,7 +432,7 @@ fail:
 
 static bool wasapi_start(AnoAudioMixer *mx)
 {
-    AnoWasapiState *st = mi_heap_calloc(mx->heap, 1, sizeof *st);
+    AnoWasapiState *st = ano::heap_allocate_zero<AnoWasapiState>(mx->heap, 1);
     if (!st)
         return false;
     st->ole32 = LoadLibraryA("ole32.dll");
@@ -484,7 +483,7 @@ fail:
 
 static void wasapi_stop(AnoAudioMixer *mx)
 {
-    AnoWasapiState *st = mx->deviceState;
+    AnoWasapiState *st = static_cast<AnoWasapiState *>(mx->deviceState);
     if (!st)
         return; // start() failed and already joined/freed
     atomic_store_explicit(&mx->deviceRun, false, memory_order_release);
@@ -577,7 +576,7 @@ typedef struct AnoDsoundState
     HMODULE lib;
     HRESULT (WINAPI *create)(const GUID *, AnoIDirectSound **, void *);
 
-    _Atomic int  init;
+    ANO_ATOMIC(int)  init;
     AnoAudioPull pull;
     AnoDspRng    dither;
 } AnoDsoundState;
@@ -592,7 +591,7 @@ static void dsound_fill(AnoAudioMixer *mx, AnoDsoundState *st, float *fbuf,
         return;
     }
     // s16 path: TPDF dither at final quantization (with ALSA s16)
-    int16_t *out = dst;
+    int16_t *out = static_cast<int16_t *>(dst);
     for (uint32_t i = 0; i < frames * ANO_AUDIO_CHANNELS; ++i) {
         float v = fbuf[i];
         v = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
@@ -640,46 +639,50 @@ stopped:
 
 static void *dsound_main(void *arg)
 {
-    AnoAudioMixer *mx = arg;
-    AnoDsoundState *st = mx->deviceState;
+    AnoAudioMixer *mx = static_cast<AnoAudioMixer *>(arg);
+    AnoDsoundState *st = static_cast<AnoDsoundState *>(mx->deviceState);
 
     AnoIDirectSound       *ds        = NULL;
     AnoIDirectSoundBuffer *primary   = NULL;
     AnoIDirectSoundBuffer *secondary = NULL;
     float *fbuf = NULL;
     bool started = false, s16 = false;
-
-    if (FAILED(st->create(NULL, &ds, NULL)))
-        goto fail;
-    HWND hwnd = GetForegroundWindow();
-    if (!hwnd) hwnd = GetDesktopWindow();
-    if (FAILED(ds->v->SetCooperativeLevel(ds, hwnd, ANO_DSSCL_PRIORITY)))
-        goto fail;
-
+    HWND hwnd = NULL;
     AnoWfxExt wfx = wfx_f32_stereo(mx->sampleRate);
-
-    // primary format advisory
     AnoDsBufferDesc pdesc = { .dwSize = sizeof pdesc, .dwFlags = ANO_DSBCAPS_PRIMARYBUFFER };
-    if (SUCCEEDED(ds->v->CreateSoundBuffer(ds, &pdesc, &primary, NULL)))
-        primary->v->SetFormat(primary, (const AnoWfx *)&wfx);
-
     const uint32_t blockBytesF32 = mx->blockFrames * ANO_AUDIO_CHANNELS * (uint32_t)sizeof(float);
     const uint32_t blockBytesS16 = mx->blockFrames * ANO_AUDIO_CHANNELS * (uint32_t)sizeof(int16_t);
     AnoDsBufferDesc sdesc = {
         .dwSize = sizeof sdesc,
         .dwFlags = ANO_DSBCAPS_GLOBALFOCUS | ANO_DSBCAPS_GETCURRENTPOSITION2,
         .dwBufferBytes = 4u * blockBytesF32,
-        .lpwfxFormat = (AnoWfx *)&wfx,
+        .lpwfxFormat = reinterpret_cast<AnoWfx *>(&wfx),
     };
+    uint32_t blockBytes = 0, bufferBytes = 0;
+    void *p1 = NULL, *p2 = NULL;
+    DWORD n1 = 0, n2 = 0;
+    DWORD writeCursor = 0;
+
+    if (FAILED(st->create(NULL, &ds, NULL)))
+        goto fail;
+    hwnd = GetForegroundWindow();
+    if (!hwnd) hwnd = GetDesktopWindow();
+    if (FAILED(ds->v->SetCooperativeLevel(ds, hwnd, ANO_DSSCL_PRIORITY)))
+        goto fail;
+
+    // primary format advisory
+    if (SUCCEEDED(ds->v->CreateSoundBuffer(ds, &pdesc, &primary, NULL)))
+        primary->v->SetFormat(primary, (const AnoWfx *)&wfx);
+
     if (FAILED(ds->v->CreateSoundBuffer(ds, &sdesc, &secondary, NULL))) {
         // s16 + TPDF
         AnoWfx w16 = {
             .wFormatTag = ANO_WAVE_FORMAT_PCM,
             .nChannels = ANO_AUDIO_CHANNELS,
             .nSamplesPerSec = mx->sampleRate,
-            .wBitsPerSample = 16,
-            .nBlockAlign = ANO_AUDIO_CHANNELS * 2,
             .nAvgBytesPerSec = mx->sampleRate * ANO_AUDIO_CHANNELS * 2,
+            .nBlockAlign = ANO_AUDIO_CHANNELS * 2,
+            .wBitsPerSample = 16,
         };
         sdesc.dwBufferBytes = 4u * blockBytesS16;
         sdesc.lpwfxFormat   = &w16;
@@ -688,15 +691,14 @@ static void *dsound_main(void *arg)
         s16 = true;
         ano_dsp_rng_seed(&st->dither, 0xD50DDu);
     }
-    const uint32_t blockBytes  = s16 ? blockBytesS16 : blockBytesF32;
-    const uint32_t bufferBytes = 4u * blockBytes;
+    blockBytes  = s16 ? blockBytesS16 : blockBytesF32;
+    bufferBytes = 4u * blockBytes;
 
-    fbuf = mi_heap_calloc(mx->heap, (size_t)mx->blockFrames * ANO_AUDIO_CHANNELS, sizeof(float));
+    fbuf = ano::heap_allocate_zero<float>(
+        mx->heap, (size_t)mx->blockFrames * ANO_AUDIO_CHANNELS);
     if (!fbuf)
         goto fail;
 
-    void *p1 = NULL, *p2 = NULL;
-    DWORD n1 = 0, n2 = 0;
     if (SUCCEEDED(secondary->v->Lock(secondary, 0, bufferBytes, &p1, &n1, &p2, &n2, 0))) {
         if (p1) memset(p1, 0, n1);
         if (p2) memset(p2, 0, n2);
@@ -711,7 +713,6 @@ static void *dsound_main(void *arg)
     atomic_store_explicit(&st->init, ANO_WIN_INIT_OK, memory_order_release);
 
     // cursor chase: fill block-sized chunks the play cursor has consumed
-    DWORD writeCursor = 0;
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
         DWORD status = 0;
         if (SUCCEEDED(secondary->v->GetStatus(secondary, &status))
@@ -757,7 +758,7 @@ fail:
 
 static bool dsound_start(AnoAudioMixer *mx)
 {
-    AnoDsoundState *st = mi_heap_calloc(mx->heap, 1, sizeof *st);
+    AnoDsoundState *st = ano::heap_allocate_zero<AnoDsoundState>(mx->heap, 1);
     if (!st)
         return false;
     st->lib = LoadLibraryA("dsound.dll");
@@ -797,7 +798,7 @@ fail:
 
 static void dsound_stop(AnoAudioMixer *mx)
 {
-    AnoDsoundState *st = mx->deviceState;
+    AnoDsoundState *st = static_cast<AnoDsoundState *>(mx->deviceState);
     if (!st)
         return; // start() failed and already joined/freed
     atomic_store_explicit(&mx->deviceRun, false, memory_order_release);

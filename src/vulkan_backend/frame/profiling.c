@@ -84,9 +84,11 @@ static void ano_print_profiling(void) {
     if (tail > 0 && head + mid + tail < (int)sizeof osd)
     {
         static const float osdOrigin[2] = { 24.0f, 40.0f };
-        const float* health = total < 4.0 ? (const float[4]){ 0.35f, 1.00f, 0.45f, 1.0f }
-                            : total < 8.0 ? (const float[4]){ 1.00f, 0.78f, 0.32f, 1.0f }
-                                          : (const float[4]){ 1.00f, 0.30f, 0.25f, 1.0f };
+        static constexpr float healthGood[4] = { 0.35f, 1.00f, 0.45f, 1.0f };
+        static constexpr float healthWarn[4] = { 1.00f, 0.78f, 0.32f, 1.0f };
+        static constexpr float healthBad[4]  = { 1.00f, 0.30f, 0.25f, 1.0f };
+        const float* health = total < 4.0 ? healthGood
+                            : total < 8.0 ? healthWarn : healthBad;
         AnoTextRun runs[3] = {
             { (uint32_t)head, 22.0f, { 1.0f, 1.0f, 1.0f, 1.0f } },
             { (uint32_t)mid, 22.0f, { health[0], health[1], health[2], health[3] } },
@@ -174,7 +176,8 @@ void ano_collect_pick(uint32_t frameIndex) {
                                           : render_slots_render_id_of(&rendererState.slots, slot);
     if (rid == ANO_RENDER_SLOT_UNMAPPED) rid = ANO_RENDER_NO_PICK; // slot retired between draw and read
     if (rid != rendererState.lastPickRenderId) {
-        RenderEvent ev = { .kind = REVENT_PICK_RESULT, .u.pick_render_id = rid };
+        RenderEvent ev = { .kind = REVENT_PICK_RESULT };
+        ev.u.pick_render_id = rid;
         if (ano_render_emit_event(&rendererState.bridge, &ev))
             rendererState.lastPickRenderId = rid;
     }

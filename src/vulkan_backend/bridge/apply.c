@@ -127,9 +127,19 @@ static void stage_stream_frame(RendererState* state, uint32_t frameIndex)
         uint32_t fields = c->light_fields ? c->light_fields : ANO_LIGHT_FIELD_ALL;
         return !(fields & ANO_LIGHT_FIELD_TYPE) || (uint32_t)c->light.type < LIGHT_TYPE_COUNT;
     }
-    default:
+    case RCMD_DESTROY:
+    case RCMD_BULK_CREATE:
+    case RCMD_BULK_UPDATE:
+    case RCMD_BULK_DESTROY:
+    case RCMD_STREAM_TRANSFORMS:
+    case RCMD_LIGHT_DETACH:
+    case RCMD_TEXT_SET:
+    case RCMD_TEXT_CLEAR:
+    case RCMD_UI_SET:
+    case RCMD_UI_CLEAR:
         return true;
     }
+    return false;
 }
 
 
@@ -387,7 +397,8 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
         n = render_slots_collect_retired(&state->slots, state->globalFrame, retired, 64u);
         if (n) anyRetired = true;
         for (uint32_t i = 0; i < n; i++) {
-            RenderEvent ev = { .kind = REVENT_SLOT_RETIRED, .u.render_id = retired[i] };
+            RenderEvent ev = { .kind = REVENT_SLOT_RETIRED };
+            ev.u.render_id = retired[i];
             (void)ano_render_emit_event(&state->bridge, &ev);
         }
     } while (n == 64u);

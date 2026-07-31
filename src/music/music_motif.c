@@ -41,8 +41,11 @@ void ano_contour_offsets(AnoContourShape shape, uint32_t n, int span,
         case ANO_SHAPE_ASCENT:
             out[i] = (int)ano_music_round_int(span * i / (double)(n - 1));
             break;
-        default: // rising zigzag
+        case ANO_SHAPE_ZIGZAG:
             out[i] = (int)(i / 2) + (i % 2 ? 2 : 0);
+            break;
+        case ANO_SHAPE_COUNT:
+            out[i] = 0;
             break;
         }
     }
@@ -252,11 +255,13 @@ AnoMotif ano_motif_ornament(const AnoMotif *m, AnoMusicRng *rng)
 AnoMotif ano_motif_transform(const AnoMotif *m, AnoTransform t, int slots)
 {
     switch (t) {
+    case ANO_XFORM_IDENTITY:     return *m;
     case ANO_XFORM_INVERSION:    return ano_motif_invert(m);
     case ANO_XFORM_DISPLACEMENT: return ano_motif_displace(m, slots);
     case ANO_XFORM_TRUNCATION:   return ano_motif_truncate(m);
-    default:                     return *m;
+    case ANO_XFORM_COUNT:        return *m;
     }
+    return *m;
 }
 
 AnoMotif ano_phrase_variant(const AnoMotif *m, int pos, AnoMusicRng *rng, int slots,
@@ -293,10 +298,15 @@ AnoMotif ano_phrase_variant(const AnoMotif *m, int pos, AnoMusicRng *rng, int sl
     if (outOp)
         *outOp = op;
     switch (op) {
-    case ANO_VAR_INVERT:   return ano_motif_invert(m);
-    case ANO_VAR_DISPLACE: return ano_motif_displace(m, slots);
-    default:               return ano_motif_truncate(m);
+    case ANO_VAR_STATEMENT:
+    case ANO_VAR_SEQUENCE:
+    case ANO_VAR_RESTATEMENT: return *m;
+    case ANO_VAR_ORNAMENT:    return ano_motif_ornament(m, rng);
+    case ANO_VAR_INVERT:      return ano_motif_invert(m);
+    case ANO_VAR_DISPLACE:    return ano_motif_displace(m, slots);
+    case ANO_VAR_TRUNCATE:    return ano_motif_truncate(m);
     }
+    return *m;
 }
 
 uint8_t ano_lifecycle_advance(AnoMotifLifecycle *lc, bool spend, int phrase)

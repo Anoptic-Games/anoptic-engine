@@ -29,7 +29,7 @@ typedef struct {
 
 static const char *dup_bytes(mi_heap_t *heap, const char *src, size_t n)
 {
-    char *p = mi_heap_malloc(heap, n);
+    char *p = static_cast<char *>(mi_heap_malloc(heap, n));
     memcpy(p, src, n);
     return p;
 }
@@ -98,10 +98,11 @@ int main(int argc, char **argv)
     if (heap == NULL) { printf("mi_heap_new failed\n"); return 1; }
 
     test_rng rng = rng_make(0xBE5C0123u);
-    pair_t *inl   = mi_heap_malloc(heap, pairs * sizeof(pair_t));
-    pair_t *lng   = mi_heap_malloc(heap, pairs * sizeof(pair_t));
-    pair_t *shared = mi_heap_malloc(heap, pairs * sizeof(pair_t));
-    uint64_t *buf = mi_heap_malloc(heap, (pairs / BATCH + 1) * sizeof(uint64_t));
+    pair_t *inl = static_cast<pair_t *>(mi_heap_malloc(heap, pairs * sizeof(pair_t)));
+    pair_t *lng = static_cast<pair_t *>(mi_heap_malloc(heap, pairs * sizeof(pair_t)));
+    pair_t *shared = static_cast<pair_t *>(mi_heap_malloc(heap, pairs * sizeof(pair_t)));
+    uint64_t *buf = static_cast<uint64_t *>(
+        mi_heap_malloc(heap, (pairs / BATCH + 1) * sizeof(uint64_t)));
     if (!inl || !lng || !shared || !buf) { printf("alloc failed\n"); return 1; }
 
     for (uint32_t i = 0; i < pairs; i++) {

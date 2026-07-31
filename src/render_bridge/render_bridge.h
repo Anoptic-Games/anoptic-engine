@@ -19,7 +19,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <string.h>
 #include <mimalloc.h>
 #include <anoptic_memory.h> // ANO_CACHE_LINE / ANO_THREAD_LINE
@@ -64,8 +64,8 @@ typedef struct DisplayState
 // head/tail on separate ANO_THREAD_LINE regions; ring owner must match that align.
 typedef struct AnoSpscRing
 {
-    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t tail; // producer-owned: next write index
-    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t head; // consumer-owned: next read index
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) tail; // producer-owned: next write index
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) head; // consumer-owned: next read index
     _Alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1 (immutable after init)
     uint32_t                          stride;       // element size in bytes
     uint8_t                          *buffer;       // capacity * stride bytes
@@ -139,7 +139,7 @@ static inline bool ano_size_align_up(size_t *bytes, size_t align)
 // One producer per version; readers retry if version moved across the copy.
 // value: _Atomic word lane, sizeof(payload)/8 entries (asserted at the bridge).
 // Relaxed word copies; torn loads discarded by version recheck.
-static inline void ano_seqpub_store(_Atomic uint64_t *value, _Atomic uint64_t *version, const void *v, size_t stride)
+static inline void ano_seqpub_store(ANO_ATOMIC(uint64_t) *value, ANO_ATOMIC(uint64_t) *version, const void *v, size_t stride)
 {
     uint64_t s = atomic_load_explicit(version, memory_order_relaxed); // producer-owned version
     atomic_store_explicit(version, s + 1u, memory_order_relaxed);     // odd marker
@@ -153,7 +153,7 @@ static inline void ano_seqpub_store(_Atomic uint64_t *value, _Atomic uint64_t *v
 }
 
 // false (out untouched) if unpublished. Else copies an untorn value.
-static inline bool ano_seqpub_load(const _Atomic uint64_t *value, const _Atomic uint64_t *version, void *out, size_t stride)
+static inline bool ano_seqpub_load(const ANO_ATOMIC(uint64_t) *value, const ANO_ATOMIC(uint64_t) *version, void *out, size_t stride)
 {
     for (;;) {
         uint64_t s1 = atomic_load_explicit(version, memory_order_acquire);
@@ -172,7 +172,7 @@ static inline bool ano_seqpub_load(const _Atomic uint64_t *value, const _Atomic 
 
 /* Bridge */
 
-_Static_assert(sizeof(_Atomic uint64_t) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
+_Static_assert(sizeof(ANO_ATOMIC(uint64_t)) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
 _Static_assert(sizeof(RenderSnapshot) % 8u == 0, "seqlock lane copies whole 64-bit words");
 _Static_assert(sizeof(AnoViewState)   % 8u == 0, "seqlock lane copies whole 64-bit words");
 
@@ -185,10 +185,10 @@ struct AnoRenderBridge
     // Latest-wins lanes. snapshot: render->logic. viewState: logic->render.
     // Atomic word lanes; typed access only via publish/acquire copies.
     // One ANO_THREAD_LINE per direction; version leads its words.
-    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t snapshotVersion; // render publishes
-    _Atomic uint64_t snapshot[sizeof(RenderSnapshot) / sizeof(uint64_t)];
-    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t viewStateVersion; // logic publishes
-    _Atomic uint64_t viewState[sizeof(AnoViewState) / sizeof(uint64_t)];
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) snapshotVersion; // render publishes
+    ANO_ATOMIC(uint64_t) snapshot[sizeof(RenderSnapshot) / sizeof(uint64_t)];
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) viewStateVersion; // logic publishes
+    ANO_ATOMIC(uint64_t) viewState[sizeof(AnoViewState) / sizeof(uint64_t)];
     bool viewRejectWarned; // publisher-private: degenerate-pose warning once (never read by render)
 };
 

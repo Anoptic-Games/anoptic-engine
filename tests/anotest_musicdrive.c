@@ -67,7 +67,7 @@ typedef struct Drive
 static void drive_generator(void *user, float *const *busMix, uint32_t busCount,
                             uint32_t frames, uint64_t startFrame)
 {
-    Drive *d = user;
+    Drive *d = static_cast<Drive *>(user);
     ano_synth_generator(d->synth, busMix, busCount, frames, startFrame);
 
     AnoAudioEvent e[8];
@@ -81,7 +81,7 @@ static void drive_generator(void *user, float *const *busMix, uint32_t busCount,
 // Same user ptr for generator + control (Drive wraps both; synth refuses wrong magic).
 static void drive_control(void *user, const AnoAudioCommand *cmd)
 {
-    Drive *d = user;
+    Drive *d = static_cast<Drive *>(user);
     ano_synth_control(d->synth, cmd);
 }
 
@@ -169,8 +169,10 @@ int main(void)
     CHECK(frames > RATE, "score has length");
     ano_synth_transport_start(batch, 0);
 
-    float *bufA = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufA);
-    float *bufB = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufB);
+    float *bufA = static_cast<float *>(
+        calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufA));
+    float *bufB = static_cast<float *>(
+        calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufB));
     CHECK(bufA && bufB, "render buffers");
 
     AnoAudioOfflineDesc od = {
@@ -269,7 +271,8 @@ int main(void)
     // --- control plane: ACMD_MUSIC_* via offline command list ---
     {
         static Drive steered;
-        float *bufC = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufC);
+        float *bufC = static_cast<float *>(
+            calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufC));
         CHECK(bufC != NULL, "steer buffer");
 
         // Away from baseline tonic so arrival is unambiguous.
@@ -278,11 +281,11 @@ int main(void)
         AnoAudioOfflineEvent cmds[] = {
             { .frame = BLOCK, .cmd = { .kind = ACMD_MUSIC_KEY, .paramId = (uint32_t)away,
                                        .urgent = true } },
-            { .frame = BLOCK, .cmd = { .kind = ACMD_MUSIC_OVERRIDE, .tag = "reverb_send",
-                                       .value = 0.9f } },
+            { .frame = BLOCK, .cmd = { .kind = ACMD_MUSIC_OVERRIDE, .value = 0.9f,
+                                       .tag = "reverb_send" } },
             // Unknown tag: refused + logged.
-            { .frame = BLOCK, .cmd = { .kind = ACMD_MUSIC_OVERRIDE, .tag = "revreb_send",
-                                       .value = 0.9f } },
+            { .frame = BLOCK, .cmd = { .kind = ACMD_MUSIC_OVERRIDE, .value = 0.9f,
+                                       .tag = "revreb_send" } },
         };
         render_driven(&cfg, &od, bufC, frames, cmds, 3, true, &steered);
 
@@ -306,7 +309,8 @@ int main(void)
 
         // No control hook: same cmds change nothing (mixer does not interpret).
         static Drive ignored;
-        float *bufD = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufD);
+        float *bufD = static_cast<float *>(
+            calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufD));
         render_driven(&cfg, &od, bufD, frames, cmds, 3, false, &ignored);
         CHECK(memcmp(bufB, bufD, (size_t)frames * ANO_AUDIO_CHANNELS * sizeof *bufB) == 0,
               "with no control hook, the mixer changes no music of its own");
@@ -322,8 +326,10 @@ int main(void)
 #define SEEK_TO 40u
     {
         static Drive seeked, direct;
-        float *bufE = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufE);
-        float *bufF = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufF);
+        float *bufE = static_cast<float *>(
+            calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufE));
+        float *bufF = static_cast<float *>(
+            calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufF));
         CHECK(bufE && bufF, "seek buffers");
 
         // Producer: fast-forward + snapshot.
@@ -363,7 +369,8 @@ int main(void)
 
         // --- mid-flight: pre-seek audio untouched ---
         static Drive jumped;
-        float *bufG = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufG);
+        float *bufG = static_cast<float *>(
+            calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufG));
         uint64_t at = (uint64_t)(ano_synth_time_at(batch, 6.0 * BQ) * RATE) - BLOCK;
         AnoAudioOfflineEvent seekMid[] = {
             { .frame = at, .cmd = { .kind = ACMD_MUSIC_SEEK, .block = snap } },
@@ -394,7 +401,8 @@ int main(void)
 
         // --- other meter refused; running music untouched ---
         static Drive kept;
-        float *bufH = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufH);
+        float *bufH = static_cast<float *>(
+            calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufH));
         AnoMusicConfig waltz = cfg;
         waltz.meter = (AnoMeter){ 3, 4 };
         AnoMusicEngine *w = ano_music_create(&waltz, 42);

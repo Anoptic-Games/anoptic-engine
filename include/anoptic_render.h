@@ -31,6 +31,10 @@ It is the bridge betwixt engine <===> renderer.
 #include <anoptic_text.h> // AnoFontBake, AnoGlyphInstance (logic-side text shaping)
 #include <anoptic_ui.h>   // AnoUiPrim/Clip/Paint/Stop + builder (logic-side UI layout)
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // ---------------------------------------------------------------------------
 // Renderer lifecycle (render world; runs on the main thread)
 // ---------------------------------------------------------------------------
@@ -535,5 +539,9 @@ int32_t ano_render_get_shadow_lod_bias(void);
 // Next frame; render thread. Bad view ignored.
 void ano_render_set_view_hiz_enable(uint32_t view, bool enable);
 bool ano_render_get_view_hiz_enable(uint32_t view);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // ANOPTIC_RENDER_H

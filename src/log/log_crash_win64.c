@@ -14,7 +14,7 @@
 #include <windows.h>
 
 #include <signal.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>

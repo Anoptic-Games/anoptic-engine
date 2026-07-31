@@ -17,6 +17,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Primitive Kinds */
 
@@ -308,5 +312,9 @@ uint32_t ano_ui_tile_build(const AnoUiScene *s, int32_t ox, int32_t oy,
 void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
                            uint32_t tilesX, uint32_t tilesY, const uint32_t *offsets,
                            const uint32_t *entries, int32_t px, int32_t py, float out[4]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

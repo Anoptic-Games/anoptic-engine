@@ -136,8 +136,14 @@ void deferred_delete_resource(RendererState* state, DeletionResourceType type, u
     DeletionQueue* q = &state->frames[frameIdx].deletionQueue;
 
     if (q->count >= q->capacity) {
-        q->capacity = q->capacity == 0 ? 64 : q->capacity * 2;
-        q->tasks = realloc(q->tasks, q->capacity * sizeof(DeletionTask));
+        uint32_t capacity = q->capacity == 0 ? 64u : q->capacity * 2u;
+        DeletionTask* tasks = static_cast<DeletionTask*>(realloc(q->tasks, capacity * sizeof(DeletionTask)));
+        if (!tasks) {
+            ano_log(ANO_ERROR, "Host OOM: failed to grow deferred deletion queue.");
+            return;
+        }
+        q->tasks = tasks;
+        q->capacity = capacity;
     }
 
     q->tasks[q->count++] = (DeletionTask){ .type = type, .handle = handle };
@@ -271,7 +277,11 @@ void drawFrame()
 	if (rendererState.asyncLc)
 		vkResetCommandBuffer(rendererState.frames[rendererState.frameIndex].preludeCommandBuffer, 0);
 	// Refused begin/end: nothing was recorded past the refusal, so skip this frame's submit and present.
-	if (!recordCommandBuffer(imageIndex)) goto discharge;
+	if (!recordCommandBuffer(imageIndex))
+	{
+		dischargeAcquire(rendererState.frameIndex);
+		return;
+	}
 
 	//updateUniformBuffer(&ctx, &rendererState);
 
@@ -297,7 +307,11 @@ void drawFrame()
 	ano_vk_text_submit_async(&ctx, &rendererState, rendererState.frameIndex, ordinal);
 
 	// Graphics submit. Refused: nothing is in flight and the acquire is still owed a wait.
-	if (!ano_frame_submit(ordinal)) goto discharge;
+	if (!ano_frame_submit(ordinal))
+	{
+		dischargeAcquire(rendererState.frameIndex);
+		return;
+	}
 
 	// Submitted: the fence is armed and imageAvailable consumed, whatever presentation answers.
 	rendererState.frames[rendererState.frameIndex].frameSubmitted = true;
@@ -341,9 +355,6 @@ void drawFrame()
 
 	ano_frame_mark(); // Wall-clock fps/frametime, presented frames only.
 	return;
-
-discharge:
-	dischargeAcquire(rendererState.frameIndex);
 }
 
 
@@ -411,7 +422,7 @@ bool initVulkan() // Initializes Vulkan
 	DeviceCapabilities capabilities;
 	ctx.physicalDevice = VK_NULL_HANDLE;
 
-	char* preferredDevice = getChosenDevice();
+	const char* preferredDevice = getChosenDevice();
 	if (!pickPhysicalDevice(&ctx, &capabilities, &(ctx.queueFamilyIndices), preferredDevice))
 	{
 		g_AnoVkNoSuitableGpu = true;
@@ -677,8 +688,8 @@ bool initVulkan() // Initializes Vulkan
 	                    MAX_FRAMES_IN_FLIGHT);
 
 	// Stream render_id ring, CPU-only, parallel to xformRing.
-	rendererState.transformStream.idRing = mi_heap_malloc(rendererState.renderHeap,
-	    (size_t)rendererState.transformStream.ringSlices * STREAM_CAPACITY * sizeof(uint32_t));
+	rendererState.transformStream.idRing = static_cast<uint32_t*>(mi_heap_malloc(rendererState.renderHeap,
+	    (size_t)rendererState.transformStream.ringSlices * STREAM_CAPACITY * sizeof(uint32_t)));
 	if (!rendererState.transformStream.idRing)
 	{
 		ano_log(ANO_FATAL, "Quitting init: stream id ring allocation failure!");
@@ -762,4 +773,3 @@ bool initVulkan() // Initializes Vulkan
 
 	return true;
 }
-

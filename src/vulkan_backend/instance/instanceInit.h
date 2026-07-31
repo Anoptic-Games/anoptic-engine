@@ -32,7 +32,7 @@ void enumerateMonitors(Monitors* monitors);
 VkResult createSurface(VkInstance instance, GLFWwindow *window, VkSurfaceKHR *surface);
 
 // Selects the optimal graphics device
-bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice);
+bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, const char* preferredDevice);
 
 // Populates physical device capabilities
 struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device);
@@ -41,7 +41,7 @@ struct DeviceCapabilities populateCapabilities(VkPhysicalDevice device);
 VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, VkQueue* graphicsQueue, VkQueue* computeQueue, VkQueue* transferQueue, VkQueue* presentQueue, struct QueueFamilyIndices* indices);
 
 // Initializes a swap chain
-bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, uint32_t preferredMode, VkSwapchainKHR oldSwapChain, RendererState* state);
+bool initSwapChain(VulkanContext* ctx, GLFWwindow* window, VkPresentModeKHR preferredMode, VkSwapchainKHR oldSwapChain, RendererState* state);
 
 void recreateSwapChain(VulkanContext* ctx, GLFWwindow* window);
 

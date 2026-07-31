@@ -62,12 +62,15 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
 
             // Depth write->read hazard.
             if (pass->depthBarrierBefore) {
-                VkImageMemoryBarrier depthWaw = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                    .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = vr->depthImage, .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 } };
+                VkImageMemoryBarrier depthWaw = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                depthWaw.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                depthWaw.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                depthWaw.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                depthWaw.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                depthWaw.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                depthWaw.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                depthWaw.image = vr->depthImage;
+                depthWaw.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                     0, 0, NULL, 0, NULL, 1, &depthWaw);
             }
@@ -206,12 +209,15 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
 
         // Copy the cursor texel from view 0's resolved id image into this frame's readback buffer. Skip on a degenerate extent.
         if (v == 0 && rendererState.imageExtent.width > 0 && rendererState.imageExtent.height > 0) {
-            VkImageMemoryBarrier toSrc = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = vr->pickIdResolveImage,
-                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+            VkImageMemoryBarrier toSrc = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toSrc.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            toSrc.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toSrc.image = vr->pickIdResolveImage;
+            toSrc.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 0, NULL, 0, NULL, 1, &toSrc);
 
@@ -226,12 +232,15 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
             vkCmdCopyImageToBuffer(cmd, vr->pickIdResolveImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 rendererState.frames[rendererState.frameIndex].pickReadback, 1, &region);
 
-            VkImageMemoryBarrier toColor = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = vr->pickIdResolveImage,
-                .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+            VkImageMemoryBarrier toColor = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            toColor.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            toColor.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            toColor.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            toColor.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toColor.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toColor.image = vr->pickIdResolveImage;
+            toColor.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                 0, 0, NULL, 0, NULL, 1, &toColor);
         }

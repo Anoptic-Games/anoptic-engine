@@ -201,7 +201,7 @@ static void kb_bytes(key_buf_t *kb, const void *src, size_t n)
         size_t cap = kb->cap ? kb->cap : 256;
         while (cap < kb->n + n)
             cap *= 2;
-        uint8_t *fresh = mi_realloc(kb->p, cap);
+        uint8_t *fresh = static_cast<uint8_t *>(mi_realloc(kb->p, cap));
         if (fresh == NULL) {
             kb->oom = true;
             return;
@@ -265,24 +265,25 @@ typedef struct sort_rec_t {
 static_assert(sizeof(sort_rec_t) == sizeof(anostr_t),
               "the radix ping-pong buffer doubles as the gather buffer");
 
-// Maps a record index back to its string.
-typedef anostr_t (*rec_str_fn_t)(const void *ctx, uint32_t idx);
+// Compile-time accessors keep record lookup out of the recursive hot path.
+struct item_strings_t {
+    const anostr_t *items;
 
-static anostr_t rec_str_items_(const void *ctx, uint32_t idx)
-{
-    return ((const anostr_t *)ctx)[idx];
-}
+    anostr_t operator()(uint32_t idx) const
+    {
+        return items[idx];
+    }
+};
 
-typedef struct sym_ctx_t {
+struct sym_strings_t {
     const anostr_intern_t *t;
     const anostr_sym      *syms;
-} sym_ctx_t;
 
-static anostr_t rec_str_syms_(const void *ctx, uint32_t idx)
-{
-    const sym_ctx_t *c = ctx;
-    return anostr_sym_str(c->t, c->syms[idx]);
-}
+    anostr_t operator()(uint32_t idx) const
+    {
+        return anostr_sym_str(t, syms[idx]);
+    }
+};
 
 // Stable: strict > only.
 static void sort_recs_insertion(sort_rec_t *a, size_t n)
@@ -334,13 +335,14 @@ static void sort_recs(sort_rec_t *a, sort_rec_t *tmp, size_t n)
 }
 
 // Small key-equal runs: stable insertion on streaming collate.
-static void tie_insertion(sort_rec_t *r, size_t n, rec_str_fn_t str_of, const void *ctx)
+template<class StrOf>
+static void tie_insertion(sort_rec_t *r, size_t n, const StrOf &str_of)
 {
     for (size_t i = 1; i < n; i++) {
         sort_rec_t cur = r[i];
-        anostr_t   cs = str_of(ctx, cur.idx);
+        anostr_t   cs = str_of(cur.idx);
         size_t j = i;
-        while (j > 0 && anostr_collate(str_of(ctx, r[j - 1].idx), cs) > 0) {
+        while (j > 0 && anostr_collate(str_of(r[j - 1].idx), cs) > 0) {
             r[j] = r[j - 1];
             j--;
         }
@@ -358,7 +360,8 @@ typedef struct tie_view_t {
 
 static int tie_view_cmp_(const void *a, const void *b)
 {
-    const tie_view_t *x = a, *y = b;
+    const tie_view_t *x = static_cast<const tie_view_t *>(a);
+    const tie_view_t *y = static_cast<const tie_view_t *>(b);
     size_t n = x->klen < y->klen ? x->klen : y->klen;
     int c = memcmp(x->key, y->key, n);
     if (c != 0)
@@ -369,15 +372,16 @@ static int tie_view_cmp_(const void *a, const void *b)
 }
 
 // Large key-equal runs: full sort keys into one buffer, memcmp settles. False on alloc fail.
-static bool tie_bulk(sort_rec_t *r, size_t n, rec_str_fn_t str_of, const void *ctx)
+template<class StrOf>
+static bool tie_bulk(sort_rec_t *r, size_t n, const StrOf &str_of)
 {
-    tie_view_t *views = mi_malloc(n * sizeof *views);
+    tie_view_t *views = static_cast<tie_view_t *>(mi_malloc(n * sizeof *views));
     if (views == NULL)
         return false;
 
     key_buf_t kb = {0}, l2 = {0}, l3 = {0};
     for (size_t i = 0; i < n; i++) {
-        collate_key_emit(&kb, &l2, &l3, str_of(ctx, r[i].idx));
+        collate_key_emit(&kb, &l2, &l3, str_of(r[i].idx));
         views[i].klen = kb.n;   // running end -> length below
         views[i].idx = r[i].idx;
     }
@@ -409,45 +413,47 @@ static bool tie_bulk(sort_rec_t *r, size_t n, rec_str_fn_t str_of, const void *c
 // Exhausted/deep runs fall back to full keys or streaming.
 enum { TIE_MSD_MAX_SKIP = 256 };    // this deep: build full keys instead
 
-static void tie_leaf(sort_rec_t *r, size_t n, rec_str_fn_t str_of, const void *ctx)
+template<class StrOf>
+static void tie_leaf(sort_rec_t *r, size_t n, const StrOf &str_of)
 {
-    if (n < TIE_BULK_MIN || !tie_bulk(r, n, str_of, ctx))
-        tie_insertion(r, n, str_of, ctx);
+    if (n < TIE_BULK_MIN || !tie_bulk(r, n, str_of))
+        tie_insertion(r, n, str_of);
 }
 
-static void tie_msd(sort_rec_t *r, size_t n, uint32_t skip, rec_str_fn_t str_of, const void *ctx)
+template<class StrOf>
+static void tie_msd(sort_rec_t *r, size_t n, uint32_t skip, const StrOf &str_of)
 {
     if (n < 2)
         return;
 
-    anostr_t first = str_of(ctx, r[0].idx);
+    anostr_t first = str_of(r[0].idx);
     bool allSame = true;
     for (size_t i = 1; i < n && allSame; i++)
-        allSame = anostr_eq(first, str_of(ctx, r[i].idx));
+        allSame = anostr_eq(first, str_of(r[i].idx));
     if (allSame)
         return;     // duplicates, input order stands
 
     if (skip >= TIE_MSD_MAX_SKIP) {
-        tie_leaf(r, n, str_of, ctx);
+        tie_leaf(r, n, str_of);
         return;
     }
 
     bool anyWeight = false;
     for (size_t i = 0; i < n; i++) {
-        r[i].key = collate_prefix_skip(str_of(ctx, r[i].idx), skip);
+        r[i].key = collate_prefix_skip(str_of(r[i].idx), skip);
         anyWeight = anyWeight || r[i].key != 0;
     }
     if (!anyWeight) {   // primaries exhausted: levels 2/3/bytes decide
-        tie_leaf(r, n, str_of, ctx);
+        tie_leaf(r, n, str_of);
         return;
     }
 
     if (n <= 48) {
         sort_recs_insertion(r, n);
     } else {
-        sort_rec_t *tmp = mi_malloc(n * sizeof *tmp);
+        sort_rec_t *tmp = static_cast<sort_rec_t *>(mi_malloc(n * sizeof *tmp));
         if (tmp == NULL) {
-            tie_leaf(r, n, str_of, ctx);
+            tie_leaf(r, n, str_of);
             return;
         }
         sort_recs(r, tmp, n);
@@ -458,43 +464,46 @@ static void tie_msd(sort_rec_t *r, size_t n, uint32_t skip, rec_str_fn_t str_of,
         size_t hi = lo + 1;
         while (hi < n && r[hi].key == r[lo].key)
             hi++;
-        tie_msd(r + lo, hi - lo, skip + 4, str_of, ctx);
+        tie_msd(r + lo, hi - lo, skip + 4, str_of);
         lo = hi;
     }
 }
 
-static void resolve_ties(sort_rec_t *recs, size_t n, rec_str_fn_t str_of, const void *ctx)
+template<class StrOf>
+static void resolve_ties(sort_rec_t *recs, size_t n, const StrOf &str_of)
 {
     for (size_t lo = 0; lo < n; ) {
         size_t hi = lo + 1;
         while (hi < n && recs[hi].key == recs[lo].key)
             hi++;
-        tie_msd(recs + lo, hi - lo, 4, str_of, ctx);
+        tie_msd(recs + lo, hi - lo, 4, str_of);
         lo = hi;
     }
 }
 
 // Already sorted? Keys nondecreasing; equal-key neighbors pay a streaming collate.
-static bool recs_presorted(const sort_rec_t *recs, size_t n, rec_str_fn_t str_of, const void *ctx)
+template<class StrOf>
+static bool recs_presorted(const sort_rec_t *recs, size_t n, const StrOf &str_of)
 {
     for (size_t i = 1; i < n; i++) {
         if (recs[i - 1].key > recs[i].key)
             return false;
         if (recs[i - 1].key == recs[i].key &&
-            anostr_collate(str_of(ctx, recs[i - 1].idx), str_of(ctx, recs[i].idx)) > 0)
+            anostr_collate(str_of(recs[i - 1].idx), str_of(recs[i].idx)) > 0)
             return false;
     }
     return true;
 }
 
 // Fills recs into sorted order. True if already sorted.
+template<class StrOf>
 static bool collate_sort_core(sort_rec_t *recs, sort_rec_t *tmp, size_t n,
-                              rec_str_fn_t str_of, const void *ctx)
+                              const StrOf &str_of)
 {
-    if (recs_presorted(recs, n, str_of, ctx))
+    if (recs_presorted(recs, n, str_of))
         return true;
     sort_recs(recs, tmp, n);
-    resolve_ties(recs, n, str_of, ctx);
+    resolve_ties(recs, n, str_of);
     return false;
 }
 
@@ -541,7 +550,9 @@ void anostr_sort(anostr_t *items, size_t count)
 {
     if (items == NULL || count < 2)
         return;
-    sort_rec_t *recs = count <= UINT32_MAX ? mi_malloc(2 * count * sizeof *recs) : NULL;
+    sort_rec_t *recs = count <= UINT32_MAX
+                     ? static_cast<sort_rec_t *>(mi_malloc(2 * count * sizeof *recs))
+                     : NULL;
     if (recs == NULL) {     // no scratch: correct, slower
         collate_insertion(items, count);
         return;
@@ -551,7 +562,7 @@ void anostr_sort(anostr_t *items, size_t count)
     for (size_t i = 0; i < count; i++)
         recs[i] = (sort_rec_t){ anostr_collate_prefix(items[i]), (uint32_t)i, 0 };
 
-    if (!collate_sort_core(recs, tmp, count, rec_str_items_, items)) {
+    if (!collate_sort_core(recs, tmp, count, item_strings_t{items})) {
         anostr_t *gather = (anostr_t *)tmp;     // radix scratch, now free
         for (size_t i = 0; i < count; i++)
             gather[i] = items[recs[i].idx];
@@ -569,7 +580,7 @@ void anostr_sort_idx(const anostr_t *items, size_t count, uint32_t *order)
     if (items == NULL || count < 2 || count > UINT32_MAX)
         return;
 
-    sort_rec_t *recs = mi_malloc(2 * count * sizeof *recs);
+    sort_rec_t *recs = static_cast<sort_rec_t *>(mi_malloc(2 * count * sizeof *recs));
     if (recs == NULL) {
         fb_items_ = items;
         qsort(order, count, sizeof order[0], fb_order_cmp_);
@@ -578,7 +589,7 @@ void anostr_sort_idx(const anostr_t *items, size_t count, uint32_t *order)
     for (size_t i = 0; i < count; i++)
         recs[i] = (sort_rec_t){ anostr_collate_prefix(items[i]), (uint32_t)i, 0 };
 
-    if (!collate_sort_core(recs, recs + count, count, rec_str_items_, items))
+    if (!collate_sort_core(recs, recs + count, count, item_strings_t{items}))
         for (size_t i = 0; i < count; i++)
             order[i] = recs[i].idx;
     mi_free(recs);
@@ -590,8 +601,8 @@ static const uint64_t *sym_key_cache(anostr_intern_t *t)
     if (t->collateKeyed >= t->count)
         return t->collateKeys;
     if (t->collateKeyCap < t->count) {
-        uint64_t *fresh = mi_heap_realloc(t->heap, t->collateKeys,
-                                          (size_t)t->arrCap * sizeof *fresh);
+        uint64_t *fresh = static_cast<uint64_t *>(
+            mi_heap_realloc(t->heap, t->collateKeys, (size_t)t->arrCap * sizeof *fresh));
         if (fresh == NULL)
             return NULL;
         t->collateKeys = fresh;
@@ -607,7 +618,9 @@ void anostr_sym_sort(anostr_intern_t *t, anostr_sym *syms, size_t count)
 {
     if (t == NULL || syms == NULL || count < 2)
         return;
-    sort_rec_t *recs = count <= UINT32_MAX ? mi_malloc(2 * count * sizeof *recs) : NULL;
+    sort_rec_t *recs = count <= UINT32_MAX
+                     ? static_cast<sort_rec_t *>(mi_malloc(2 * count * sizeof *recs))
+                     : NULL;
     if (recs == NULL) {
         sym_insertion(t, syms, count);
         return;
@@ -623,8 +636,7 @@ void anostr_sym_sort(anostr_intern_t *t, anostr_sym *syms, size_t count)
         recs[i] = (sort_rec_t){ key, (uint32_t)i, 0 };
     }
 
-    sym_ctx_t ctx = { t, syms };
-    if (!collate_sort_core(recs, tmp, count, rec_str_syms_, &ctx)) {
+    if (!collate_sort_core(recs, tmp, count, sym_strings_t{t, syms})) {
         anostr_sym *gather = (anostr_sym *)tmp;
         for (size_t i = 0; i < count; i++)
             gather[i] = syms[recs[i].idx];

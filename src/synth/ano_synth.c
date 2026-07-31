@@ -16,57 +16,6 @@
 #include <anoptic_time.h>
 
 
-/* Patch Registry */
-
-static const char *const PATCH_NAMES[ANO_SYNTH_PATCH_COUNT] = {
-    "", "warm", "bright", "morph", "breeze", "round", "driven", "bad_ground",
-    "soft", "hard", "mellow", "keys", "whistle", "pluck", "glass", "chimes",
-};
-
-// AnoPatchName -> AnoSynthPatch. Explicit map; _Static_assert on count drift.
-static const uint8_t PATCH_OF_MUSIC[ANO_PATCH_COUNT] = {
-    [ANO_PATCH_NONE]       = ANO_SYNTH_PATCH_DEFAULT,
-    [ANO_PATCH_WARM]       = ANO_SYNTH_PATCH_WARM,
-    [ANO_PATCH_BRIGHT]     = ANO_SYNTH_PATCH_BRIGHT,
-    [ANO_PATCH_MORPH]      = ANO_SYNTH_PATCH_MORPH,
-    [ANO_PATCH_BREEZE]     = ANO_SYNTH_PATCH_BREEZE,
-    [ANO_PATCH_ROUND]      = ANO_SYNTH_PATCH_ROUND,
-    [ANO_PATCH_DRIVEN]     = ANO_SYNTH_PATCH_DRIVEN,
-    [ANO_PATCH_BAD_GROUND] = ANO_SYNTH_PATCH_BAD_GROUND,
-    [ANO_PATCH_SOFT]       = ANO_SYNTH_PATCH_SOFT,
-    [ANO_PATCH_HARD]       = ANO_SYNTH_PATCH_HARD,
-    [ANO_PATCH_MELLOW]     = ANO_SYNTH_PATCH_MELLOW,
-    [ANO_PATCH_KEYS]       = ANO_SYNTH_PATCH_KEYS,
-    [ANO_PATCH_WHISTLE]    = ANO_SYNTH_PATCH_WHISTLE,
-    [ANO_PATCH_PLUCK]      = ANO_SYNTH_PATCH_PLUCK,
-    [ANO_PATCH_GLASS]      = ANO_SYNTH_PATCH_GLASS,
-    [ANO_PATCH_CHIMES]     = ANO_SYNTH_PATCH_CHIMES,
-};
-_Static_assert(ANO_PATCH_COUNT == 16,
-               "a new AnoPatchName needs a synth patch to play it (PATCH_OF_MUSIC)");
-
-uint32_t ano_synth_patch_id(const char *name)
-{
-    if (!name)
-        return 0;
-    for (uint32_t i = 1; i < ANO_SYNTH_PATCH_COUNT; ++i)
-        if (strcmp(name, PATCH_NAMES[i]) == 0)
-            return i;
-    return 0;
-}
-
-const char *ano_synth_patch_name(uint32_t id)
-{
-    return id < ANO_SYNTH_PATCH_COUNT ? PATCH_NAMES[id] : "";
-}
-
-uint32_t ano_synth_patch_of(uint32_t musicPatch)
-{
-    return musicPatch < ANO_PATCH_COUNT ? PATCH_OF_MUSIC[musicPatch]
-                                        : ANO_SYNTH_PATCH_DEFAULT;
-}
-
-
 /* Lifecycle */
 
 AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
@@ -79,7 +28,8 @@ AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
     if (!heap)
         return NULL;
     // zalloc_aligned: honors _Alignas(ANO_THREAD_LINE) members
-    AnoSynth *s = mi_heap_zalloc_aligned(heap, sizeof *s, _Alignof(AnoSynth));
+    AnoSynth *s = static_cast<AnoSynth *>(
+        mi_heap_zalloc_aligned(heap, sizeof *s, _Alignof(AnoSynth)));
     if (!s) {
         mi_heap_destroy(heap);
         return NULL;
@@ -92,19 +42,23 @@ AnoSynth *ano_synth_create(const AnoSynthDesc *desc)
     atomic_init(&s->startFrame, ANO_SYNTH_IDLE);
     atomic_init(&s->transportEpoch, 0u); // epochSeen 0 via calloc
 
-    s->voices   = mi_heap_calloc(heap, voices, sizeof *s->voices);
-    s->duckGain = mi_heap_calloc(heap, ANO_SYNTH_SPAN_MAX, sizeof(float));
-    s->wtBank   = mi_heap_calloc(heap, (size_t)ANO_SYNTH_WT_FRAMES * ANO_SYNTH_WT_LEN,
-                                 sizeof(float));
+    s->voices   = static_cast<AnoSynthVoice *>(
+        mi_heap_calloc(heap, voices, sizeof *s->voices));
+    s->duckGain = static_cast<float *>(
+        mi_heap_calloc(heap, ANO_SYNTH_SPAN_MAX, sizeof(float)));
+    s->wtBank   = static_cast<float *>(
+        mi_heap_calloc(heap, (size_t)ANO_SYNTH_WT_FRAMES * ANO_SYNTH_WT_LEN,
+                       sizeof(float)));
     s->bellFrames = (uint64_t)(1.6f * (float)rate);
-    s->bell       = mi_heap_calloc(heap, s->bellFrames, sizeof(float));
+    s->bell       = static_cast<float *>(
+        mi_heap_calloc(heap, s->bellFrames, sizeof(float)));
 
     // shimmer history: 2 s, power-of-two
     uint32_t cap = 1;
     while (cap < rate * 2u)
         cap <<= 1;
     s->grainCap  = cap;
-    s->grainRing = mi_heap_calloc(heap, cap, sizeof(float));
+    s->grainRing = static_cast<float *>(mi_heap_calloc(heap, cap, sizeof(float)));
 
     if (!s->voices || !s->duckGain || !s->wtBank || !s->bell || !s->grainRing) {
         mi_heap_destroy(heap);
@@ -203,10 +157,18 @@ bool ano_synth_score_begin(AnoSynth *s, double barQuarters, uint32_t barCount,
     s->rawCap      = eventCount;
     s->noteCap     = eventCount;
     s->anchorMask = s->barMask = s->noteMask = UINT32_MAX; // batch: plain arrays
-    s->anchors = mi_heap_calloc(s->heap, s->anchorCap, sizeof *s->anchors);
-    s->bars    = mi_heap_calloc(s->heap, s->barCap, sizeof *s->bars);
-    s->raw     = eventCount ? mi_heap_calloc(s->heap, s->rawCap, sizeof *s->raw) : NULL;
-    s->notes   = eventCount ? mi_heap_calloc(s->heap, s->rawCap, sizeof *s->notes) : NULL;
+    s->anchors = static_cast<AnoSynthAnchor *>(
+        mi_heap_calloc(s->heap, s->anchorCap, sizeof *s->anchors));
+    s->bars = static_cast<AnoSynthBar *>(
+        mi_heap_calloc(s->heap, s->barCap, sizeof *s->bars));
+    s->raw = eventCount
+        ? static_cast<AnoNoteEvent *>(
+            mi_heap_calloc(s->heap, s->rawCap, sizeof *s->raw))
+        : NULL;
+    s->notes = eventCount
+        ? static_cast<AnoSynthNote *>(
+            mi_heap_calloc(s->heap, s->rawCap, sizeof *s->notes))
+        : NULL;
     if (!s->anchors || !s->bars || (eventCount && (!s->raw || !s->notes)))
         return false;
     s->anchors[0]   = (AnoSynthAnchor){ 0.0, 0.0, 100.0 };
@@ -285,7 +247,8 @@ static uint32_t merge_ties(AnoSynth *s)
 
 static int note_cmp(const void *a, const void *b)
 {
-    const AnoSynthNote *x = a, *y = b;
+    const AnoSynthNote *x = static_cast<const AnoSynthNote *>(a);
+    const AnoSynthNote *y = static_cast<const AnoSynthNote *>(b);
     if (x->frame != y->frame)
         return x->frame < y->frame ? -1 : 1;
     return x->seq < y->seq ? -1 : x->seq > y->seq ? 1 : 0;
@@ -360,9 +323,12 @@ bool ano_synth_live_begin(AnoSynth *s, double barQuarters)
     s->anchorMask  = LIVE_ANCHORS - 1u;
     s->barMask     = LIVE_BARS - 1u;
     s->noteMask    = LIVE_NOTES - 1u;
-    s->anchors = mi_heap_calloc(s->heap, s->anchorCap, sizeof *s->anchors);
-    s->bars    = mi_heap_calloc(s->heap, s->barCap, sizeof *s->bars);
-    s->notes   = mi_heap_calloc(s->heap, s->noteCap, sizeof *s->notes);
+    s->anchors = static_cast<AnoSynthAnchor *>(
+        mi_heap_calloc(s->heap, s->anchorCap, sizeof *s->anchors));
+    s->bars = static_cast<AnoSynthBar *>(
+        mi_heap_calloc(s->heap, s->barCap, sizeof *s->bars));
+    s->notes = static_cast<AnoSynthNote *>(
+        mi_heap_calloc(s->heap, s->noteCap, sizeof *s->notes));
     if (!s->anchors || !s->bars || !s->notes)
         return false;
 
@@ -574,7 +540,7 @@ static bool music_seek(AnoSynth *s, const void *snapshot)
 {
     if (!s->music || !s->live || !snapshot)
         return false;
-    const AnoMusicEngine *incoming = snapshot;
+    const AnoMusicEngine *incoming = static_cast<const AnoMusicEngine *>(snapshot);
     if (fabs(ano_music_bar_quarters(incoming) - s->barQuarters) > 1e-9)
         return false;
     if (!ano_music_restore(s->music, snapshot, ano_music_snapshot_size()))
@@ -602,7 +568,8 @@ static bool music_seek(AnoSynth *s, const void *snapshot)
             break;
 
     // Handshake: producer block free. Audible change = next AEVT_MUSIC_BAR.
-    AnoAudioEvent e = { .kind = AEVT_MUSIC_SEEKED, .u.seekedBar = adopted };
+    AnoAudioEvent e = { .kind = AEVT_MUSIC_SEEKED };
+    e.u.seekedBar = adopted;
     synth_emit(s, &e);
     return true;
 }
@@ -623,7 +590,7 @@ uint32_t ano_synth_music_bar_us_max(const AnoSynth *s)
 // All four hooks share .generatorUser. Wrong pointer: warn once, no-op.
 static AnoSynth *synth_of(void *user, const char *hook)
 {
-    AnoSynth *s = user;
+    AnoSynth *s = static_cast<AnoSynth *>(user);
     if (s && s->magic == ANO_SYNTH_MAGIC)
         return s;
     static bool told;
@@ -705,9 +672,17 @@ bool ano_music_apply_command(AnoMusicEngine *e, const AnoAudioCommand *cmd)
     case ACMD_MUSIC_RELEASE:
         ano_music_clear_override(e, tag);
         return true;
-    default:
-        return false; // SEEK not an engine self-apply
+    case ACMD_SOURCE_PLAY:
+    case ACMD_SOURCE_UPDATE:
+    case ACMD_SOURCE_STOP:
+    case ACMD_BUS_SET:
+    case ACMD_FX_SET:
+    case ACMD_BUFFER_REGISTER:
+    case ACMD_BUFFER_RELEASE:
+    case ACMD_MUSIC_SEEK:
+        return false;
     }
+    return false;
 }
 
 void ano_synth_control(void *user, const AnoAudioCommand *cmd)
@@ -828,8 +803,7 @@ static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
     s->grain.density    = 2.0f + bar->affect.tension * 14.0f;
     for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l) {
         uint16_t want = p->instruments[l];
-        s->instruments[l] = want < ANO_PATCH_COUNT ? PATCH_OF_MUSIC[want]
-                                                   : ANO_SYNTH_PATCH_DEFAULT;
+        s->instruments[l] = (uint8_t)ano_synth_patch_of(want);
     }
 }
 
@@ -1094,8 +1068,8 @@ static uint32_t console_bar_cmds(const AnoSynthBar *bar, AnoAudioCommand *out)
     uint32_t n = 0;
     for (uint32_t l = 0; l < ANO_MUSIC_LAYER_COUNT; ++l) {
         out[n++] = (AnoAudioCommand){
-            .kind = ACMD_BUS_SET, .bus = ANO_SYNTH_BUS_STRIP0 + l,
-            .fields = ANO_AUDIO_FIELD_SEND0 | ANO_AUDIO_FIELD_SEND1,
+            .kind = ACMD_BUS_SET, .fields = ANO_AUDIO_FIELD_SEND0 | ANO_AUDIO_FIELD_SEND1,
+            .bus = ANO_SYNTH_BUS_STRIP0 + l,
             .send = { SEND_REV[l] * p->reverbSend, SEND_DLY[l] * p->delaySend } };
     }
     float width = p->stereoWidth;

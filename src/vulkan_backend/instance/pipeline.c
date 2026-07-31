@@ -56,7 +56,7 @@ bool loadFile(const char* filename, struct Buffer* buffer)
 	fseek(file, 0, SEEK_SET);
 
 
-	buffer->data = ano_aligned_malloc(size, alignof(uint32_t));
+	buffer->data = static_cast<char*>(ano_aligned_malloc(size, alignof(uint32_t)));
 	if (buffer->data == NULL)
 	{
 		ano_log(ANO_ERROR, "Failed to allocate memory for file: %s", filename);

@@ -10,13 +10,13 @@
 
 // Windows ano_aligned_malloc.
 // size/alignment 0 -> NULL. mi_malloc_aligned returns a live block for size 0.
-inline void* ano_aligned_malloc(size_t size, size_t alignment) {
+void* ano_aligned_malloc(size_t size, size_t alignment) {
     if (size == 0 || alignment == 0) return NULL;
     return mi_malloc_aligned(size, alignment);
 }
 
 // Windows ano_aligned_free.
-inline void ano_aligned_free(void* ptr) {
+void ano_aligned_free(void* ptr) {
     mi_free(ptr);
 }
 

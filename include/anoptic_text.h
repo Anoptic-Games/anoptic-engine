@@ -16,6 +16,10 @@
 #include "anoptic_memory.h"
 #include "anoptic_strings.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 /* Module lifecycle */
 
@@ -154,5 +158,9 @@ void ano_text_measure_runs(const AnoFontBake *bake, anostr_t text,
 
 #define ano_text_measure_runs_lit(bake, textlit, runs, runCount, width, height) \
     ano_text_measure_runs((bake), anostr_lit(textlit), (runs), (runCount), (width), (height))
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

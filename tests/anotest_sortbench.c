@@ -115,11 +115,16 @@ int main(int argc, char **argv)
     // Build the inventory: pool of distinct names, drawn with replacement.
     test_rng rng = rng_make(0x1BADB002u);
     size_t poolN = count / 4 > 0 ? count / 4 : 1;
-    anostr_t *pool  = mi_heap_malloc(heap, poolN * sizeof *pool);
-    anostr_t *items = mi_heap_malloc(heap, count * sizeof *items);
-    anostr_t *work  = mi_heap_malloc(heap, count * sizeof *work);
-    uint32_t *order = mi_heap_malloc(heap, count * sizeof *order);
-    uint64_t *ticks = mi_heap_malloc(heap, REPS * sizeof *ticks);
+    anostr_t *pool = static_cast<anostr_t *>(
+        mi_heap_malloc(heap, poolN * sizeof *pool));
+    anostr_t *items = static_cast<anostr_t *>(
+        mi_heap_malloc(heap, count * sizeof *items));
+    anostr_t *work = static_cast<anostr_t *>(
+        mi_heap_malloc(heap, count * sizeof *work));
+    uint32_t *order = static_cast<uint32_t *>(
+        mi_heap_malloc(heap, count * sizeof *order));
+    uint64_t *ticks = static_cast<uint64_t *>(
+        mi_heap_malloc(heap, REPS * sizeof *ticks));
     if (pool == NULL || items == NULL || work == NULL || order == NULL || ticks == NULL) {
         printf("FAIL: corpus alloc\n");
         return 1;
@@ -196,7 +201,8 @@ int main(int argc, char **argv)
 
     // Interned symbols: cold builds key cache; warm sorts ints.
     anostr_intern_t *tbl = anostr_intern_make(heap);
-    anostr_sym *syms = mi_heap_malloc(heap, count * sizeof *syms);
+    anostr_sym *syms = static_cast<anostr_sym *>(
+        mi_heap_malloc(heap, count * sizeof *syms));
     if (tbl == NULL || syms == NULL) { printf("FAIL: intern alloc\n"); return 1; }
     for (size_t k = 0; k < count; k++)
         syms[k] = anostr_intern(tbl, items[k]);

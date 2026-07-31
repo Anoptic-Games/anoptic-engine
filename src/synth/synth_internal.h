@@ -11,7 +11,7 @@
 #ifndef ANO_SYNTH_INTERNAL_H
 #define ANO_SYNTH_INTERNAL_H
 
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 
 #include <anoptic_memory.h>
 #include <anoptic_synth.h>
@@ -197,8 +197,8 @@ struct AnoSynth
     uint32_t        cmdHead, cmdTail;
 
     // Transport handshake (logic -> mixer), own ANO_THREAD_LINE.
-    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t startFrame; // IDLE = generator touches nothing
-    _Atomic uint64_t transportEpoch; // logic bumps per transport_start; staged-reset ticket
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) startFrame; // IDLE = generator touches nothing
+    ANO_ATOMIC(uint64_t) transportEpoch; // logic bumps per transport_start; staged-reset ticket
 
     // Mixer-owned below. epochSeen gates hook writes off the logic pair above.
     _Alignas(ANO_THREAD_LINE) uint64_t epochSeen; // last epoch whose reset has run

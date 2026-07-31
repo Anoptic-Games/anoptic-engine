@@ -11,6 +11,8 @@
 #ifndef ANO_MUSIC_MELODY_H
 #define ANO_MUSIC_MELODY_H
 
+#include <string.h>
+
 #include "music_ir.h"
 #include "music_motif.h"
 
@@ -26,10 +28,12 @@ typedef struct AnoMelodyState
     int pendingTie; // ANO_NEAR_NONE; pitch tied out of last bar
 } AnoMelodyState;
 
-static inline AnoMelodyState ano_melody_state_init(void)
+static inline void ano_melody_state_init(AnoMelodyState *state)
 {
-    return (AnoMelodyState){ .prevPitch = ANO_NEAR_NONE, .prevAnchor = ANO_NEAR_NONE,
-                             .pendingTie = ANO_NEAR_NONE };
+    memset(state, 0, sizeof *state);
+    state->prevPitch = ANO_NEAR_NONE;
+    state->prevAnchor = ANO_NEAR_NONE;
+    state->pendingTie = ANO_NEAR_NONE;
 }
 
 typedef enum AnoMelodyStage

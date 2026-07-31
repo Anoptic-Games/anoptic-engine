@@ -156,7 +156,8 @@ int main(int argc, char **argv)
     author_config(&cfg);
 
     // Composer + host synth.
-    AnoSynth *syn = ano_synth_create(&(AnoSynthDesc){ .sampleRate = RATE });
+    const AnoSynthDesc synthDesc = { .sampleRate = RATE };
+    AnoSynth *syn = ano_synth_create(&synthDesc);
     AnoMusicEngine *music = ano_music_create(&cfg, seed);
     CHECK(syn && music, "synth + composer");
     if (!syn || !music)
@@ -250,9 +251,10 @@ int main(int argc, char **argv)
                 { -0.60f, 0.95f, 0.90f, "the fight" },
                 { 0.35f, 0.30f, 0.15f, "the quiet after" },
             };
-            AnoAudioCommand c = { .kind = ACMD_MUSIC_AFFECT, .urgent = stage == 2,
+            AnoAudioCommand c = { .kind = ACMD_MUSIC_AFFECT,
                                   .affect = { ARC[stage].v, ARC[stage].en,
-                                              ARC[stage].tn } };
+                                              ARC[stage].tn },
+                                  .urgent = stage == 2 };
             must_submit(b, &c);
             record(&script, lastBar, &c);
             printf("game: %-20s (bar %d)\n", ARC[stage].say, lastBar);
@@ -269,8 +271,8 @@ int main(int argc, char **argv)
                 record(&script, lastBar, &m);
             }
             if (stage == 3) { // quiet: reverb + hero
-                AnoAudioCommand r = { .kind = ACMD_MUSIC_OVERRIDE, .tag = "reverb_send",
-                                      .value = 0.75f };
+                AnoAudioCommand r = { .kind = ACMD_MUSIC_OVERRIDE, .value = 0.75f,
+                                      .tag = "reverb_send" };
                 must_submit(b, &r);
                 record(&script, lastBar, &r);
                 AnoAudioCommand m = { .kind = ACMD_MUSIC_MOTIF, .tag = "hero" };

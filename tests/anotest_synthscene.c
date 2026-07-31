@@ -56,7 +56,8 @@ int main(int argc, char **argv)
     if (argc > 1)
         seconds = (uint32_t)atoi(argv[1]); // 0 = full piece
 
-    AnoSynth *syn = ano_synth_create(&(AnoSynthDesc){ .sampleRate = RATE });
+    const AnoSynthDesc synthDesc = { .sampleRate = RATE };
+    AnoSynth *syn = ano_synth_create(&synthDesc);
     CHECK(syn != NULL, "synth world up");
     if (!syn) return 1;
     CHECK(synthfix_load(syn, ANO_FIXTURE_DIR "/journey_s42.anofix"), "journey fixture loads");

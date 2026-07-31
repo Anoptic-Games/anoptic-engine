@@ -18,7 +18,7 @@ anostr_t anostr_from(mi_heap_t *heap, const void *bytes, size_t len)
         return anostr_make_inline_(bytes, len);
     if (heap == NULL)
         return anostr_empty();
-    char *copy = mi_heap_malloc(heap, len);
+    char *copy = static_cast<char *>(mi_heap_malloc(heap, len));
     if (copy == NULL)
         return anostr_empty();
     memcpy(copy, bytes, len);
@@ -93,7 +93,7 @@ char *anostr_to_cstr(mi_heap_t *heap, anostr_t s)
 {
     if (heap == NULL)
         return NULL;
-    char *out = mi_heap_malloc(heap, (size_t)s.len + 1);
+    char *out = static_cast<char *>(mi_heap_malloc(heap, (size_t)s.len + 1));
     if (out == NULL)
         return NULL;
     memcpy(out, anostr_bytes(&s), s.len);
@@ -107,7 +107,7 @@ anostr_builder_t anostr_builder_make(mi_heap_t *heap, uint32_t reserve)
 {
     anostr_builder_t b = { .ptr = NULL, .len = 0, .cap = 0, .heap = heap };
     if (heap != NULL && reserve > 0) {
-        b.ptr = mi_heap_malloc(heap, reserve);
+        b.ptr = static_cast<char *>(mi_heap_malloc(heap, reserve));
         if (b.ptr != NULL)
             b.cap = reserve;
     }
@@ -124,7 +124,7 @@ static int builder_reserve(anostr_builder_t *b, uint64_t need)
         cap *= 2;
     if (cap > UINT32_MAX)
         cap = UINT32_MAX;
-    char *grown = mi_heap_realloc(b->heap, b->ptr, cap);
+    char *grown = static_cast<char *>(mi_heap_realloc(b->heap, b->ptr, cap));
     if (grown == NULL)
         return -1;
     b->ptr = grown;
@@ -196,7 +196,7 @@ anostr_t anostr_freeze(anostr_builder_t *b)
         mi_free(b->ptr);    // inline owes nothing to the buffer
     } else {
         // Shrink to len and hand buffer to the value. Failed shrink keeps the original block.
-        char *exact = mi_heap_realloc(b->heap, b->ptr, b->len);
+        char *exact = static_cast<char *>(mi_heap_realloc(b->heap, b->ptr, b->len));
         s = anostr_make_long_(exact != NULL ? exact : b->ptr, b->len);
     }
     *b = (anostr_builder_t){0};     // consumed: heap == NULL fails further appends

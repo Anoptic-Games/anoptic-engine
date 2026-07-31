@@ -6,7 +6,7 @@
 // Determinism kernel vs CPython 3.12 vectors (TECH_SPEC §8): Blake2b-8, MT19937, random/randint/choice/choices/shuffle/uniform/sample/gauss, banker's round.
 // Doubles compare exactly (==). Exit 0 == pass.
 
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
@@ -379,7 +379,7 @@ static void seam_drive(uint32_t bars, bool hot, SeamTally *out)
                                              bars * ANO_MUSIC_MAX_TEMPO,
                                              bars * ANO_MUSIC_MAX_BAR_EVENTS);
 
-    AnoMusicBar *bar = malloc(sizeof *bar);
+    AnoMusicBar *bar = static_cast<AnoMusicBar *>(malloc(sizeof *bar));
     for (uint32_t b = 0; b < bars; ++b) {
         ano_music_advance_bar(eng, bar);
         for (uint32_t t = 0; t < bar->tempoCount; ++t)
@@ -444,7 +444,7 @@ static void test_synth_seam_event_ranges(void)
 // Inputs: h fold state, data/n bytes. Output: FNV-1a folded state.
 static uint64_t det_fnv1a64(uint64_t h, const void *data, size_t n)
 {
-    const unsigned char *p = data;
+    const unsigned char *p = static_cast<const unsigned char *>(data);
     for (size_t i = 0; i < n; ++i) {
         h ^= p[i];
         h *= 1099511628211ull;
@@ -479,7 +479,7 @@ static uint64_t det_bar_fold(uint64_t h, const AnoMusicBar *b)
 static uint64_t det_run_span(uint64_t seed, uint32_t bars, void *snap)
 {
     AnoMusicEngine *e = ano_music_create(NULL, seed);
-    AnoMusicBar *bar = malloc(sizeof *bar);
+    AnoMusicBar *bar = static_cast<AnoMusicBar *>(malloc(sizeof *bar));
     uint64_t h = 1469598103934665603ull;
     for (uint32_t i = 0; i < bars; ++i) {
         ano_music_advance_bar(e, bar);
@@ -502,7 +502,7 @@ typedef struct DetSpanJob
 // First-touch thread: det_run_span must match main-thread stream.
 static void *det_span_thread(void *arg)
 {
-    DetSpanJob *j = arg;
+    DetSpanJob *j = static_cast<DetSpanJob *>(arg);
     j->h = det_run_span(j->seed, j->bars, j->snap);
     return NULL;
 }
@@ -516,9 +516,9 @@ typedef struct DetDisturber
 // Concurrent disturber: independent engine advances while caller composes.
 static void *det_disturb(void *arg)
 {
-    DetDisturber *d = arg;
+    DetDisturber *d = static_cast<DetDisturber *>(arg);
     AnoMusicEngine *e = ano_music_create(NULL, d->seed);
-    AnoMusicBar *bar = malloc(sizeof *bar);
+    AnoMusicBar *bar = static_cast<AnoMusicBar *>(malloc(sizeof *bar));
     while (!atomic_load_explicit(&d->stop, memory_order_relaxed))
         ano_music_advance_bar(e, bar);
     ano_music_destroy(e);
@@ -550,6 +550,18 @@ static void test_engine_instance_independence(void)
     if (spanStarted) {
         ano_thread_join(st, NULL);
         CHECK(job.h == hRef, "foreign-thread solo replay reproduces the event stream");
+        if (memcmp(ctl, ref, ss) != 0) {
+            const unsigned char *x = static_cast<const unsigned char *>(ctl);
+            const unsigned char *y = static_cast<const unsigned char *>(ref);
+            size_t first = ss, count = 0;
+            for (size_t i = 0; i < ss; ++i)
+                if (x[i] != y[i]) {
+                    if (first == ss) first = i;
+                    count++;
+                }
+            printf("  foreign-thread snapshot: %zu bytes differ, first at offset %zu\n",
+                   count, first);
+        }
         CHECK(memcmp(ctl, ref, ss) == 0, "foreign-thread snapshot byte-identical");
     }
 
@@ -885,14 +897,57 @@ int main(void)
               "fifths_between");
     }
 
+    // --- enum vocabulary ---
+    {
+        static const char *const LAYERS[ANO_MUSIC_LAYER_COUNT] = {
+            "pad", "bass", "melody", "counter", "arp", "perc",
+        };
+        for (uint32_t layer = 0; layer < ANO_MUSIC_LAYER_COUNT; ++layer)
+            CHECK(strcmp(ano_music_layer_name(layer), LAYERS[layer]) == 0,
+                  "layer name keyed by enum");
+        CHECK(strcmp(ano_music_layer_name(99), "unknown") == 0,
+              "invalid layer has a defined name");
+        CHECK(ano_music_patch_name(ANO_PATCH_NONE)[0] == '\0',
+              "default patch name is empty");
+        for (uint32_t patch = 1; patch < ANO_PATCH_COUNT; ++patch) {
+            const char *name = ano_music_patch_name(patch);
+            CHECK(name[0] != '\0' && ano_music_patch_id(name) == patch,
+                  "patch names round-trip through the typed registry");
+        }
+        CHECK(ano_music_patch_id(NULL) == ANO_PATCH_NONE
+              && ano_music_patch_name(99)[0] == '\0',
+              "invalid patch values fall back to default");
+    }
+
     // --- scale mechanics ---
     {
+        static const uint8_t ION[7] = { 0, 2, 4, 5, 7, 9, 11 };
         static const uint8_t DOR[7] = { 0, 2, 3, 5, 7, 9, 10 };
         static const uint8_t LOC[7] = { 0, 1, 3, 5, 6, 8, 10 };
+        static const char *const NAMES[ANO_MODE_COUNT] = {
+            "ionian", "dorian", "phrygian", "lydian",
+            "mixolydian", "aeolian", "locrian",
+        };
+        for (int mode = 0; mode < ANO_MODE_COUNT; ++mode)
+            CHECK(strcmp(ano_mode_name((AnoMode)mode), NAMES[mode]) == 0,
+                  "mode name keyed by enum");
         CHECK(memcmp(ano_mode_intervals(ANO_MODE_DORIAN), DOR, 7) == 0, "dorian intervals");
         CHECK(memcmp(ano_mode_intervals(ANO_MODE_LOCRIAN), LOC, 7) == 0, "locrian intervals");
+        CHECK(strcmp(ano_mode_name(ANO_MODE_NONE), "ionian") == 0
+              && memcmp(ano_mode_intervals((AnoMode)99), ION, 7) == 0,
+              "invalid mode metadata falls back to ionian");
+        CHECK(ano_mode_brightness(ANO_MODE_LYDIAN) == 3
+              && ano_mode_brightness(ANO_MODE_NONE) == -1,
+              "mode brightness domain");
         CHECK(ano_scale_pitch_at((AnoScale){ 2, ANO_MODE_DORIAN }, 9, 4) == 76, "pitch_at wrap");
         CHECK(ano_scale_pitch_at((AnoScale){ 0, ANO_MODE_IONIAN }, 1, 4) == 60, "pitch_at C4");
+        CHECK(ano_scale_pitch_at((AnoScale){ 0, ANO_MODE_IONIAN }, 0, 4) == 59,
+              "pitch_at negative wrap");
+        char scaleName[32] = {};
+        CHECK(strcmp(ano_scale_name((AnoScale){ 12, UINT8_MAX },
+                                    scaleName, sizeof scaleName),
+                     "C ionian") == 0,
+              "invalid scale representation canonicalized");
         AnoScale C = { 0, ANO_MODE_IONIAN };
         CHECK(ano_snap_to_scale(C, 61) == 62 && ano_snap_to_scale(C, 63) == 64, "snap");
         CHECK(ano_diatonic_shift(C, 60, 3) == 65 && ano_diatonic_shift(C, 61, -2) == 59,
@@ -2216,7 +2271,8 @@ int main(void)
             AnoGenParams gp = ano_gen_params_default();
             gp.noteDensity = 0.55;
             gp.roughness = 0.5;
-            AnoMelodyState st = ano_melody_state_init();
+            AnoMelodyState st;
+            ano_melody_state_init(&st);
             for (size_t i = 0; i < sizeof S1 / sizeof S1[0]; ++i) {
                 int bar = S1[i].bar;
                 AnoPhrasePos pos = ano_phrase_position(bar, 8);
@@ -2257,7 +2313,8 @@ int main(void)
             static const AnoMelodyStage STAGES[4] = {
                 ANO_MEL_INTRODUCED, ANO_MEL_DEVELOPED, ANO_MEL_COMPLETED, ANO_MEL_STATED,
             };
-            AnoMelodyState st = ano_melody_state_init();
+            AnoMelodyState st;
+            ano_melody_state_init(&st);
             for (size_t i = 0; i < sizeof S2 / sizeof S2[0]; ++i) {
                 int bar = S2[i].bar;
                 AnoPhrasePos pos = ano_phrase_position(bar, 8);
@@ -2303,7 +2360,8 @@ int main(void)
             ano_music_stream(&ar, "42:apexg:0");
             AnoApexPlan apex = ano_make_apex(&ar, 8, gp.registerCenter, mc3.rangeSemitones);
             CHECK(apex.pos == S3_APEX[0] && apex.pitch == S3_APEX[1], "S3 apex plan");
-            AnoMelodyState st = ano_melody_state_init();
+            AnoMelodyState st;
+            ano_melody_state_init(&st);
             int pr = ANO_NEAR_NONE;
             for (size_t i = 0; i < sizeof S3 / sizeof S3[0]; ++i) {
                 int bar = S3[i].bar;
@@ -2369,7 +2427,8 @@ int main(void)
             for (size_t i = 0; i < sizeof S4 / sizeof S4[0]; ++i) {
                 AnoHarmonicContext c;
                 MEL_CTX(c, 1, 4, 6, ANO_CADENCE_NONE);
-                AnoMelodyState st = ano_melody_state_init();
+                AnoMelodyState st;
+                ano_melody_state_init(&st);
                 st.prevPitch = S4[i].pp0;
                 if (S4[i].pt0 != -99999)
                     st.pendingTie = S4[i].pt0;
@@ -2636,8 +2695,10 @@ int main(void)
             AnoBassConfig bc = ano_bass_config_default();
             AnoMelodyConfig mc = ano_melody_config_default();
             AnoCounterConfig cc = ano_counter_config_default();
-            AnoMelodyState ms = ano_melody_state_init();
-            AnoCounterState st = ano_counter_state_init();
+            AnoMelodyState ms;
+            AnoCounterState st;
+            ano_melody_state_init(&ms);
+            ano_counter_state_init(&st);
             int prevRoot = ANO_NEAR_NONE;
             for (size_t i = 0; i < sizeof CW / sizeof CW[0]; ++i) {
                 int bar = CW[i].bar;

@@ -42,7 +42,7 @@ typedef struct {
 static void test_salloc_and_scope_cleanup(void)
 {
     // ano_salloc == alloca: non-NULL, writable in this frame.
-    uint8_t *stackBytes = ano_salloc(42);
+    uint8_t *stackBytes = static_cast<uint8_t *>(ano_salloc(42));
     CHECK(stackBytes != NULL, "ano_salloc returned non-NULL");
     for (int i = 0; i < 42; i++) stackBytes[i] = (uint8_t)i; // must not fault
     CHECK(stackBytes[41] == 41, "ano_salloc block is writable");
@@ -60,9 +60,9 @@ static void test_scoped_heap_aligned(void)
     if (!memHeap) return;
 
     const uint32_t count = 4096;
-    mem_chariot_t *chariots = mi_heap_zalloc_aligned(memHeap,
-                                                     (size_t)count * sizeof(mem_chariot_t),
-                                                     _Alignof(mem_chariot_t));
+    mem_chariot_t *chariots = static_cast<mem_chariot_t *>(
+        mi_heap_zalloc_aligned(memHeap, (size_t)count * sizeof(mem_chariot_t),
+                              _Alignof(mem_chariot_t)));
     CHECK(chariots != NULL, "aligned zalloc returned non-NULL");
     if (!chariots) return;
 
@@ -92,7 +92,7 @@ static void test_scoped_heap_aligned(void)
 static void test_basic_malloc(void)
 {
     const int n = 128;
-    int *nums = mi_malloc((size_t)n * sizeof(int));
+    int *nums = static_cast<int *>(mi_malloc((size_t)n * sizeof(int)));
     CHECK(nums != NULL, "mi_malloc returned non-NULL");
     if (!nums) return;
 

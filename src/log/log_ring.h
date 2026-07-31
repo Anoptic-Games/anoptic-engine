@@ -13,7 +13,7 @@
 #include "log/log_core.h"   // ANO_LOG_MSG_MAX, ring sizing
 
 #include <anoptic_memory.h>          // ANO_CACHE_LINE / ANO_THREAD_LINE
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -30,7 +30,7 @@ enum {
 
 // Entry head-line marker. Only `tag` is atomic (publish gate). timestamp/text ride its release/acquire.
 typedef struct {
-    _Atomic uint64_t tag;   // 0 = free, nonzero = committed. Publish last (release), read first (acquire).
+    ANO_ATOMIC(uint64_t) tag;   // 0 = free, nonzero = committed. Publish last (release), read first (acquire).
     uint64_t timestamp;     // raw ticks, rendered at drain
 } log_marker_t;
 _Static_assert(sizeof(log_marker_t) == ANO_LOG_HDR, "marker is 16 bytes");
@@ -50,8 +50,8 @@ typedef union {
 _Static_assert(sizeof(log_word_t) == 8, "commit word is 8 bytes");
 
 typedef struct {
-    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t tail;    // producer reserve cursor, cache lines
-    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t head;    // consumer drain cursor, cache lines
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) tail;    // producer reserve cursor, cache lines
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) head;    // consumer drain cursor, cache lines
     uint64_t    mask;   // N-1, N = capacity in cache lines, pow2
     uint32_t    shift;  // log2(N), cycle = pos >> shift
     char        *buf;   // N*ANO_CL bytes, cache-line aligned

@@ -44,8 +44,8 @@ static uint64_t ns_identity(uint64_t v) { return v; }
 /* Part 2 plumbing: synthetic render master over the twin bridge. */
 
 static AnoRenderBridge g_rb; // static: linker honors the ANO_THREAD_LINE members
-static _Atomic bool    g_rbRun;
-static _Atomic uint64_t g_rbTornViews; // render-side oracle failures
+static ANO_ATOMIC(bool)    g_rbRun;
+static ANO_ATOMIC(uint64_t) g_rbTornViews; // render-side oracle failures
 
 // Render master stand-in: publish a self-consistent snapshot and drain the view
 // lane at ~1 kHz. Checks every acquired view for tearing (eye[] mirrors seq).
@@ -104,7 +104,8 @@ int main(int argc, char **argv)
     cfg.hasMapper = true;
     cfg.mapper    = ano_mapping_table_default();
 
-    AnoSynth *syn = ano_synth_create(&(AnoSynthDesc){ .sampleRate = RATE });
+    const AnoSynthDesc synthDesc = { .sampleRate = RATE };
+    AnoSynth *syn = ano_synth_create(&synthDesc);
     AnoMusicEngine *music = ano_music_create(&cfg, 31337u);
     CHECK(syn && music, "synth + composer");
     if (!syn || !music)
@@ -143,9 +144,9 @@ int main(int argc, char **argv)
     // ~1 kHz logic tick: acquire + publish every tick, affect every 64th.
     size_t   opCap  = (size_t)seconds * 1200u;
     size_t   blkCap = (size_t)seconds * 200u;
-    uint64_t *acqBuf = malloc(opCap * sizeof *acqBuf);
-    uint64_t *pubBuf = malloc(opCap * sizeof *pubBuf);
-    uint64_t *blkBuf = malloc(blkCap * sizeof *blkBuf);
+    uint64_t *acqBuf = static_cast<uint64_t *>(malloc(opCap * sizeof *acqBuf));
+    uint64_t *pubBuf = static_cast<uint64_t *>(malloc(opCap * sizeof *pubBuf));
+    uint64_t *blkBuf = static_cast<uint64_t *>(malloc(blkCap * sizeof *blkBuf));
     CHECK(acqBuf && pubBuf && blkBuf, "sample buffers");
     if (failures)
         return 1;
@@ -200,8 +201,8 @@ int main(int argc, char **argv)
     CHECK(rbHeap && ano_render_bridge_init(&g_rb, rbHeap, 16, 16), "render bridge init");
     if (failures)
         return 1;
-    uint64_t *racqBuf = malloc(opCap * sizeof *racqBuf);
-    uint64_t *rpubBuf = malloc(opCap * sizeof *rpubBuf);
+    uint64_t *racqBuf = static_cast<uint64_t *>(malloc(opCap * sizeof *racqBuf));
+    uint64_t *rpubBuf = static_cast<uint64_t *>(malloc(opCap * sizeof *rpubBuf));
     CHECK(racqBuf && rpubBuf, "rb sample buffers");
     if (failures)
         return 1;

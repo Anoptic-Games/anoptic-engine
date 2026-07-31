@@ -6,6 +6,7 @@
 // Insert-effect set. Mixer thread (or offline caller). No alloc/locks after init.
 
 #include "audio_fx.h"
+#include "cpp/ano_types.h"
 
 #include <math.h>
 #include <string.h>
@@ -14,11 +15,29 @@
 
 #define FX_TAU_F 6.28318530717958647692f
 
-_Static_assert(ANO_AUDIO_FILTER_OFF == ANO_DSP_SVF_BYPASS
-                   && ANO_AUDIO_FILTER_LOWPASS == ANO_DSP_SVF_LOWPASS
-                   && ANO_AUDIO_FILTER_HIGHPASS == ANO_DSP_SVF_HIGHPASS
-                   && ANO_AUDIO_FILTER_BANDPASS == ANO_DSP_SVF_BANDPASS,
-               "AnoAudioFilterMode must mirror ANO_DSP_SVF_*");
+using EffectKind = ano::EnumValue<AnoAudioEffectKind, ANO_AUDIO_FX_COUNT>;
+using FilterMode = ano::EnumValue<AnoAudioFilterMode, ANO_AUDIO_FILTER_COUNT>;
+
+static_assert(ano::Data<AnoAudioFx>);
+static_assert(ano::Data<EffectKind>);
+static_assert(ano::Data<FilterMode>);
+static_assert(ANO_AUDIO_FILTER_OFF == ANO_DSP_SVF_BYPASS
+                  && ANO_AUDIO_FILTER_LOWPASS == ANO_DSP_SVF_LOWPASS
+                  && ANO_AUDIO_FILTER_HIGHPASS == ANO_DSP_SVF_HIGHPASS
+                  && ANO_AUDIO_FILTER_BANDPASS == ANO_DSP_SVF_BANDPASS,
+              "AnoAudioFilterMode must mirror ANO_DSP_SVF_*");
+
+static constexpr EffectKind effect_kind(uint32_t raw)
+{
+    return EffectKind::from_raw(raw).value_or(
+        EffectKind::constant<ANO_AUDIO_FX_NONE>());
+}
+
+static constexpr FilterMode filter_mode(uint32_t raw)
+{
+    return FilterMode::from_raw(raw).value_or(
+        FilterMode::constant<ANO_AUDIO_FILTER_OFF>());
+}
 
 static inline float fx_clampf(float v, float lo, float hi)
 {
@@ -37,11 +56,16 @@ bool ano_audio_fx_init(AnoAudioFx *fx, uint32_t kind, mi_heap_t *heap,
                        uint32_t sampleRate, float coefBlock)
 {
     memset(fx, 0, sizeof *fx);
-    fx->kind = kind;
+    const auto parsed = EffectKind::from_raw(kind);
+    const EffectKind effect = parsed.value_or(
+        EffectKind::constant<ANO_AUDIO_FX_NONE>());
+    fx->kind = static_cast<uint32_t>(ano::underlying(effect.get()));
     fx->fs   = (float)sampleRate;
     const float fs = (float)sampleRate;
+    if (!parsed)
+        ano_log(ANO_WARN, "audio: unknown effect kind %u; slot left empty.", kind);
 
-    switch ((AnoAudioEffectKind)kind) {
+    switch (effect.get()) {
     case ANO_AUDIO_FX_NONE:
         return true;
 
@@ -154,11 +178,10 @@ bool ano_audio_fx_init(AnoAudioFx *fx, uint32_t kind, mi_heap_t *heap,
         return true;
     }
 
-    default:
-        ano_log(ANO_WARN, "audio: unknown effect kind %u; slot left empty.", kind);
-        fx->kind = ANO_AUDIO_FX_NONE;
-        return true;
+    case ANO_AUDIO_FX_COUNT:
+        std::unreachable();
     }
+    std::unreachable();
 }
 
 /* parameter dispatch */
@@ -169,22 +192,23 @@ void ano_audio_fx_set(AnoAudioFx *fx, uint32_t paramId, float value)
         fx->bypass = value != 0.0f;
         return;
     }
-    switch ((AnoAudioEffectKind)fx->kind) {
+    switch (effect_kind(fx->kind).get()) {
 
     case ANO_AUDIO_FX_FILTER: {
         AnoAudioFxFilter *f = &fx->u.filter;
         switch (paramId) {
         case ANO_AUDIO_P_FILTER_MODE: {
-            uint32_t mode = (uint32_t)value;
-            if (mode > ANO_AUDIO_FILTER_BANDPASS)
-                mode = ANO_AUDIO_FILTER_OFF;
-            if (f->mode == ANO_AUDIO_FILTER_OFF && mode != ANO_AUDIO_FILTER_OFF) {
+            FilterMode mode = FilterMode::constant<ANO_AUDIO_FILTER_OFF>();
+            if (value >= 0.0f && value < (float)ANO_AUDIO_FILTER_COUNT)
+                mode = FilterMode::from_raw((uint32_t)value).value_or(mode);
+            uint32_t raw = static_cast<uint32_t>(ano::underlying(mode.get()));
+            if (f->mode == ANO_AUDIO_FILTER_OFF && raw != ANO_AUDIO_FILTER_OFF) {
                 // enter from rest at target
                 ano_audio_smooth_snap(&f->cutoff, f->cutoff.target);
                 ano_audio_smooth_snap(&f->q, f->q.target);
                 memset(f->s, 0, sizeof f->s);
             }
-            f->mode = mode;
+            f->mode = raw;
             return;
         }
         case ANO_AUDIO_P_FILTER_CUTOFF: f->cutoff.target = fx_clampf(value, 20.0f, 20000.0f); return;
@@ -283,8 +307,12 @@ void ano_audio_fx_set(AnoAudioFx *fx, uint32_t paramId, float value)
         break;
     }
 
-    default:
+    case ANO_AUDIO_FX_NONE:
+    case ANO_AUDIO_FX_DCBLOCK:
         break;
+
+    case ANO_AUDIO_FX_COUNT:
+        std::unreachable();
     }
     ano_debug_log(ANO_WARN, "audio: FX_SET param %u does not belong to effect kind %u; dropped.",
                   paramId, fx->kind);
@@ -292,18 +320,19 @@ void ano_audio_fx_set(AnoAudioFx *fx, uint32_t paramId, float value)
 
 /* processing */
 
-static void fx_filter(AnoAudioFxFilter *f, float *m, uint32_t frames, float fs)
+[[gnu::always_inline]] static inline void
+fx_filter(AnoAudioFxFilter *f, float *m, uint32_t frames, float fs, FilterMode mode)
 {
-    if (f->mode == ANO_AUDIO_FILTER_OFF)
-        return;
     float fc = ano_audio_smooth_step(&f->cutoff);
     float q  = ano_audio_smooth_step(&f->q);
+    const uint32_t rawMode = static_cast<uint32_t>(ano::underlying(mode.get()));
     ano_dsp_svf_coef(&f->c, fc, q, fs);
     ano_dsp_svf_flush(&f->s[0]);
     ano_dsp_svf_flush(&f->s[1]);
     for (uint32_t i = 0; i < frames; ++i) {
-        m[2u * i]      = ano_dsp_svf_step(&f->c, &f->s[0], m[2u * i], f->mode);
-        m[2u * i + 1u] = ano_dsp_svf_step(&f->c, &f->s[1], m[2u * i + 1u], f->mode);
+        m[2u * i] = ano_dsp_svf_step(&f->c, &f->s[0], m[2u * i], rawMode);
+        m[2u * i + 1u] = ano_dsp_svf_step(
+            &f->c, &f->s[1], m[2u * i + 1u], rawMode);
     }
 }
 
@@ -494,9 +523,18 @@ void ano_audio_fx_process(AnoAudioFx *fx, float *stereo, uint32_t frames, uint32
 {
     if (fx->kind == ANO_AUDIO_FX_NONE || fx->bypass)
         return;
+    ano::assume(fx->kind < ANO_AUDIO_FX_COUNT);
     const float fs = (float)sampleRate;
-    switch ((AnoAudioEffectKind)fx->kind) {
-    case ANO_AUDIO_FX_FILTER:     fx_filter(&fx->u.filter, stereo, frames, fs); return;
+    switch (effect_kind(fx->kind).get()) {
+    case ANO_AUDIO_FX_FILTER: {
+        ano::assume(fx->u.filter.mode < ANO_AUDIO_FILTER_COUNT);
+        const FilterMode mode = filter_mode(fx->u.filter.mode);
+        if (mode.get() == ANO_AUDIO_FILTER_OFF)
+            return;
+        fx_filter(&fx->u.filter, stereo, frames, fs, mode);
+        return;
+    }
+
     case ANO_AUDIO_FX_EQ3:        fx_eq3(&fx->u.eq3, stereo, frames, fs); return;
     case ANO_AUDIO_FX_DCBLOCK:    fx_dc(&fx->u.dc, stereo, frames); return;
     case ANO_AUDIO_FX_DRIVE:      fx_drive(&fx->u.drive, stereo, frames); return;
@@ -506,6 +544,8 @@ void ano_audio_fx_process(AnoAudioFx *fx, float *stereo, uint32_t frames, uint32
     case ANO_AUDIO_FX_REVERB:     fx_reverb(&fx->u.reverb, stereo, frames, fs); return;
     case ANO_AUDIO_FX_PINGPONG:   fx_pingpong(&fx->u.pp, stereo, frames, fs); return;
     case ANO_AUDIO_FX_WIDTH:      fx_width(&fx->u.width, stereo, frames); return;
-    default: return;
+    case ANO_AUDIO_FX_NONE:       return;
+    case ANO_AUDIO_FX_COUNT:      std::unreachable();
     }
+    std::unreachable();
 }

@@ -99,7 +99,7 @@ static void top_up(LiveDriver *d, uint64_t startFrame)
 static void live_generator(void *user, float *const *busMix, uint32_t busCount,
                            uint32_t frames, uint64_t startFrame)
 {
-    LiveDriver *d = user;
+    LiveDriver *d = static_cast<LiveDriver *>(user);
     if (!d->stall || d->blocks % d->stall == 0u)
         top_up(d, startFrame); // schedule ahead, then render
     d->blocks++;
@@ -152,8 +152,10 @@ int main(void)
     CHECK(frames > RATE, "score has length");
     ano_synth_transport_start(batch, 0);
 
-    float *bufA = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufA);
-    float *bufB = calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufB);
+    float *bufA = static_cast<float *>(
+        calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufA));
+    float *bufB = static_cast<float *>(
+        calloc((size_t)frames * ANO_AUDIO_CHANNELS, sizeof *bufB));
     CHECK(bufA && bufB, "render buffers");
 
     AnoAudioOfflineDesc od = {

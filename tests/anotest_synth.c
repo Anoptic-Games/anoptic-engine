@@ -48,7 +48,8 @@ static float *render_synth(AnoSynth *syn, uint64_t frames)
         .events = evts, .eventCount = n,
         .generator = ano_synth_generator, .generatorUser = syn,
     };
-    float *out = calloc(frames * ANO_AUDIO_CHANNELS, sizeof(float));
+    float *out = static_cast<float *>(
+        calloc(frames * ANO_AUDIO_CHANNELS, sizeof(float)));
     if (!out || !ano_audio_render_offline(&desc, out, frames)) {
         free(out);
         ano_synth_transport_stop(syn);
@@ -131,7 +132,8 @@ int main(int argc, char **argv)
         if (s > 0) soak = (uint32_t)s;
     }
 
-    AnoSynth *syn = ano_synth_create(&(AnoSynthDesc){ .sampleRate = RATE });
+    const AnoSynthDesc synthDesc = { .sampleRate = RATE };
+    AnoSynth *syn = ano_synth_create(&synthDesc);
     CHECK(syn != NULL, "synth world up");
     if (!syn) return 1;
 
@@ -217,6 +219,13 @@ int main(int argc, char **argv)
             CHECK(strcmp(ano_music_patch_name(i),
                          ano_synth_patch_name(ano_synth_patch_of(i))) == 0,
                   "every timbre the composer can name is played by the voice of that name");
+        for (uint32_t i = 1; i < ANO_SYNTH_PATCH_COUNT; ++i)
+            CHECK(ano_synth_patch_id(ano_synth_patch_name(i)) == i,
+                  "synth patch names round-trip through the typed registry");
+        CHECK(ano_synth_patch_of(UINT32_MAX) == ANO_SYNTH_PATCH_DEFAULT,
+              "out-of-range composer patch maps to the default voice");
+        CHECK(ano_synth_patch_name(UINT32_MAX)[0] == '\0',
+              "out-of-range synth patch has the default empty name");
 
         p.instruments[ANO_MUSIC_PAD]    = ANO_PATCH_MORPH;
         p.instruments[ANO_MUSIC_MELODY] = ANO_PATCH_KEYS;

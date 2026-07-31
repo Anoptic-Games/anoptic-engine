@@ -18,7 +18,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <string.h>
 #include <mimalloc.h>
 #include <anoptic_memory.h> // ANO_CACHE_LINE / ANO_THREAD_LINE
@@ -32,8 +32,8 @@
 // Heap owners: allocate the ring owner with ANO_THREAD_LINE alignment so tail/head stay apart.
 typedef struct AnoAudioRing
 {
-    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t tail; // next write index
-    _Alignas(ANO_THREAD_LINE) _Atomic uint32_t head; // next read index
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) tail; // next write index
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) head; // next read index
     _Alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1
     uint32_t                          stride;       // element bytes
     uint8_t                          *buffer;       // capacity * stride
@@ -56,7 +56,7 @@ static inline bool ano_audio_ring_init(AnoAudioRing *ring, mi_heap_t *heap,
     uint32_t cap = ano_audio_next_pow2(capacity_pow2);
     if (cap == 0u) return false;                       // capacity overflow
     if ((size_t)cap > SIZE_MAX / stride) return false; // cap*stride overflow
-    uint8_t *buffer = mi_heap_calloc(heap, cap, stride);
+    uint8_t *buffer = static_cast<uint8_t *>(mi_heap_calloc(heap, cap, stride));
     if (!buffer) return false;
     atomic_init(&ring->tail, 0u);
     atomic_init(&ring->head, 0u);
@@ -122,7 +122,7 @@ static inline bool ano_audio_ring_full(const AnoAudioRing *ring)
 // Even version = stable. Odd = mid-write. version 0 = never published.
 // value: _Atomic word lane, sizeof(payload)/8 entries (asserted at the bridge).
 // Relaxed word copies; torn loads fail the version recheck.
-static inline void ano_audio_seq_store(_Atomic uint64_t *value, _Atomic uint64_t *version, const void *v, size_t stride)
+static inline void ano_audio_seq_store(ANO_ATOMIC(uint64_t) *value, ANO_ATOMIC(uint64_t) *version, const void *v, size_t stride)
 {
     uint64_t s = atomic_load_explicit(version, memory_order_relaxed);
     atomic_store_explicit(version, s + 1u, memory_order_relaxed); // enter (odd)
@@ -136,7 +136,7 @@ static inline void ano_audio_seq_store(_Atomic uint64_t *value, _Atomic uint64_t
 }
 
 // false if never published. Else copies an untorn value.
-static inline bool ano_audio_seq_load(const _Atomic uint64_t *value, const _Atomic uint64_t *version, void *out, size_t stride)
+static inline bool ano_audio_seq_load(const ANO_ATOMIC(uint64_t) *value, const ANO_ATOMIC(uint64_t) *version, void *out, size_t stride)
 {
     for (;;) {
         uint64_t s1 = atomic_load_explicit(version, memory_order_acquire);
@@ -155,7 +155,7 @@ static inline bool ano_audio_seq_load(const _Atomic uint64_t *value, const _Atom
 
 /* Bridge */
 
-_Static_assert(sizeof(_Atomic uint64_t) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
+_Static_assert(sizeof(ANO_ATOMIC(uint64_t)) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
 _Static_assert(sizeof(AnoAudioListener)  % 8u == 0, "seqlock lane copies whole 64-bit words");
 _Static_assert(sizeof(AnoAudioTelemetry) % 8u == 0, "seqlock lane copies whole 64-bit words");
 
@@ -166,10 +166,10 @@ struct AnoAudioBridge
 
     // Seqlock lanes: object bytes as atomic words. Typed access via publish/acquire only.
     // One ANO_THREAD_LINE per direction; version leads its words.
-    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t listenerVersion; // logic publishes
-    _Atomic uint64_t listener[sizeof(AnoAudioListener) / sizeof(uint64_t)];
-    _Alignas(ANO_THREAD_LINE) _Atomic uint64_t telemetryVersion; // mixer publishes
-    _Atomic uint64_t telemetry[sizeof(AnoAudioTelemetry) / sizeof(uint64_t)];
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) listenerVersion; // logic publishes
+    ANO_ATOMIC(uint64_t) listener[sizeof(AnoAudioListener) / sizeof(uint64_t)];
+    _Alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) telemetryVersion; // mixer publishes
+    ANO_ATOMIC(uint64_t) telemetry[sizeof(AnoAudioTelemetry) / sizeof(uint64_t)];
 };
 
 // Rings from heap. Destroy bridge before releasing heap.

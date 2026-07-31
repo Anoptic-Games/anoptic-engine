@@ -90,11 +90,15 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
             // Seed ALL layers to SHADER_READ (transitionImageLayout spans only layer 0).
             VkCommandBuffer seedCmd = beginSingleTimeCommands(ctx);
             if (seedCmd == VK_NULL_HANDLE) return false;
-            VkImageMemoryBarrier seed = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = *momentImgs[m], .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-                .subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS } };
+            VkImageMemoryBarrier seed = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+            seed.srcAccessMask = 0;
+            seed.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            seed.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            seed.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            seed.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            seed.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            seed.image = *momentImgs[m];
+            seed.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ANO_SHADOW_ATLAS_LAYERS };
             vkCmdPipelineBarrier(seedCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 0, 0, NULL, 0, NULL, 1, &seed);
             if (!endSingleTimeCommandsChecked(ctx, seedCmd)) return false;

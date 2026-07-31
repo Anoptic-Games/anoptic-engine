@@ -13,23 +13,17 @@
 #include <stdbool.h>
 
 #include "music_det.h"
+#include "music_modes.h"
 #include <anoptic_music.h>
 
 
 /* Scales */
-
-extern const char *const ANO_MODE_NAMES[ANO_MODE_COUNT];
-
-// Usable modes bright to dark; locrian scores -1 via BRIGHTNESS.get(mode, -1).
-int ano_mode_brightness(AnoMode mode); // lydian +3 .. phrygian -2, locrian -1
 
 typedef struct AnoScale
 {
     uint8_t tonic; // pitch class 0..11
     uint8_t mode;  // AnoMode
 } AnoScale;
-
-const uint8_t *ano_mode_intervals(AnoMode mode); // 7 ascending semitone offsets
 
 void ano_scale_pcs(AnoScale s, uint8_t out[7]);
 bool ano_scale_contains(AnoScale s, int midi);

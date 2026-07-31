@@ -11,7 +11,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdatomic.h>
+#include <anoptic_atomic.h>
 #include <vulkan/vulkan.h>
 
 #include "vulkan_backend/gpu_alloc.h"
@@ -74,7 +74,7 @@ typedef struct TransformStreamBuffer
 
     // Lock-free SPSC lifetime. Seqs <= reclaimSeq are GPU-done.
     uint64_t          produceSeq;                      // producer thread only
-    _Atomic uint64_t  reclaimSeq;                      // consumer -> producer
+    ANO_ATOMIC(uint64_t)  reclaimSeq;                      // consumer -> producer
     uint64_t          curSeq;                          // render side: latest published seq (0 = none)
     uint32_t          curCount;                        // render side: entries in curSeq's slice
     uint64_t          frameSeq[MAX_FRAMES_IN_FLIGHT];  // seq each in-flight frame submitted

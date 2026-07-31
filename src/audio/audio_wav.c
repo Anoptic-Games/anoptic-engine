@@ -90,7 +90,8 @@ static uint64_t wav_resample(const float *src, uint64_t srcFrames, uint32_t chan
     uint64_t dstFrames = (uint64_t)((double)srcFrames * (double)dstRate / (double)srcRate);
     if (dstFrames == 0u)
         dstFrames = 1u;
-    float *dst = mi_malloc((size_t)dstFrames * channels * sizeof(float));
+    float *dst = static_cast<float *>(
+        mi_malloc((size_t)dstFrames * channels * sizeof(float)));
     if (!dst)
         return 0u;
     const double step = (double)srcRate / (double)dstRate;
@@ -130,7 +131,7 @@ float *ano_audio_wav_load(const char *path, uint32_t targetRate,
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (fsize < 44) { fclose(f); return NULL; }
-    uint8_t *raw = mi_malloc((size_t)fsize);
+    uint8_t *raw = static_cast<uint8_t *>(mi_malloc((size_t)fsize));
     if (!raw) { fclose(f); return NULL; }
     bool readOk = fread(raw, 1, (size_t)fsize, f) == (size_t)fsize;
     fclose(f);
@@ -173,7 +174,7 @@ float *ano_audio_wav_load(const char *path, uint32_t targetRate,
     const uint32_t frameBytes = channels * bits / 8u;
     uint64_t frames = dataBytes / frameBytes;
     if (frames == 0u) { mi_free(raw); return NULL; }
-    float *pcm = mi_malloc((size_t)frames * channels * sizeof(float));
+    float *pcm = static_cast<float *>(mi_malloc((size_t)frames * channels * sizeof(float)));
     if (!pcm) { mi_free(raw); return NULL; }
     const uint64_t samples = frames * channels;
     if (tag == 3u) {

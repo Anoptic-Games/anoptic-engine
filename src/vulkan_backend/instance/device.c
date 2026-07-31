@@ -11,6 +11,7 @@
 #include <math.h>
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
+#include "cpp/ano_alloc.h"
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN
@@ -40,7 +41,11 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	
 	uint32_t queueFamilyCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, NULL);
-	VkQueueFamilyProperties queueFamilies[queueFamilyCount];
+	if (queueFamilyCount == 0)
+		return indices;
+	VkQueueFamilyProperties* queueFamilies = ano::allocate<VkQueueFamilyProperties>(queueFamilyCount);
+	if (queueFamilies == NULL)
+		return indices;
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
 
 	// Select the first queue family satisfying each capability.
@@ -96,6 +101,7 @@ struct QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKH
 	//printf("Final output:\n  Graphics Family: %d\n  Compute family: %d
 	// \n  Transfer Family: %d\n  Present Family: %d\n\n",
 	// indices.graphicsFamily, indices.computeFamily, indices.transferFamily, indices.presentFamily);
+	free(queueFamilies);
 	return indices;
 }
 
@@ -342,7 +348,7 @@ static VkDeviceSize maxDeviceLocalHeapSize(const VkPhysicalDeviceMemoryPropertie
 	return maxSize;
 }
 
-bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, char* preferredDevice) // Extend selection logic, split out device discovery, retain attributes for UI
+bool pickPhysicalDevice(VulkanContext* ctx, DeviceCapabilities* capabilities, struct QueueFamilyIndices* indices, const char* preferredDevice) // Extend selection logic, split out device discovery, retain attributes for UI
 {
 	bool foundPreferredDevice = false;
 	// ANO_DEVICE (caseless name substring) pins the adapter. Suitability checks still apply.
@@ -680,4 +686,3 @@ VkResult createLogicalDevice(VkPhysicalDevice physicalDevice, VkDevice* device, 
 
 	return VK_SUCCESS;
 }
-
