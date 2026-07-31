@@ -33,6 +33,18 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
+# Reflection toolchain policy (2026-08-01): use GCC 16.1+ until Clang implements the C++26 static-reflection facilities used by this branch.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(WARNING
+            "\n"
+            "================================================================================\n"
+            "C++26 REFLECTION IS NOT AVAILABLE WITH CLANG\n"
+            "Detected Clang ${CMAKE_CXX_COMPILER_VERSION}. As of 2026-08-01, Clang does not\n"
+            "implement the C++26 static-reflection facilities required by hyper-c-reflection.\n"
+            "Use GCC 16.1 or newer until Clang catches up.\n"
+            "================================================================================")
+endif()
+
 # Emit compile_commands.json for clangd.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
