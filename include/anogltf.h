@@ -381,17 +381,23 @@ struct AnoGltfAccessorSparseIndices final {
     [[=AnoGltfRequired{}]] AnoGltfBufferViewIndex bufferView;
     uint64_t byteOffset = 0;
     [[=AnoGltfRequired{}]] AnoGltfComponentType componentType = AnoGltfComponentType::invalid;
+    AnoGltfExtras extras;
+    AnoGltfExtensions<> extensions;
 };
 
 struct AnoGltfAccessorSparseValues final {
     [[=AnoGltfRequired{}]] AnoGltfBufferViewIndex bufferView;
     uint64_t byteOffset = 0;
+    AnoGltfExtras extras;
+    AnoGltfExtensions<> extensions;
 };
 
 struct AnoGltfAccessorSparse final {
     [[=AnoGltfRequired{}]] uint64_t count = 0;
     [[=AnoGltfRequired{}]] AnoGltfAccessorSparseIndices indices;
     [[=AnoGltfRequired{}]] AnoGltfAccessorSparseValues values;
+    AnoGltfExtras extras;
+    AnoGltfExtensions<> extensions;
 };
 
 struct [[=AnoGltfIndexKind{^^AnoGltfAccessorTag}]] AnoGltfAccessor final {
@@ -453,6 +459,7 @@ struct AnoGltfTextureInfo final {
     uint32_t texCoord = 0;
     float scale = 1.0f;
     float strength = 1.0f;
+    AnoGltfExtras extras;
     AnoGltfExtensions<AnoGltfTextureInfoExtensionsKnown> extensions;
 };
 
@@ -470,6 +477,8 @@ struct AnoGltfPbrMetallicRoughness final {
     float metallicFactor = 1.0f;
     float roughnessFactor = 1.0f;
     AnoGltfTextureInfo metallicRoughnessTexture;
+    AnoGltfExtras extras;
+    AnoGltfExtensions<> extensions;
 };
 
 struct AnoGltfPbrSpecularGlossiness final {
@@ -634,6 +643,7 @@ struct AnoGltfCameraPerspective final {
     AnoGltfOptional<float> zfar;
     [[=AnoGltfRequired{}]] float znear = 0.0f;
     AnoGltfExtras extras;
+    AnoGltfExtensions<> extensions;
 };
 
 struct AnoGltfCameraOrthographic final {
@@ -642,6 +652,7 @@ struct AnoGltfCameraOrthographic final {
     [[=AnoGltfRequired{}]] float zfar = 0.0f;
     [[=AnoGltfRequired{}]] float znear = 0.0f;
     AnoGltfExtras extras;
+    AnoGltfExtensions<> extensions;
 };
 
 struct [[=AnoGltfIndexKind{^^AnoGltfCameraTag}]] AnoGltfCamera final {
@@ -713,8 +724,9 @@ struct [[=AnoGltfIndexKind{^^AnoGltfAnimationSamplerTag}]] AnoGltfAnimationSampl
 };
 
 struct AnoGltfAnimationTarget final {
-    [[=AnoGltfRequired{}]] AnoGltfNodeIndex node;
+    AnoGltfNodeIndex node;
     [[=AnoGltfRequired{}]] AnoGltfAnimationPath path = AnoGltfAnimationPath::invalid;
+    AnoGltfExtras extras;
     AnoGltfExtensions<> extensions;
 };
 
@@ -919,6 +931,8 @@ void ano_gltf_node_transform_local(const AnoGltfNode* node, float output[16]);
 
 #ifdef ANOGLTF_IMPLEMENTATION
 
+#include <stdio.h>
+
 namespace anogltf_detail {
 
 inline constexpr uint32_t defaultMaxJsonTokens = 1u << 20;
@@ -1050,6 +1064,44 @@ struct RootSchema final {
     AnoGltfExtensions<AnoGltfRootExtensionsKnown> extensions;
 };
 
+template<class T>
+consteval bool plain_schema_type()
+{
+    if constexpr (ArrayTraits<T>::value) {
+        return AnoGltfPlainData<T>
+            && plain_schema_type<typename ArrayTraits<T>::Element>();
+    } else if constexpr (OptionalTraits<T>::value) {
+        return AnoGltfPlainData<T>
+            && plain_schema_type<typename OptionalTraits<T>::Value>();
+    } else if constexpr (FixedArrayTraits<T>::value) {
+        return AnoGltfPlainData<T>
+            && plain_schema_type<typename FixedArrayTraits<T>::Element>();
+    } else if constexpr (ExtensionsTraits<T>::value) {
+        return AnoGltfPlainData<T>
+            && plain_schema_type<typename ExtensionsTraits<T>::Schema>()
+            && plain_schema_type<AnoGltfExtension>();
+    } else if constexpr (std::is_array_v<T>) {
+        return plain_schema_type<std::remove_extent_t<T>>();
+    } else if constexpr (std::is_class_v<T>) {
+        if constexpr (!AnoGltfPlainData<T> || !std::is_final_v<T>)
+            return false;
+        bool plain = true;
+        static constexpr auto members = std::define_static_array(
+            std::meta::nonstatic_data_members_of(^^T, std::meta::access_context::unchecked()));
+        template for (constexpr auto member : members) {
+            using Field = [:std::meta::type_of(member):];
+            if constexpr (!plain_schema_type<Field>())
+                plain = false;
+        }
+        return plain;
+    } else {
+        return std::is_trivially_copyable_v<T>;
+    }
+}
+
+static_assert(plain_schema_type<RootSchema>());
+static_assert(plain_schema_type<AnoGltfData>());
+
 static void* default_allocate(void*, size_t bytes)
 {
     return malloc(bytes);
@@ -1060,6 +1112,34 @@ static void default_free(void*, void* allocation)
     free(allocation);
 }
 
+static AnoGltfResult default_file_size(void*, const char* path, size_t* bytes)
+{
+    if (!path || !bytes)
+        return AnoGltfResult::invalid_options;
+    FILE* file = fopen(path, "rb");
+    if (!file)
+        return AnoGltfResult::file_not_found;
+    const bool sought = fseek(file, 0, SEEK_END) == 0;
+    const long length = sought ? ftell(file) : -1;
+    const bool closed = fclose(file) == 0;
+    if (length < 0 || !closed)
+        return AnoGltfResult::io_error;
+    *bytes = static_cast<size_t>(length);
+    return AnoGltfResult::success;
+}
+
+static AnoGltfResult default_file_read(void*, const char* path, void* destination, size_t bytes)
+{
+    if (!path || (!destination && bytes != 0))
+        return AnoGltfResult::invalid_options;
+    FILE* file = fopen(path, "rb");
+    if (!file)
+        return AnoGltfResult::file_not_found;
+    const bool read = bytes == 0 || fread(destination, 1, bytes, file) == bytes;
+    const bool closed = fclose(file) == 0;
+    return read && closed ? AnoGltfResult::success : AnoGltfResult::io_error;
+}
+
 static AnoGltfResult resolve_options(const AnoGltfOptions* source, AnoGltfOptions* output)
 {
     *output = {};
@@ -1067,9 +1147,15 @@ static AnoGltfResult resolve_options(const AnoGltfOptions* source, AnoGltfOption
         *output = *source;
     if ((output->allocate == nullptr) != (output->free == nullptr))
         return AnoGltfResult::invalid_options;
+    if ((output->fileSize == nullptr) != (output->fileRead == nullptr))
+        return AnoGltfResult::invalid_options;
     if (!output->allocate) {
         output->allocate = default_allocate;
         output->free = default_free;
+    }
+    if (!output->fileSize) {
+        output->fileSize = default_file_size;
+        output->fileRead = default_file_read;
     }
     if (output->maxJsonTokens == 0)
         output->maxJsonTokens = defaultMaxJsonTokens;
@@ -1964,11 +2050,9 @@ static bool string_starts_with(const AnoGltfString& string, const char* prefix, 
 
 static bool parse_decimal_suffix(const AnoGltfString& string, size_t at, int32_t* output)
 {
-    if (at == string.length) {
-        *output = 0;
-        return true;
-    }
-    if (string.data[at++] != '_' || at == string.length)
+    if (at >= string.length || string.data[at++] != '_' || at == string.length)
+        return false;
+    if (string.data[at] == '0' && at + 1 != string.length)
         return false;
     uint32_t value = 0;
     for (; at < string.length; ++at) {
@@ -1992,22 +2076,27 @@ static void classify_attribute(T* attribute)
         const char* name;
         uint8_t length;
         AnoGltfAttributeType type;
+        bool indexed;
     };
     static constexpr Candidate candidates[] = {
-        {"POSITION", 8, AnoGltfAttributeType::position},
-        {"NORMAL", 6, AnoGltfAttributeType::normal},
-        {"TANGENT", 7, AnoGltfAttributeType::tangent},
-        {"TEXCOORD", 8, AnoGltfAttributeType::texcoord},
-        {"COLOR", 5, AnoGltfAttributeType::color},
-        {"JOINTS", 6, AnoGltfAttributeType::joints},
-        {"WEIGHTS", 7, AnoGltfAttributeType::weights},
-        {"TRANSLATION", 11, AnoGltfAttributeType::translation},
-        {"ROTATION", 8, AnoGltfAttributeType::rotation},
-        {"SCALE", 5, AnoGltfAttributeType::scale},
+        {"POSITION", 8, AnoGltfAttributeType::position, false},
+        {"NORMAL", 6, AnoGltfAttributeType::normal, false},
+        {"TANGENT", 7, AnoGltfAttributeType::tangent, false},
+        {"TEXCOORD", 8, AnoGltfAttributeType::texcoord, true},
+        {"COLOR", 5, AnoGltfAttributeType::color, true},
+        {"JOINTS", 6, AnoGltfAttributeType::joints, true},
+        {"WEIGHTS", 7, AnoGltfAttributeType::weights, true},
+        {"TRANSLATION", 11, AnoGltfAttributeType::translation, false},
+        {"ROTATION", 8, AnoGltfAttributeType::rotation, false},
+        {"SCALE", 5, AnoGltfAttributeType::scale, false},
     };
     for (const Candidate& candidate : candidates) {
-        if (string_starts_with(attribute->name, candidate.name, candidate.length)
-            && parse_decimal_suffix(attribute->name, candidate.length, &attribute->set)) {
+        const bool exact = attribute->name.length == candidate.length
+            && memcmp(attribute->name.data, candidate.name, candidate.length) == 0;
+        if ((!candidate.indexed && exact)
+            || (candidate.indexed
+                && string_starts_with(attribute->name, candidate.name, candidate.length)
+                && parse_decimal_suffix(attribute->name, candidate.length, &attribute->set))) {
             attribute->type = candidate.type;
             return;
         }
@@ -2414,6 +2503,10 @@ static AnoGltfResult validate_sparse(
 
     const AnoGltfBufferView& indexView = root.bufferViews.data[sparse.indices.bufferView.value];
     const AnoGltfBufferView& valueView = root.bufferViews.data[sparse.values.bufferView.value];
+    if (indexView.byteStride != 0 || valueView.byteStride != 0
+        || indexView.target != AnoGltfBufferViewTarget::unspecified
+        || valueView.target != AnoGltfBufferViewTarget::unspecified)
+        return AnoGltfResult::invalid_gltf;
     if (!view_contains(indexView, sparse.indices.byteOffset, sparse.count, indexSize, indexSize)
         || !view_contains(valueView, sparse.values.byteOffset, sparse.count,
             accessorElementSize, accessorElementSize))
@@ -2452,48 +2545,100 @@ static bool string_array_unique(const AnoGltfArray<AnoGltfString>& strings)
     return true;
 }
 
-static bool extension_supported(const AnoGltfString& extension)
+static bool string_array_contains(
+    const AnoGltfArray<AnoGltfString>& strings, const AnoGltfString& needle)
 {
-    struct Supported final {
-        const char* name;
-        uint8_t length;
-    };
-    static constexpr Supported supported[] = {
-        {"EXT_mesh_gpu_instancing", sizeof("EXT_mesh_gpu_instancing") - 1},
-        {"EXT_meshopt_compression", sizeof("EXT_meshopt_compression") - 1},
-        {"EXT_texture_webp", sizeof("EXT_texture_webp") - 1},
-        {"KHR_draco_mesh_compression", sizeof("KHR_draco_mesh_compression") - 1},
-        {"KHR_lights_punctual", sizeof("KHR_lights_punctual") - 1},
-        {"KHR_materials_anisotropy", sizeof("KHR_materials_anisotropy") - 1},
-        {"KHR_materials_clearcoat", sizeof("KHR_materials_clearcoat") - 1},
-        {"KHR_materials_diffuse_transmission", sizeof("KHR_materials_diffuse_transmission") - 1},
-        {"KHR_materials_dispersion", sizeof("KHR_materials_dispersion") - 1},
-        {"KHR_materials_emissive_strength", sizeof("KHR_materials_emissive_strength") - 1},
-        {"KHR_materials_ior", sizeof("KHR_materials_ior") - 1},
-        {"KHR_materials_iridescence", sizeof("KHR_materials_iridescence") - 1},
-        {"KHR_materials_pbrSpecularGlossiness", sizeof("KHR_materials_pbrSpecularGlossiness") - 1},
-        {"KHR_materials_sheen", sizeof("KHR_materials_sheen") - 1},
-        {"KHR_materials_specular", sizeof("KHR_materials_specular") - 1},
-        {"KHR_materials_transmission", sizeof("KHR_materials_transmission") - 1},
-        {"KHR_materials_unlit", sizeof("KHR_materials_unlit") - 1},
-        {"KHR_materials_variants", sizeof("KHR_materials_variants") - 1},
-        {"KHR_materials_volume", sizeof("KHR_materials_volume") - 1},
-        {"KHR_mesh_quantization", sizeof("KHR_mesh_quantization") - 1},
-        {"KHR_meshopt_compression", sizeof("KHR_meshopt_compression") - 1},
-        {"KHR_texture_basisu", sizeof("KHR_texture_basisu") - 1},
-        {"KHR_texture_transform", sizeof("KHR_texture_transform") - 1},
-    };
-    for (const Supported& candidate : supported) {
-        if (extension.length == candidate.length
-            && memcmp(extension.data, candidate.name, candidate.length) == 0)
+    for (uint32_t i = 0; i < strings.count; ++i) {
+        if (strings.data[i].length == needle.length
+            && memcmp(strings.data[i].data, needle.data, needle.length) == 0)
             return true;
     }
     return false;
 }
 
+static bool string_array_contains(
+    const AnoGltfArray<AnoGltfString>& strings, const char* literal, size_t length)
+{
+    const AnoGltfString needle{literal, static_cast<uint32_t>(length)};
+    return length <= UINT32_MAX && string_array_contains(strings, needle);
+}
+
+template<class Known>
+static bool extension_known(const AnoGltfString& extension)
+{
+    static constexpr auto members = std::define_static_array(
+        std::meta::nonstatic_data_members_of(^^Known, std::meta::access_context::unchecked()));
+    bool known = false;
+    template for (constexpr auto member : members) {
+        constexpr auto name = std::meta::identifier_of(member);
+        if (extension.length == name.size()
+            && memcmp(extension.data, name.data(), name.size()) == 0)
+            known = true;
+    }
+    return known;
+}
+
+static bool extension_supported(const AnoGltfString& extension)
+{
+    return string_equal(extension, "KHR_mesh_quantization", sizeof("KHR_mesh_quantization") - 1)
+        || extension_known<AnoGltfBufferViewExtensionsKnown>(extension)
+        || extension_known<AnoGltfBufferExtensionsKnown>(extension)
+        || extension_known<AnoGltfTextureExtensionsKnown>(extension)
+        || extension_known<AnoGltfTextureInfoExtensionsKnown>(extension)
+        || extension_known<AnoGltfMaterialExtensionsKnown>(extension)
+        || extension_known<AnoGltfPrimitiveExtensionsKnown>(extension)
+        || extension_known<AnoGltfNodeExtensionsKnown>(extension)
+        || extension_known<AnoGltfRootExtensionsKnown>(extension);
+}
+
+template<class T>
+static bool extensions_declared(const AnoGltfArray<AnoGltfString>& used, const T& value)
+{
+    if constexpr (ExtensionsTraits<T>::value) {
+        for (uint32_t i = 0; i < value.all.count; ++i) {
+            if (!string_array_contains(used, value.all.data[i].name))
+                return false;
+            for (uint32_t j = 0; j < i; ++j) {
+                const AnoGltfString& left = value.all.data[i].name;
+                const AnoGltfString& right = value.all.data[j].name;
+                if (left.length == right.length
+                    && memcmp(left.data, right.data, left.length) == 0)
+                    return false;
+            }
+        }
+        return extensions_declared(used, value.known);
+    } else if constexpr (OptionalTraits<T>::value) {
+        return !value.present || extensions_declared(used, value.value);
+    } else if constexpr (ArrayTraits<T>::value) {
+        for (uint32_t i = 0; i < value.count; ++i) {
+            if (!extensions_declared(used, value.data[i]))
+                return false;
+        }
+    } else if constexpr (FixedArrayTraits<T>::value) {
+        for (size_t i = 0; i < FixedArrayTraits<T>::count; ++i) {
+            if (!extensions_declared(used, value.values[i]))
+                return false;
+        }
+    } else if constexpr (std::is_class_v<T>) {
+        static constexpr auto members = std::define_static_array(
+            std::meta::nonstatic_data_members_of(^^T, std::meta::access_context::unchecked()));
+        template for (constexpr auto member : members) {
+            constexpr auto ignored = std::define_static_array(
+                std::meta::annotations_of_with_type(member, ^^AnoGltfIgnore));
+            if constexpr (ignored.empty()) {
+                if (!extensions_declared(used, value.*(&[:member:])))
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
 static AnoGltfResult validate_extension_lists(const RootSchema& root)
 {
     if (!string_array_unique(root.extensionsUsed) || !string_array_unique(root.extensionsRequired))
+        return AnoGltfResult::invalid_gltf;
+    if (!extensions_declared(root.extensionsUsed, root))
         return AnoGltfResult::invalid_gltf;
     for (uint32_t required = 0; required < root.extensionsRequired.count; ++required) {
         const AnoGltfString& extension = root.extensionsRequired.data[required];
@@ -2569,39 +2714,36 @@ static AnoGltfResult validate_meshopt(
     return AnoGltfResult::success;
 }
 
-static AnoGltfResult validate_attribute_map(
-    const RootSchema& root, const AnoGltfAttributeMap& map, bool instancing = false)
+enum class AttributeDomain : uint8_t {
+    primitive,
+    morph,
+    instancing,
+};
+
+static bool attribute_accessor_valid(
+    const AnoGltfAttribute& attribute, const AnoGltfAccessor& accessor,
+    AttributeDomain domain, bool quantized)
 {
-    for (uint32_t i = 0; i < map.values.count; ++i) {
-        const AnoGltfAttribute& attribute = map.values.data[i];
-        if (!valid_required_index(attribute.accessor, root.accessors.count))
-            return AnoGltfResult::invalid_gltf;
-        using enum AnoGltfAttributeType;
+    using enum AnoGltfAttributeType;
+    const bool signedInteger = accessor.componentType == AnoGltfComponentType::byte
+        || accessor.componentType == AnoGltfComponentType::short_;
+    const bool unsignedInteger = accessor.componentType == AnoGltfComponentType::unsigned_byte
+        || accessor.componentType == AnoGltfComponentType::unsigned_short;
+    const bool normalizedInteger = accessor.normalized && (signedInteger || unsignedInteger);
+
+    if (domain == AttributeDomain::instancing) {
         switch (attribute.type) {
         case translation:
-        case scale: {
-            if (!instancing || attribute.set != 0)
-                return AnoGltfResult::invalid_gltf;
-            const AnoGltfAccessor& accessor = root.accessors.data[attribute.accessor.value];
-            if (accessor.type != AnoGltfAccessorType::vec3
-                || accessor.componentType != AnoGltfComponentType::float_)
-                return AnoGltfResult::invalid_gltf;
-            break;
-        }
-        case rotation: {
-            if (!instancing || attribute.set != 0)
-                return AnoGltfResult::invalid_gltf;
-            const AnoGltfAccessor& accessor = root.accessors.data[attribute.accessor.value];
-            const bool packedRotation = accessor.normalized
-                && (accessor.componentType == AnoGltfComponentType::byte
-                    || accessor.componentType == AnoGltfComponentType::short_);
-            if (accessor.type != AnoGltfAccessorType::vec4
-                || (accessor.componentType != AnoGltfComponentType::float_ && !packedRotation))
-                return AnoGltfResult::invalid_gltf;
-            break;
-        }
+        case scale:
+            return attribute.set == 0 && accessor.type == AnoGltfAccessorType::vec3
+                && accessor.componentType == AnoGltfComponentType::float_;
+        case rotation:
+            return attribute.set == 0 && accessor.type == AnoGltfAccessorType::vec4
+                && (accessor.componentType == AnoGltfComponentType::float_
+                    || (accessor.normalized && signedInteger));
         case custom:
-            break;
+            return true;
+        case invalid:
         case position:
         case normal:
         case tangent:
@@ -2609,11 +2751,140 @@ static AnoGltfResult validate_attribute_map(
         case color:
         case joints:
         case weights:
-            if (instancing)
-                return AnoGltfResult::invalid_gltf;
-            break;
-        case invalid:
+            return false;
+        }
+    }
+
+    if (attribute.type == custom)
+        return accessor.componentType != AnoGltfComponentType::unsigned_int;
+    if (attribute.type == translation || attribute.type == rotation || attribute.type == scale)
+        return false;
+
+    const bool morph = domain == AttributeDomain::morph;
+    switch (attribute.type) {
+    case position:
+        return accessor.type == AnoGltfAccessorType::vec3
+            && accessor.min.count != 0 && accessor.max.count != 0
+            && (accessor.componentType == AnoGltfComponentType::float_
+                || (quantized && (morph ? signedInteger : signedInteger || unsignedInteger)));
+    case normal:
+        return accessor.type == AnoGltfAccessorType::vec3
+            && (accessor.componentType == AnoGltfComponentType::float_
+                || (quantized && accessor.normalized && signedInteger));
+    case tangent:
+        return accessor.type == (morph ? AnoGltfAccessorType::vec3 : AnoGltfAccessorType::vec4)
+            && (accessor.componentType == AnoGltfComponentType::float_
+                || (quantized && accessor.normalized && signedInteger));
+    case texcoord:
+        if (accessor.type != AnoGltfAccessorType::vec2)
+            return false;
+        if (accessor.componentType == AnoGltfComponentType::float_)
+            return true;
+        if (morph)
+            return normalizedInteger || (quantized && signedInteger);
+        return (accessor.normalized && unsignedInteger)
+            || (quantized && (signedInteger || unsignedInteger));
+    case color:
+        return (accessor.type == AnoGltfAccessorType::vec3
+                || accessor.type == AnoGltfAccessorType::vec4)
+            && (accessor.componentType == AnoGltfComponentType::float_
+                || (accessor.normalized && (unsignedInteger || (morph && signedInteger))));
+    case joints:
+        return !morph && accessor.type == AnoGltfAccessorType::vec4
+            && unsignedInteger && !accessor.normalized;
+    case weights:
+        return !morph && accessor.type == AnoGltfAccessorType::vec4
+            && (accessor.componentType == AnoGltfComponentType::float_
+                || (accessor.normalized && unsignedInteger));
+    case invalid:
+    case custom:
+    case translation:
+    case rotation:
+    case scale:
+        return false;
+    }
+    return false;
+}
+
+static uint32_t attribute_type_count(
+    const AnoGltfAttributeMap& map, AnoGltfAttributeType type)
+{
+    uint32_t count = 0;
+    int32_t maximum = -1;
+    for (uint32_t i = 0; i < map.values.count; ++i) {
+        if (map.values.data[i].type != type)
+            continue;
+        ++count;
+        if (map.values.data[i].set > maximum)
+            maximum = map.values.data[i].set;
+    }
+    return count != 0 && maximum + 1 != static_cast<int32_t>(count)
+        ? UINT32_MAX : count;
+}
+
+static bool topology_count_valid(AnoGltfPrimitiveMode mode, uint64_t count)
+{
+    using enum AnoGltfPrimitiveMode;
+    switch (mode) {
+    case points:
+        return count != 0;
+    case lines:
+        return count != 0 && count % 2 == 0;
+    case line_loop:
+    case line_strip:
+        return count >= 2;
+    case triangles:
+        return count != 0 && count % 3 == 0;
+    case triangle_strip:
+    case triangle_fan:
+        return count >= 3;
+    }
+    return false;
+}
+
+static bool animation_output_valid(
+    AnoGltfAnimationPath path, const AnoGltfAccessor& accessor)
+{
+    const bool normalizedInteger = accessor.normalized
+        && (accessor.componentType == AnoGltfComponentType::byte
+            || accessor.componentType == AnoGltfComponentType::unsigned_byte
+            || accessor.componentType == AnoGltfComponentType::short_
+            || accessor.componentType == AnoGltfComponentType::unsigned_short);
+    using enum AnoGltfAnimationPath;
+    switch (path) {
+    case translation:
+    case scale:
+        return accessor.type == AnoGltfAccessorType::vec3
+            && accessor.componentType == AnoGltfComponentType::float_;
+    case rotation:
+        return accessor.type == AnoGltfAccessorType::vec4
+            && (accessor.componentType == AnoGltfComponentType::float_ || normalizedInteger);
+    case weights:
+        return accessor.type == AnoGltfAccessorType::scalar
+            && (accessor.componentType == AnoGltfComponentType::float_ || normalizedInteger);
+    case invalid:
+        return false;
+    }
+    return false;
+}
+
+static AnoGltfResult validate_attribute_map(
+    const RootSchema& root, const AnoGltfAttributeMap& map,
+    AttributeDomain domain, bool quantized)
+{
+    for (uint32_t i = 0; i < map.values.count; ++i) {
+        const AnoGltfAttribute& attribute = map.values.data[i];
+        if (!valid_required_index(attribute.accessor, root.accessors.count))
             return AnoGltfResult::invalid_gltf;
+        const AnoGltfAccessor& accessor = root.accessors.data[attribute.accessor.value];
+        if (!attribute_accessor_valid(attribute, accessor, domain, quantized))
+            return AnoGltfResult::invalid_gltf;
+        if (ano_gltf_has_index(accessor.bufferView)) {
+            const AnoGltfBufferView& view = root.bufferViews.data[accessor.bufferView.value];
+            const uint32_t stride = view.byteStride
+                ? view.byteStride : element_size(accessor.componentType, accessor.type);
+            if (accessor.byteOffset % 4 != 0 || stride % 4 != 0)
+                return AnoGltfResult::invalid_gltf;
         }
         for (uint32_t j = 0; j < i; ++j) {
             const AnoGltfAttribute& previous = map.values.data[j];
@@ -2622,6 +2893,15 @@ static AnoGltfResult validate_attribute_map(
                 return AnoGltfResult::invalid_gltf;
         }
     }
+    using enum AnoGltfAttributeType;
+    const uint32_t texcoords = attribute_type_count(map, texcoord);
+    const uint32_t colors = attribute_type_count(map, color);
+    const uint32_t jointsCount = attribute_type_count(map, joints);
+    const uint32_t weightsCount = attribute_type_count(map, weights);
+    if (texcoords == UINT32_MAX || colors == UINT32_MAX
+        || jointsCount == UINT32_MAX || weightsCount == UINT32_MAX
+        || jointsCount != weightsCount)
+        return AnoGltfResult::invalid_gltf;
     return AnoGltfResult::success;
 }
 
@@ -2768,6 +3048,9 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
     const AnoGltfResult extensionResult = validate_extension_lists(root);
     if (extensionResult != AnoGltfResult::success)
         return extensionResult;
+    const bool meshQuantized = string_array_contains(
+        root.extensionsRequired, "KHR_mesh_quantization",
+        sizeof("KHR_mesh_quantization") - 1);
 
     for (uint32_t i = 0; i < root.buffers.count; ++i) {
         const AnoGltfBuffer& buffer = root.buffers.data[i];
@@ -2902,7 +3185,8 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
                 || !valid_optional_index(primitive.indices, root.accessors.count)
                 || !valid_optional_index(primitive.material, root.materials.count))
                 return AnoGltfResult::invalid_gltf;
-            AnoGltfResult result = validate_attribute_map(root, primitive.attributes);
+            AnoGltfResult result = validate_attribute_map(
+                root, primitive.attributes, AttributeDomain::primitive, meshQuantized);
             if (result != AnoGltfResult::success)
                 return result;
             const uint64_t vertexCount =
@@ -2918,19 +3202,40 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
             else if (primitive.targets.count != targetCount)
                 return AnoGltfResult::invalid_gltf;
             for (uint32_t target = 0; target < primitive.targets.count; ++target) {
-                result = validate_attribute_map(root, primitive.targets.data[target].attributes);
+                const AnoGltfAttributeMap& targetAttributes =
+                    primitive.targets.data[target].attributes;
+                if (targetAttributes.values.count == 0)
+                    return AnoGltfResult::invalid_gltf;
+                result = validate_attribute_map(
+                    root, targetAttributes, AttributeDomain::morph, meshQuantized);
                 if (result != AnoGltfResult::success)
                     return result;
-                for (uint32_t attribute = 0;
-                     attribute < primitive.targets.data[target].attributes.values.count; ++attribute) {
+                for (uint32_t attribute = 0; attribute < targetAttributes.values.count; ++attribute) {
+                    const AnoGltfAttribute& targetAttribute =
+                        targetAttributes.values.data[attribute];
                     const AnoGltfAccessorIndex accessor =
-                        primitive.targets.data[target].attributes.values.data[attribute].accessor;
+                        targetAttribute.accessor;
                     if (root.accessors.data[accessor.value].count != vertexCount)
+                        return AnoGltfResult::invalid_gltf;
+                    bool basePresent = false;
+                    for (uint32_t base = 0; base < primitive.attributes.values.count; ++base) {
+                        const AnoGltfAttribute& baseAttribute =
+                            primitive.attributes.values.data[base];
+                        if (targetAttribute.name.length == baseAttribute.name.length
+                            && memcmp(targetAttribute.name.data, baseAttribute.name.data,
+                                      targetAttribute.name.length) == 0) {
+                            basePresent = true;
+                            break;
+                        }
+                    }
+                    if (!basePresent)
                         return AnoGltfResult::invalid_gltf;
                 }
             }
+            uint64_t elementCount = vertexCount;
             if (ano_gltf_has_index(primitive.indices)) {
                 const AnoGltfAccessor& indices = root.accessors.data[primitive.indices.value];
+                elementCount = indices.count;
                 if (indices.type != AnoGltfAccessorType::scalar
                     || (indices.componentType != AnoGltfComponentType::unsigned_byte
                         && indices.componentType != AnoGltfComponentType::unsigned_short
@@ -2944,14 +3249,33 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
                         return AnoGltfResult::invalid_gltf;
                 }
             }
+            if (!topology_count_valid(primitive.mode, elementCount))
+                return AnoGltfResult::invalid_gltf;
             const AnoGltfPrimitiveExtensionsKnown& extensions = primitive.extensions.known;
             if (extensions.KHR_draco_mesh_compression.present) {
                 const AnoGltfDracoMeshCompression& draco = extensions.KHR_draco_mesh_compression.value;
-                if (!valid_required_index(draco.bufferView, root.bufferViews.count))
+                if (!valid_required_index(draco.bufferView, root.bufferViews.count)
+                    || (primitive.mode != AnoGltfPrimitiveMode::triangles
+                        && primitive.mode != AnoGltfPrimitiveMode::triangle_strip))
                     return AnoGltfResult::invalid_gltf;
                 result = validate_draco_attribute_map(draco.attributes);
                 if (result != AnoGltfResult::success)
                     return result;
+                for (uint32_t attribute = 0; attribute < draco.attributes.values.count; ++attribute) {
+                    const AnoGltfDracoAttribute& compressed = draco.attributes.values.data[attribute];
+                    bool declared = false;
+                    for (uint32_t base = 0; base < primitive.attributes.values.count; ++base) {
+                        const AnoGltfAttribute& source = primitive.attributes.values.data[base];
+                        if (compressed.name.length == source.name.length
+                            && memcmp(compressed.name.data, source.name.data,
+                                      compressed.name.length) == 0) {
+                            declared = true;
+                            break;
+                        }
+                    }
+                    if (!declared)
+                        return AnoGltfResult::invalid_gltf;
+                }
             }
             if (extensions.KHR_materials_variants.present) {
                 const AnoGltfArray<AnoGltfMaterialVariantMapping>& mappings =
@@ -2968,6 +3292,19 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
                     for (uint32_t variant = 0; variant < mapping.variants.count; ++variant) {
                         if (!valid_required_index(mapping.variants.data[variant], variantCount))
                             return AnoGltfResult::invalid_gltf;
+                        for (uint32_t previousMapping = 0;
+                             previousMapping <= mappingIndex; ++previousMapping) {
+                            const AnoGltfMaterialVariantMapping& previous =
+                                mappings.data[previousMapping];
+                            const uint32_t limit = previousMapping == mappingIndex
+                                ? variant : previous.variants.count;
+                            for (uint32_t previousVariant = 0;
+                                 previousVariant < limit; ++previousVariant) {
+                                if (previous.variants.data[previousVariant].value
+                                    == mapping.variants.data[variant].value)
+                                    return AnoGltfResult::invalid_gltf;
+                            }
+                        }
                     }
                 }
             }
@@ -2989,6 +3326,14 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
                 if (skin.joints.data[joint].value == skin.joints.data[previous].value)
                     return AnoGltfResult::invalid_gltf;
             }
+        }
+        if (ano_gltf_has_index(skin.inverseBindMatrices)) {
+            const AnoGltfAccessor& matrices =
+                root.accessors.data[skin.inverseBindMatrices.value];
+            if (matrices.type != AnoGltfAccessorType::mat4
+                || matrices.componentType != AnoGltfComponentType::float_
+                || matrices.count < skin.joints.count)
+                return AnoGltfResult::invalid_gltf;
         }
     }
 
@@ -3043,8 +3388,15 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
         if (!valid_optional_index(node.camera, root.cameras.count)
             || !valid_optional_index(node.skin, root.skins.count)
             || !valid_optional_index(node.mesh, root.meshes.count)
+            || (ano_gltf_has_index(node.skin) && !ano_gltf_has_index(node.mesh))
             || (node.matrix.present && (node.rotation.present || node.scale.present || node.translation.present)))
             return AnoGltfResult::invalid_gltf;
+        if (node.rotation.present) {
+            for (float component : node.rotation.value.values) {
+                if (component < -1.0f || component > 1.0f)
+                    return AnoGltfResult::invalid_gltf;
+            }
+        }
         if (node.weights.count != 0) {
             if (!ano_gltf_has_index(node.mesh))
                 return AnoGltfResult::invalid_gltf;
@@ -3066,7 +3418,7 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
             if (attributes.values.count == 0)
                 return AnoGltfResult::invalid_gltf;
             const AnoGltfResult result = validate_attribute_map(
-                root, attributes, true);
+                root, attributes, AttributeDomain::instancing, meshQuantized);
             if (result != AnoGltfResult::success)
                 return result;
             const uint64_t instanceCount =
@@ -3085,6 +3437,10 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
             if (!valid_required_index(scene.nodes.data[node], root.nodes.count)
                 || ano_gltf_has_index(root.nodes.data[scene.nodes.data[node].value].parent))
                 return AnoGltfResult::invalid_gltf;
+            for (uint32_t previous = 0; previous < node; ++previous) {
+                if (scene.nodes.data[previous].value == scene.nodes.data[node].value)
+                    return AnoGltfResult::invalid_gltf;
+            }
         }
     }
     if (!valid_optional_index(root.scene, root.scenes.count))
@@ -3102,25 +3458,42 @@ static AnoGltfResult validate_schema(const Input& input, const RootSchema& root)
                 return AnoGltfResult::invalid_gltf;
             const AnoGltfAccessor& inputAccessor = root.accessors.data[sampler.input.value];
             if (inputAccessor.type != AnoGltfAccessorType::scalar
-                || inputAccessor.componentType != AnoGltfComponentType::float_)
+                || inputAccessor.componentType != AnoGltfComponentType::float_
+                || inputAccessor.min.count != 1 || inputAccessor.max.count != 1
+                || inputAccessor.min.values[0] < 0.0
+                || (sampler.interpolation == AnoGltfInterpolation::cubic_spline
+                    && inputAccessor.count < 2))
                 return AnoGltfResult::invalid_gltf;
         }
         for (uint32_t channelIndex = 0; channelIndex < animation.channels.count; ++channelIndex) {
             const AnoGltfAnimationChannel& channel = animation.channels.data[channelIndex];
             if (!valid_required_index(channel.sampler, animation.samplers.count)
-                || !valid_required_index(channel.target.node, root.nodes.count)
+                || !valid_optional_index(channel.target.node, root.nodes.count)
                 || !enum_value_valid(channel.target.path))
                 return AnoGltfResult::invalid_gltf;
+            if (!ano_gltf_has_index(channel.target.node))
+                continue;
+            for (uint32_t previous = 0; previous < channelIndex; ++previous) {
+                const AnoGltfAnimationTarget& target =
+                    animation.channels.data[previous].target;
+                if (ano_gltf_has_index(target.node)
+                    && target.node.value == channel.target.node.value
+                    && target.path == channel.target.path)
+                    return AnoGltfResult::invalid_gltf;
+            }
             const AnoGltfAnimationSampler& sampler = animation.samplers.data[channel.sampler.value];
             const AnoGltfAccessor& input = root.accessors.data[sampler.input.value];
             const AnoGltfAccessor& output = root.accessors.data[sampler.output.value];
+            const AnoGltfNode& targetNode = root.nodes.data[channel.target.node.value];
+            if (!animation_output_valid(channel.target.path, output) || targetNode.matrix.present)
+                return AnoGltfResult::invalid_gltf;
             uint64_t components = 1;
             if (channel.target.path == AnoGltfAnimationPath::weights) {
-                const AnoGltfNode& target = root.nodes.data[channel.target.node.value];
-                if (!ano_gltf_has_index(target.mesh)
-                    || root.meshes.data[target.mesh.value].primitives.count == 0)
+                if (!ano_gltf_has_index(targetNode.mesh)
+                    || root.meshes.data[targetNode.mesh.value].primitives.count == 0)
                     return AnoGltfResult::invalid_gltf;
-                components = root.meshes.data[target.mesh.value].primitives.data[0].targets.count;
+                components =
+                    root.meshes.data[targetNode.mesh.value].primitives.data[0].targets.count;
             }
             const uint64_t values = sampler.interpolation == AnoGltfInterpolation::cubic_spline ? 3 : 1;
             uint64_t expected = 0;
@@ -3559,8 +3932,12 @@ static AnoGltfResult load_buffers(
                 memcpy(pathScratch, gltfPath, prefixLength);
             memcpy(pathScratch + prefixLength, buffer.uri.data, buffer.uri.length);
             pathScratch[prefixLength + buffer.uri.length] = '\0';
-            decode_uri(pathScratch + prefixLength);
-            result = options.fileRead(options.fileUser, pathScratch, destination, byteLength);
+            const size_t decodedLength = decode_uri(pathScratch + prefixLength);
+            if (memchr(pathScratch + prefixLength, '\0', decodedLength))
+                result = AnoGltfResult::invalid_gltf;
+            else
+                result = options.fileRead(
+                    options.fileUser, pathScratch, destination, byteLength);
         }
         if (result == AnoGltfResult::success) {
             buffer.data = destination;
@@ -3970,9 +4347,51 @@ static AnoGltfResult validate_loaded_data(const AnoGltfData* data)
                 uint32_t value = 0;
                 if (!accessor_read_index(data, &indices, index, &value))
                     return AnoGltfResult::data_too_short;
+                const uint32_t restart = indices.componentType
+                        == AnoGltfComponentType::unsigned_byte ? UINT8_MAX
+                    : indices.componentType == AnoGltfComponentType::unsigned_short ? UINT16_MAX
+                    : UINT32_MAX;
+                if (value == restart)
+                    return AnoGltfResult::invalid_gltf;
                 if (value >= vertexCount)
                     return AnoGltfResult::invalid_gltf;
             }
+        }
+    }
+    for (uint32_t skinIndex = 0; skinIndex < data->skinsCount; ++skinIndex) {
+        const AnoGltfSkin& skin = data->skins[skinIndex];
+        if (!ano_gltf_has_index(skin.inverseBindMatrices))
+            continue;
+        const AnoGltfAccessor& matrices = data->accessors[skin.inverseBindMatrices.value];
+        for (uint64_t matrixIndex = 0; matrixIndex < matrices.count; ++matrixIndex) {
+            float matrix[16];
+            if (!accessor_read_float(data, &matrices, matrixIndex, matrix, 16))
+                return AnoGltfResult::data_too_short;
+            if (matrix[3] != 0.0f || matrix[7] != 0.0f
+                || matrix[11] != 0.0f || matrix[15] != 1.0f)
+                return AnoGltfResult::invalid_gltf;
+        }
+    }
+    for (uint32_t animationIndex = 0;
+         animationIndex < data->animationsCount; ++animationIndex) {
+        const AnoGltfAnimation& animation = data->animations[animationIndex];
+        for (uint32_t samplerIndex = 0;
+             samplerIndex < animation.samplers.count; ++samplerIndex) {
+            const AnoGltfAccessor& input =
+                data->accessors[animation.samplers.data[samplerIndex].input.value];
+            float previous = 0.0f;
+            for (uint64_t key = 0; key < input.count; ++key) {
+                float timestamp = 0.0f;
+                if (!accessor_read_float(data, &input, key, &timestamp, 1))
+                    return AnoGltfResult::data_too_short;
+                if ((key == 0 && (timestamp < 0.0f
+                        || timestamp != static_cast<float>(input.min.values[0])))
+                    || (key != 0 && timestamp <= previous))
+                    return AnoGltfResult::invalid_gltf;
+                previous = timestamp;
+            }
+            if (previous != static_cast<float>(input.max.values[0]))
+                return AnoGltfResult::invalid_gltf;
         }
     }
     return AnoGltfResult::success;

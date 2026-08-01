@@ -6,6 +6,7 @@
 #include <string.h>
 #include <assert.h>
 #include <meta>
+#include <string_view>
 #include <type_traits>
 #include <anoptic_log.h>
 #include <anogltf.h>
@@ -22,6 +23,49 @@ static PbrFeatureFlags gltf_identify_material_features(const AnoGltfMaterial* ma
 typedef struct ValidatedGltf {
     const AnoGltfData* data;
 } ValidatedGltf;
+
+enum class GltfMaterialExtensionFeature : uint32_t {
+    KHR_materials_pbrSpecularGlossiness = PBR_FEATURE_SPECULAR_GLOSSINESS,
+    KHR_materials_clearcoat = PBR_FEATURE_CLEARCOAT,
+    KHR_materials_transmission = PBR_FEATURE_TRANSMISSION,
+    KHR_materials_ior = PBR_FEATURE_IOR,
+    KHR_materials_specular = PBR_FEATURE_SPECULAR,
+    KHR_materials_volume = PBR_FEATURE_VOLUME,
+    KHR_materials_sheen = PBR_FEATURE_SHEEN,
+    KHR_materials_emissive_strength = PBR_FEATURE_EMISSIVE_STRENGTH,
+    KHR_materials_iridescence = PBR_FEATURE_IRIDESCENCE,
+    KHR_materials_diffuse_transmission = PBR_FEATURE_DIFFUSE_TRANSMISSION,
+    KHR_materials_anisotropy = PBR_FEATURE_ANISOTROPY,
+    KHR_materials_dispersion = PBR_FEATURE_DISPERSION,
+    KHR_materials_unlit = PBR_FEATURE_NONE,
+};
+
+consteval PbrFeatureFlags gltf_material_extension_feature(std::string_view name)
+{
+    static constexpr auto features =
+        std::define_static_array(std::meta::enumerators_of(^^GltfMaterialExtensionFeature));
+    template for (constexpr auto feature : features) {
+        if (name == std::meta::identifier_of(feature))
+            return static_cast<PbrFeatureFlags>([:feature:]);
+    }
+    return UINT32_MAX;
+}
+
+template<class Fn>
+static void gltf_visit_material_extensions(const AnoGltfMaterialExtensionsKnown& extensions,
+                                           Fn&& visit)
+{
+    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
+        ^^AnoGltfMaterialExtensionsKnown, std::meta::access_context::unchecked()));
+    template for (constexpr auto member : members) {
+        constexpr PbrFeatureFlags feature =
+            gltf_material_extension_feature(std::meta::identifier_of(member));
+        static_assert(feature != UINT32_MAX, "every known material extension needs a feature mapping");
+        const auto& extension = extensions.*(&[:member:]);
+        if (extension.present)
+            visit(extension.value, feature);
+    }
+}
 
 // One sized allocation being handed out as sub-arrays.
 typedef struct GltfBlock {
@@ -68,20 +112,9 @@ static bool prim_accessors(const AnoGltfData* data, const AnoGltfPrimitive* prim
                            const AnoGltfAccessor** pos, const AnoGltfAccessor** norm,
                            const AnoGltfAccessor** tex)
 {
-    *pos = *norm = *tex = NULL;
-    for (uint32_t a = 0; a < prim->attributes.values.count; ++a) {
-        const AnoGltfAttribute* attribute = &prim->attributes.values.data[a];
-        if (!ano_gltf_has_index(attribute->accessor) || attribute->accessor.value >= data->accessorsCount)
-            continue;
-        const AnoGltfAccessor* accessor = &data->accessors[attribute->accessor.value];
-        if (attribute->type == AnoGltfAttributeType::position) {
-            *pos = accessor;
-        } else if (attribute->type == AnoGltfAttributeType::normal) {
-            *norm = accessor;
-        } else if (attribute->type == AnoGltfAttributeType::texcoord) {
-            *tex = accessor;
-        }
-    }
+    *pos = ano_gltf_find_accessor(data, prim, AnoGltfAttributeType::position, 0);
+    *norm = ano_gltf_find_accessor(data, prim, AnoGltfAttributeType::normal, 0);
+    *tex = ano_gltf_find_accessor(data, prim, AnoGltfAttributeType::texcoord, 0);
     return *pos != NULL && ano_gltf_has_index(prim->indices)
         && prim->indices.value < data->accessorsCount;
 }
@@ -113,53 +146,49 @@ static inline uint32_t gltf_slot(const AnoGltfData* d, const uint32_t* slots,
     return image != ANO_GLTF_NO_INDEX ? slots[image] : ANO_BINDLESS_NONE;
 }
 
-// Inputs: material, canonical texture source. Output: referenced texture-info or NULL.
-static inline const AnoGltfTextureInfo* gltf_material_texture(
-    const AnoGltfMaterial* material, AnoGltfTextureSource source)
+template<class T> struct GltfOptionalTraits { static constexpr bool value = false; };
+template<class T> struct GltfOptionalTraits<AnoGltfOptional<T>> { static constexpr bool value = true; };
+template<class T> struct GltfExtensionsTraits { static constexpr bool value = false; };
+template<class T> struct GltfExtensionsTraits<AnoGltfExtensions<T>> { static constexpr bool value = true; };
+
+template<class Object, class Fn>
+static void gltf_visit_texture_fields(const Object& object, Fn& visit)
 {
-    using enum AnoGltfTextureSource;
-    const AnoGltfMaterialExtensionsKnown& ext = material->extensions.known;
-    switch (source) {
-    case base_color:
-        return material->pbrMetallicRoughness.present
-            ? &material->pbrMetallicRoughness.value.baseColorTexture : NULL;
-    case metallic_roughness:
-        return material->pbrMetallicRoughness.present
-            ? &material->pbrMetallicRoughness.value.metallicRoughnessTexture : NULL;
-    case normal: return &material->normalTexture;
-    case occlusion: return &material->occlusionTexture;
-    case emissive: return &material->emissiveTexture;
-    case clearcoat: return ext.KHR_materials_clearcoat.present
-        ? &ext.KHR_materials_clearcoat.value.clearcoatTexture : NULL;
-    case clearcoat_roughness: return ext.KHR_materials_clearcoat.present
-        ? &ext.KHR_materials_clearcoat.value.clearcoatRoughnessTexture : NULL;
-    case clearcoat_normal: return ext.KHR_materials_clearcoat.present
-        ? &ext.KHR_materials_clearcoat.value.clearcoatNormalTexture : NULL;
-    case transmission: return ext.KHR_materials_transmission.present
-        ? &ext.KHR_materials_transmission.value.transmissionTexture : NULL;
-    case thickness: return ext.KHR_materials_volume.present
-        ? &ext.KHR_materials_volume.value.thicknessTexture : NULL;
-    case specular: return ext.KHR_materials_specular.present
-        ? &ext.KHR_materials_specular.value.specularTexture : NULL;
-    case specular_color: return ext.KHR_materials_specular.present
-        ? &ext.KHR_materials_specular.value.specularColorTexture : NULL;
-    case sheen_color: return ext.KHR_materials_sheen.present
-        ? &ext.KHR_materials_sheen.value.sheenColorTexture : NULL;
-    case sheen_roughness: return ext.KHR_materials_sheen.present
-        ? &ext.KHR_materials_sheen.value.sheenRoughnessTexture : NULL;
-    case iridescence: return ext.KHR_materials_iridescence.present
-        ? &ext.KHR_materials_iridescence.value.iridescenceTexture : NULL;
-    case iridescence_thickness: return ext.KHR_materials_iridescence.present
-        ? &ext.KHR_materials_iridescence.value.iridescenceThicknessTexture : NULL;
-    case anisotropy: return ext.KHR_materials_anisotropy.present
-        ? &ext.KHR_materials_anisotropy.value.anisotropyTexture : NULL;
-    case diffuse_transmission: return ext.KHR_materials_diffuse_transmission.present
-        ? &ext.KHR_materials_diffuse_transmission.value.diffuseTransmissionTexture : NULL;
-    case diffuse_transmission_color: return ext.KHR_materials_diffuse_transmission.present
-        ? &ext.KHR_materials_diffuse_transmission.value.diffuseTransmissionColorTexture : NULL;
-    case count: return NULL;
+    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
+        ^^Object, std::meta::access_context::unchecked()));
+    template for (constexpr auto member : members) {
+        using Field = [:std::meta::type_of(member):];
+        const Field& field = object.*(&[:member:]);
+        if constexpr (std::is_same_v<Field, AnoGltfTextureInfo>) {
+            visit.template operator()<member>(&field);
+        } else if constexpr (GltfOptionalTraits<Field>::value) {
+            if (field.present)
+                gltf_visit_texture_fields(field.value, visit);
+        } else if constexpr (GltfExtensionsTraits<Field>::value) {
+            gltf_visit_texture_fields(field.known, visit);
+        }
     }
-    return NULL;
+}
+
+template<class Fn>
+static void gltf_visit_material_textures(const AnoGltfMaterial* material, Fn&& visit)
+{
+    auto match = [&]<std::meta::info source>(const AnoGltfTextureInfo* info) {
+        static constexpr auto destinations = std::define_static_array(
+            std::meta::nonstatic_data_members_of(^^MaterialData,
+                                                 std::meta::access_context::unchecked()));
+        template for (constexpr auto destination : destinations) {
+            constexpr auto annotations = std::define_static_array(
+                std::meta::annotations_of_with_type(destination, ^^AnoMaterialTexture));
+            if constexpr (!annotations.empty() &&
+                          std::meta::identifier_of(destination) == std::meta::identifier_of(source)) {
+                constexpr auto spec = std::meta::extract<AnoMaterialTexture>(annotations[0]);
+                visit.template operator()<destination>(
+                    info, std::integral_constant<AnoMaterialTexture, spec>{});
+            }
+        }
+    };
+    gltf_visit_texture_fields(*material, match);
 }
 
 consteval bool gltf_material_texture_schema_valid()
@@ -196,19 +225,12 @@ static_assert(gltf_material_texture_schema_valid());
 static PbrFeatureFlags gltf_material_texture_features(const AnoGltfMaterial* material)
 {
     PbrFeatureFlags features = PBR_FEATURE_NONE;
-    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
-        ^^MaterialData, std::meta::access_context::unchecked()));
-    template for (constexpr auto member : members) {
-        constexpr auto annotations = std::define_static_array(
-            std::meta::annotations_of_with_type(member, ^^AnoMaterialTexture));
-        if constexpr (!annotations.empty()) {
-            constexpr auto spec = std::meta::extract<AnoMaterialTexture>(annotations[0]);
-            if constexpr (spec.detectsFeature) {
-                const AnoGltfTextureInfo* info = gltf_material_texture(material, spec.source);
-                if (info && ano_gltf_has_index(info->index)) features |= spec.feature;
-            }
-        }
-    }
+    gltf_visit_material_textures(material, [&]<std::meta::info Destination>(
+        const AnoGltfTextureInfo* info, auto encoded) {
+        constexpr auto spec = decltype(encoded)::value;
+        if constexpr (spec.detectsFeature)
+            if (ano_gltf_has_index(info->index)) features |= spec.feature;
+    });
     return features;
 }
 
@@ -216,20 +238,14 @@ static void gltf_mark_material_textures(const AnoGltfData* data, TextureUsageFla
                                         const AnoGltfMaterial* material,
                                         PbrFeatureFlags supportedFeatures)
 {
-    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
-        ^^MaterialData, std::meta::access_context::unchecked()));
-    template for (constexpr auto member : members) {
-        constexpr auto annotations = std::define_static_array(
-            std::meta::annotations_of_with_type(member, ^^AnoMaterialTexture));
-        if constexpr (!annotations.empty()) {
-            constexpr auto spec = std::meta::extract<AnoMaterialTexture>(annotations[0]);
-            if (supportedFeatures & spec.feature) {
-                constexpr TextureUsageFlags usage = spec.domain == AnoMaterialTextureDomain::color
-                    ? TEXTURE_USE_COLOR : TEXTURE_USE_DATA;
-                mark_texture(data, imageUsage, gltf_material_texture(material, spec.source), usage);
-            }
-        }
-    }
+    gltf_visit_material_textures(material, [&]<std::meta::info Destination>(
+        const AnoGltfTextureInfo* info, auto encoded) {
+        constexpr auto spec = decltype(encoded)::value;
+        constexpr TextureUsageFlags usage = spec.domain == AnoMaterialTextureDomain::color
+            ? TEXTURE_USE_COLOR : TEXTURE_USE_DATA;
+        if (supportedFeatures & spec.feature)
+            mark_texture(data, imageUsage, info, usage);
+    });
 }
 
 static void gltf_project_material_textures(MaterialData* output, const AnoGltfData* data,
@@ -237,19 +253,47 @@ static void gltf_project_material_textures(MaterialData* output, const AnoGltfDa
                                            const AnoGltfMaterial* material,
                                            PbrFeatureFlags supportedFeatures)
 {
-    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
-        ^^MaterialData, std::meta::access_context::unchecked()));
-    template for (constexpr auto member : members) {
-        constexpr auto annotations = std::define_static_array(
-            std::meta::annotations_of_with_type(member, ^^AnoMaterialTexture));
-        if constexpr (!annotations.empty()) {
-            constexpr auto spec = std::meta::extract<AnoMaterialTexture>(annotations[0]);
-            const AnoGltfTextureInfo* texture = gltf_material_texture(material, spec.source);
-            if ((supportedFeatures & spec.feature) && texture && ano_gltf_has_index(texture->index)) {
-                const uint32_t* slots = spec.domain == AnoMaterialTextureDomain::color
-                    ? colorIndex : dataIndex;
-                output->*(&[:member:]) = gltf_slot(data, slots, texture);
-            }
+    gltf_visit_material_textures(material, [&]<std::meta::info Destination>(
+        const AnoGltfTextureInfo* info, auto encoded) {
+        constexpr auto spec = decltype(encoded)::value;
+        if ((supportedFeatures & spec.feature) && ano_gltf_has_index(info->index)) {
+            const uint32_t* slots = spec.domain == AnoMaterialTextureDomain::color
+                ? colorIndex : dataIndex;
+            output->*(&[:Destination:]) = gltf_slot(data, slots, info);
+        }
+    });
+}
+
+template<class Destination, class Source>
+static void gltf_project_value(Destination& destination, const Source& source)
+{
+    if constexpr (std::is_assignable_v<Destination&, const Source&>)
+        destination = source;
+}
+
+template<size_t DestinationCount, size_t SourceCount>
+static void gltf_project_value(
+    float (&destination)[DestinationCount], const AnoGltfFixedArray<float, SourceCount>& source)
+{
+    static_assert(DestinationCount == SourceCount || DestinationCount == SourceCount + 1);
+    memcpy(destination, source.values, SourceCount * sizeof(float));
+    if constexpr (DestinationCount > SourceCount)
+        destination[SourceCount] = 1.0f;
+}
+
+// Copies same-named, compatible glTF fields into MaterialData. Texture handles and alpha mode
+// deliberately have incompatible types and remain governed by their stronger projections.
+template<class Source>
+static void gltf_project_material_values(MaterialData* output, const Source& source)
+{
+    static constexpr auto destinations = std::define_static_array(
+        std::meta::nonstatic_data_members_of(^^MaterialData, std::meta::access_context::unchecked()));
+    static constexpr auto sources = std::define_static_array(
+        std::meta::nonstatic_data_members_of(^^Source, std::meta::access_context::unchecked()));
+    template for (constexpr auto destination : destinations) {
+        template for (constexpr auto member : sources) {
+            if constexpr (std::meta::identifier_of(destination) == std::meta::identifier_of(member))
+                gltf_project_value(output->*(&[:destination:]), source.*(&[:member:]));
         }
     }
 }
@@ -301,49 +345,14 @@ static void scratch_extents(ValidatedGltf g, size_t* maxVerts, size_t* maxIdx)
     *maxIdx = idx;
 }
 
-// Inputs: exact anogltf allocation size. Output: engine-allocator storage or NULL.
 static void* gltf_allocate(void*, size_t bytes)
 {
     return ano::allocate<uint8_t>(bytes);
 }
 
-// Inputs: an allocation returned by gltf_allocate. Output: allocation released.
 static void gltf_release(void*, void* allocation)
 {
     free(allocation);
-}
-
-// Inputs: host path. Output: exact byte length for anogltf, or a bounded I/O result.
-static AnoGltfResult gltf_file_size(void*, const char* path, size_t* bytes)
-{
-    if (!path || !bytes)
-        return AnoGltfResult::invalid_options;
-    FILE* file = fopen(path, "rb");
-    if (!file)
-        return AnoGltfResult::file_not_found;
-    if (fseek(file, 0, SEEK_END) != 0) {
-        fclose(file);
-        return AnoGltfResult::io_error;
-    }
-    const long length = ftell(file);
-    fclose(file);
-    if (length < 0)
-        return AnoGltfResult::io_error;
-    *bytes = static_cast<size_t>(length);
-    return AnoGltfResult::success;
-}
-
-// Inputs: host path and exact destination span. Output: all bytes read or an I/O result.
-static AnoGltfResult gltf_file_read(void*, const char* path, void* destination, size_t bytes)
-{
-    if (!path || (!destination && bytes != 0))
-        return AnoGltfResult::invalid_options;
-    FILE* file = fopen(path, "rb");
-    if (!file)
-        return AnoGltfResult::file_not_found;
-    const bool read = bytes == 0 || fread(destination, 1, bytes, file) == bytes;
-    const bool closed = fclose(file) == 0;
-    return read && closed ? AnoGltfResult::success : AnoGltfResult::io_error;
 }
 
 // Inputs: glTF path and relative URI. Output: combined, decoded path or false when too long.
@@ -372,8 +381,6 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
     AnoGltfOptions options = {};
     options.allocate = gltf_allocate;
     options.free = gltf_release;
-    options.fileSize = gltf_file_size;
-    options.fileRead = gltf_file_read;
     AnoGltfData* data = NULL;
     AnoGltfResult result = ano_gltf_parse_file(fileName, &options, &data);
 
@@ -514,12 +521,8 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
 #ifdef DEBUG_BUILD
             assert(indexCount <= maxIdx);
 #endif
-            for (uint32_t i = 0; i < indexCount; ++i) {
-                if (!ano_gltf_accessor_read_index(data, indexAccessor, i, &indices[i])) {
-                    decoded = false;
-                    break;
-                }
-            }
+            decoded = ano_gltf_accessor_unpack_indices(
+                data, indexAccessor, indices, sizeof(*indices), indexCount) == indexCount;
             if (!decoded) {
                 ano_log(ANO_WARN, "Primitive index decoding failed after validation. Skipping.");
                 continue;
@@ -699,122 +702,32 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                     gltf_project_material_textures(&matData, data, colorIndex, dataIndex,
                                                    material, supportedFeatures);
 
-                    // 1. pbrMetallicRoughness
                     if (material->pbrMetallicRoughness.present) {
                         const AnoGltfPbrMetallicRoughness& pbr = material->pbrMetallicRoughness.value;
-                        for (int i = 0; i < 4; i++) {
-                            matData.baseColorFactor[i] = pbr.baseColorFactor.values[i];
-                        }
-                        matData.metallicFactor = pbr.metallicFactor;
-                        matData.roughnessFactor = pbr.roughnessFactor;
+                        gltf_project_material_values(&matData, pbr);
                     }
 
-                    // 2. Core properties
                     if ((supportedFeatures & PBR_FEATURE_NORMAL_TEXTURE) &&
                         matData.normalTexture != ANO_BINDLESS_NONE)
                         matData.normalScale = material->normalTexture.scale;
-
                     if ((supportedFeatures & PBR_FEATURE_OCCLUSION_TEXTURE) &&
                         matData.occlusionTexture != ANO_BINDLESS_NONE)
                         matData.occlusionStrength = material->occlusionTexture.strength;
 
-                    for (int i = 0; i < 3; i++) {
-                        matData.emissiveFactor[i] = material->emissiveFactor.values[i];
-                    }
-                    matData.emissiveFactor[3] = 1.0f; // Padding
-
-                    if (material->alphaMode == AnoGltfAlphaMode::opaque) {
-                        matData.alphaMode = 0;
-                    } else if (material->alphaMode == AnoGltfAlphaMode::mask) {
-                        matData.alphaMode = 1;
+                    gltf_project_value(matData.emissiveFactor, material->emissiveFactor);
+                    static_assert(static_cast<uint8_t>(AnoGltfAlphaMode::opaque) == 0 &&
+                                  static_cast<uint8_t>(AnoGltfAlphaMode::mask) == 1 &&
+                                  static_cast<uint8_t>(AnoGltfAlphaMode::blend) == 2);
+                    matData.alphaMode = static_cast<uint32_t>(material->alphaMode);
+                    if (material->alphaMode == AnoGltfAlphaMode::mask)
                         matData.alphaCutoff = material->alphaCutoff;
-                    } else if (material->alphaMode == AnoGltfAlphaMode::blend) {
-                        matData.alphaMode = 2;
-                    }
-
                     matData.doubleSided = material->doubleSided ? 1 : 0;
 
-                    // 3. Clearcoat
-                    if (supportedFeatures & PBR_FEATURE_CLEARCOAT) {
-                        matData.clearcoatFactor = ext.KHR_materials_clearcoat.value.clearcoatFactor;
-                        matData.clearcoatRoughnessFactor = ext.KHR_materials_clearcoat.value.clearcoatRoughnessFactor;
-                    }
-
-                    // 4. Transmission
-                    if (supportedFeatures & PBR_FEATURE_TRANSMISSION) {
-                        matData.transmissionFactor = ext.KHR_materials_transmission.value.transmissionFactor;
-                    }
-
-                    // 5. Volume
-                    if (supportedFeatures & PBR_FEATURE_VOLUME) {
-                        const AnoGltfVolume& volume = ext.KHR_materials_volume.value;
-                        matData.thicknessFactor = volume.thicknessFactor;
-                        matData.attenuationDistance = volume.attenuationDistance;
-                        for (int i = 0; i < 3; i++) {
-                            matData.attenuationColor[i] = volume.attenuationColor.values[i];
-                        }
-                        matData.attenuationColor[3] = 1.0f; // Padding
-                    }
-
-                    // 6. IOR
-                    if (supportedFeatures & PBR_FEATURE_IOR) {
-                        matData.ior = ext.KHR_materials_ior.value.ior;
-                    }
-
-                    // 7. Specular
-                    if (supportedFeatures & PBR_FEATURE_SPECULAR) {
-                        const AnoGltfSpecular& specular = ext.KHR_materials_specular.value;
-                        matData.specularFactor = specular.specularFactor;
-                        for (int i = 0; i < 3; i++) {
-                            matData.specularColorFactor[i] = specular.specularColorFactor.values[i];
-                        }
-                        matData.specularColorFactor[3] = 1.0f; // Padding
-                    }
-
-                    // 8. Sheen
-                    if (supportedFeatures & PBR_FEATURE_SHEEN) {
-                        const AnoGltfSheen& sheen = ext.KHR_materials_sheen.value;
-                        matData.sheenRoughnessFactor = sheen.sheenRoughnessFactor;
-                        for (int i = 0; i < 3; i++) {
-                            matData.sheenColorFactor[i] = sheen.sheenColorFactor.values[i];
-                        }
-                        matData.sheenColorFactor[3] = 1.0f; // Padding
-                    }
-
-                    // 9. Iridescence
-                    if (supportedFeatures & PBR_FEATURE_IRIDESCENCE) {
-                        const AnoGltfIridescence& iridescence = ext.KHR_materials_iridescence.value;
-                        matData.iridescenceFactor = iridescence.iridescenceFactor;
-                        matData.iridescenceIor = iridescence.iridescenceIor;
-                        matData.iridescenceThicknessMinimum = iridescence.iridescenceThicknessMinimum;
-                        matData.iridescenceThicknessMaximum = iridescence.iridescenceThicknessMaximum;
-                    }
-
-                    // 10. Anisotropy
-                    if (supportedFeatures & PBR_FEATURE_ANISOTROPY) {
-                        matData.anisotropyStrength = ext.KHR_materials_anisotropy.value.anisotropyStrength;
-                        matData.anisotropyRotation = ext.KHR_materials_anisotropy.value.anisotropyRotation;
-                    }
-
-                    // 11. Dispersion
-                    if (supportedFeatures & PBR_FEATURE_DISPERSION) {
-                        matData.dispersion = ext.KHR_materials_dispersion.value.dispersion;
-                    }
-
-                    // 12. Diffuse Transmission
-                    if (supportedFeatures & PBR_FEATURE_DIFFUSE_TRANSMISSION) {
-                        const AnoGltfDiffuseTransmission& transmission = ext.KHR_materials_diffuse_transmission.value;
-                        matData.diffuseTransmissionFactor = transmission.diffuseTransmissionFactor;
-                        for (int i = 0; i < 3; i++) {
-                            matData.diffuseTransmissionColorFactor[i] = transmission.diffuseTransmissionColorFactor.values[i];
-                        }
-                        matData.diffuseTransmissionColorFactor[3] = 1.0f; // Padding
-                    }
-
-                    // 13. Emissive Strength
-                    if (supportedFeatures & PBR_FEATURE_EMISSIVE_STRENGTH) {
-                        matData.emissiveStrength = ext.KHR_materials_emissive_strength.value.emissiveStrength;
-                    }
+                    gltf_visit_material_extensions(ext, [&](const auto& extension,
+                                                            PbrFeatureFlags feature) {
+                        if (supportedFeatures & feature)
+                            gltf_project_material_values(&matData, extension);
+                    });
 
                     // Pipeline routing:
                     //   transmission/volume         -> PIPELINE_TRANSMISSION
@@ -859,8 +772,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
         // Extract local transform
         float matrix[16];
         ano_gltf_node_transform_local(gltfNode, matrix);
-        float* destMat = (float*)&outNode->localTransform;
-        for (int i = 0; i < 16; i++) destMat[i] = matrix[i];
+        memcpy(&outNode->localTransform, matrix, sizeof(matrix));
 
         outNode->meshIndex = ano_gltf_has_index(gltfNode->mesh)
             ? static_cast<int32_t>(gltfNode->mesh.value) : -1;
@@ -908,9 +820,7 @@ static void flatten_node(const ModelAsset* asset, uint32_t nodeIndex, const mat4
             if (out && *idx < cap) {
                 out[*idx].mesh_index     = mesh->primitives[p].geometryPoolIndex;
                 out[*idx].material_index = mesh->primitives[p].materialIndex;
-                float* d = (float*)&out[*idx].transform;
-                float* s = (float*)&worldTransform;
-                for (int i = 0; i < 16; i++) d[i] = s[i];
+                memcpy(&out[*idx].transform, &worldTransform, sizeof(worldTransform));
             }
             (*idx)++;
         }
@@ -929,74 +839,25 @@ uint32_t model_flatten(const ModelAsset* asset, const mat4 rootTransform, AnoRen
 }
 
 static PbrFeatureFlags gltf_identify_material_features(const AnoGltfMaterial* material) {
-    if (!material) {
+    if (!material)
         return PBR_FEATURE_NONE;
-    }
 
     PbrFeatureFlags features = gltf_material_texture_features(material);
-
-    // 1. pbrMetallicRoughness
-    if (material->pbrMetallicRoughness.present) {
-        features |= PBR_FEATURE_BASE_COLOR_FACTOR;
-        features |= PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR;
-    }
-
-    // 2. Core properties
-    if (material->emissiveFactor.values[0] > 0.0f || material->emissiveFactor.values[1] > 0.0f || material->emissiveFactor.values[2] > 0.0f) {
+    if (material->pbrMetallicRoughness.present)
+        features |= PBR_FEATURE_BASE_COLOR_FACTOR | PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR;
+    if (material->emissiveFactor.values[0] > 0.0f || material->emissiveFactor.values[1] > 0.0f ||
+        material->emissiveFactor.values[2] > 0.0f)
         features |= PBR_FEATURE_EMISSIVE_FACTOR;
-    }
-
-    // Alpha modes
-    if (material->alphaMode == AnoGltfAlphaMode::opaque) {
-        features |= PBR_FEATURE_ALPHA_MODE_OPAQUE;
-    } else if (material->alphaMode == AnoGltfAlphaMode::mask) {
-        features |= PBR_FEATURE_ALPHA_MODE_MASK;
-    } else if (material->alphaMode == AnoGltfAlphaMode::blend) {
-        features |= PBR_FEATURE_ALPHA_MODE_BLEND;
-    }
-
-    if (material->doubleSided) {
+    static_assert(PBR_FEATURE_ALPHA_MODE_MASK == (PBR_FEATURE_ALPHA_MODE_OPAQUE << 1) &&
+                  PBR_FEATURE_ALPHA_MODE_BLEND == (PBR_FEATURE_ALPHA_MODE_OPAQUE << 2));
+    features |= PBR_FEATURE_ALPHA_MODE_OPAQUE << static_cast<uint8_t>(material->alphaMode);
+    if (material->doubleSided)
         features |= PBR_FEATURE_DOUBLE_SIDED;
-    }
 
-    // Extensions
     const AnoGltfMaterialExtensionsKnown& ext = material->extensions.known;
-    if (ext.KHR_materials_clearcoat.present) {
-        features |= PBR_FEATURE_CLEARCOAT;
-    }
-    if (ext.KHR_materials_transmission.present) {
-        features |= PBR_FEATURE_TRANSMISSION;
-    }
-    if (ext.KHR_materials_volume.present) {
-        features |= PBR_FEATURE_VOLUME;
-    }
-    if (ext.KHR_materials_ior.present) {
-        features |= PBR_FEATURE_IOR;
-    }
-    if (ext.KHR_materials_specular.present) {
-        features |= PBR_FEATURE_SPECULAR;
-    }
-    if (ext.KHR_materials_sheen.present) {
-        features |= PBR_FEATURE_SHEEN;
-    }
-    if (ext.KHR_materials_iridescence.present) {
-        features |= PBR_FEATURE_IRIDESCENCE;
-    }
-    if (ext.KHR_materials_anisotropy.present) {
-        features |= PBR_FEATURE_ANISOTROPY;
-    }
-    if (ext.KHR_materials_dispersion.present) {
-        features |= PBR_FEATURE_DISPERSION;
-    }
-    if (ext.KHR_materials_diffuse_transmission.present) {
-        features |= PBR_FEATURE_DIFFUSE_TRANSMISSION;
-    }
-    if (ext.KHR_materials_emissive_strength.present) {
-        features |= PBR_FEATURE_EMISSIVE_STRENGTH;
-    }
-    if (ext.KHR_materials_pbrSpecularGlossiness.present) {
-        features |= PBR_FEATURE_SPECULAR_GLOSSINESS;
-    }
+    gltf_visit_material_extensions(ext, [&](const auto&, PbrFeatureFlags feature) {
+        features |= feature;
+    });
 
     return features;
 }
