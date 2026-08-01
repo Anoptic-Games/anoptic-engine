@@ -21,7 +21,7 @@
   # Impure side 〜 your working tree, output in ./build/<label>/ like build.sh:
   #   nix run .#dev [-- N]                 dev-env wrapper around ./build.sh N (default 1):
   #                                        halts if submodule gitlinks disagree with the pins,
-  #                                        auto-inits absent submodules, stages assets/ best-effort,
+  #                                        auto-inits absent submodules, repairs assets/ from the pinned baseline,
   #                                        then launches the engine for N=1|2 (renderer) or N=3
   #                                        (headless console, runs in WSL too); test profiles run ctest
   #                                        foreign distros bridge to the host GPU (nixglhost / mesa ICDs)
@@ -313,7 +313,7 @@
               }
             );
 
-          # Fonts always, assets best-effort (an empty input warns).
+          # Fonts always. Packaged renderers require the pinned Sponza demo scene.
           postInstall = lib.optionalString renderer (
             ''
               mkdir -p "$out/bin/resources"
@@ -327,8 +327,11 @@
                 cp -r "$entry" "$out/bin/"
                 staged=1
               done
-              if [ "$staged" -eq 0 ]; then
-                echo "[anoptic] WARNING: assets input has no content 〜 engine runs without demo assets." >&2
+              if [ "$staged" -eq 0 ] \
+                  || [ ! -s "$out/bin/sponza/2.0/Sponza/glTF/Sponza.gltf" ] \
+                  || [ ! -s "$out/bin/sponza/2.0/Sponza/glTF/Sponza.bin" ]; then
+                echo "[anoptic] FATAL: pinned assets input is incomplete 〜 Sponza.gltf and Sponza.bin are required." >&2
+                exit 1
               fi
             ''
           );
@@ -548,16 +551,31 @@
                 fi
               done
 
-              # Provision assets/ only when absent or empty. User content is left alone.
+              # Prefer the private pack for a fresh tree. Always merge missing files from the
+              # pinned public baseline so a stale, nonempty partial pack cannot suppress Sponza.
+              assets_were_incomplete=0
+              if [ ! -s assets/sponza/2.0/Sponza/glTF/Sponza.gltf ] \
+                  || [ ! -s assets/sponza/2.0/Sponza/glTF/Sponza.bin ]; then
+                assets_were_incomplete=1
+              fi
               if [ -z "$(ls -A assets 2>/dev/null)" ]; then
                 if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
                     git clone --depth 1 git@github.com:Anoptic-Games/assets.git assets >/dev/null 2>&1; then
                   echo "[anoptic] assets: private repo."
                 else
-                  echo "[anoptic] WARNING: private assets unreachable 〜 staging public assets-free." >&2
-                  cp -r ${anoptic-assets}/. assets
-                  chmod -R u+w assets
+                  echo "[anoptic] WARNING: private assets unreachable 〜 using pinned assets-free." >&2
                 fi
+              fi
+              mkdir -p assets
+              cp -rn ${anoptic-assets}/. assets
+              chmod -R u+w assets
+              if [ ! -s assets/sponza/2.0/Sponza/glTF/Sponza.gltf ] \
+                  || [ ! -s assets/sponza/2.0/Sponza/glTF/Sponza.bin ]; then
+                echo "[anoptic] FATAL: assets/ is incomplete after provisioning 〜 Sponza is required." >&2
+                exit 1
+              fi
+              if [ "$assets_were_incomplete" -ne 0 ]; then
+                echo "[anoptic] assets: restored the pinned Sponza baseline."
               fi
 
               # WSL has no in-guest render target. Point at .#release-wsl for the renderer.

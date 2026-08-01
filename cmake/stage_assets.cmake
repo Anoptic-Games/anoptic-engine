@@ -10,5 +10,19 @@ if(NOT ANO_ASSETS_SRC OR NOT ANO_ASSETS_DST)
     message(FATAL_ERROR "stage_assets: ANO_ASSETS_SRC and ANO_ASSETS_DST required")
 endif()
 
+set(ANO_SPONZA_ROOT "${ANO_ASSETS_SRC}/sponza/2.0/Sponza/glTF")
+foreach(ANO_REQUIRED_ASSET IN ITEMS Sponza.gltf Sponza.bin)
+    set(ANO_REQUIRED_PATH "${ANO_SPONZA_ROOT}/${ANO_REQUIRED_ASSET}")
+    if(NOT EXISTS "${ANO_REQUIRED_PATH}")
+        message(FATAL_ERROR
+                "stage_assets: incomplete assets pack; missing ${ANO_REQUIRED_PATH}")
+    endif()
+    file(SIZE "${ANO_REQUIRED_PATH}" ANO_REQUIRED_SIZE)
+    if(ANO_REQUIRED_SIZE EQUAL 0)
+        message(FATAL_ERROR
+                "stage_assets: incomplete assets pack; empty ${ANO_REQUIRED_PATH}")
+    endif()
+endforeach()
+
 # Trailing slash on the source copies its *contents*, matching copy_directory's shape.
 file(COPY "${ANO_ASSETS_SRC}/" DESTINATION "${ANO_ASSETS_DST}" PATTERN ".git" EXCLUDE)
