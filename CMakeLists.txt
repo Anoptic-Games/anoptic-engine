@@ -33,7 +33,38 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-# Reflection toolchain policy (2026-08-01): use GCC 16.1+ until Clang implements the C++26 static-reflection facilities used by this branch.
+# Reflection toolchain policy (2026-08-01): GCC 16.1+ is the reflection judge;
+# other compilers build the audited fallback until they implement the same C++26 surface.
+set(ANOPTIC_REFLECTION "AUTO" CACHE STRING "C++26 reflection: AUTO, ON, or OFF")
+set_property(CACHE ANOPTIC_REFLECTION PROPERTY STRINGS AUTO ON OFF)
+string(TOUPPER "${ANOPTIC_REFLECTION}" ANO_REFLECTION_MODE)
+if(NOT ANO_REFLECTION_MODE MATCHES "^(AUTO|ON|OFF)$")
+    message(FATAL_ERROR "ANOPTIC_REFLECTION must be AUTO, ON, or OFF (got '${ANOPTIC_REFLECTION}')")
+endif()
+
+set(ANO_REFLECTION_ENABLED OFF)
+if(NOT ANO_REFLECTION_MODE STREQUAL "OFF"
+        AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+        AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16.1)
+    include(CheckCXXSourceCompiles)
+    set(ANO_REQUIRED_FLAGS_SAVED "${CMAKE_REQUIRED_FLAGS}")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -std=gnu++26 -freflection")
+    check_cxx_source_compiles([=[
+        #include <meta>
+        #ifndef __cpp_impl_reflection
+        #error C++26 reflection feature macro missing
+        #endif
+        static_assert(std::meta::is_type(^^int));
+        int main() { return 0; }
+    ]=] ANO_GCC16_REFLECTION_PROBE)
+    set(CMAKE_REQUIRED_FLAGS "${ANO_REQUIRED_FLAGS_SAVED}")
+    unset(ANO_REQUIRED_FLAGS_SAVED)
+    if(ANO_GCC16_REFLECTION_PROBE)
+        set(ANO_REFLECTION_ENABLED ON)
+        message(STATUS "C++26 reflection judge: GCC ${CMAKE_CXX_COMPILER_VERSION} (-freflection)")
+    endif()
+endif()
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(WARNING
             "\n"
@@ -41,8 +72,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             "C++26 REFLECTION IS NOT AVAILABLE WITH CLANG\n"
             "Detected Clang ${CMAKE_CXX_COMPILER_VERSION}. As of 2026-08-01, Clang does not\n"
             "implement the C++26 static-reflection facilities required by hyper-c-reflection.\n"
-            "Use GCC 16.1 or newer until Clang catches up.\n"
+            "This build uses the audited fallback. Use GCC 16.1+ with\n"
+            "-DANOPTIC_REFLECTION=ON to run the reflection judge.\n"
             "================================================================================")
+endif()
+
+if(ANO_REFLECTION_MODE STREQUAL "ON" AND NOT ANO_REFLECTION_ENABLED)
+    message(FATAL_ERROR
+            "ANOPTIC_REFLECTION=ON requires GCC 16.1+ with working -freflection and <meta>")
+elseif(NOT ANO_REFLECTION_ENABLED)
+    message(STATUS "C++26 reflection judge: OFF (audited fallback)")
 endif()
 
 # Emit compile_commands.json for clangd.
@@ -165,9 +204,11 @@ target_link_libraries(anoptic_core PUBLIC mimalloc-static Threads::Threads)
 # PRIVATE: FreeType types stay out of public headers.
 target_link_libraries(anoptic_core PRIVATE freetype)
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_link_options(anoptic_core INTERFACE
             "$<$<LINK_LANGUAGE:CXX>:-nostdlib++>")
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     if(ANOPTIC_SANITIZE STREQUAL "")
         target_link_options(anoptic_core INTERFACE
                 "$<$<LINK_LANGUAGE:CXX>:-rtlib=compiler-rt>")
@@ -388,6 +429,13 @@ function(ano_enable_cplus_ultra target)
             "$<$<COMPILE_LANGUAGE:CXX>:-Werror=switch-enum>"
             "$<$<COMPILE_LANGUAGE:CXX>:-Werror=implicit-fallthrough>"
             "$<$<COMPILE_LANGUAGE:CXX>:-Werror=return-type>")
+    if(ANO_REFLECTION_ENABLED)
+        target_compile_definitions(${target} PRIVATE ANOPTIC_HAS_REFLECTION=1)
+        target_compile_options(${target} PRIVATE
+                "$<$<COMPILE_LANGUAGE:CXX>:-freflection>")
+    else()
+        target_compile_definitions(${target} PRIVATE ANOPTIC_HAS_REFLECTION=0)
+    endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(${target} PRIVATE
                 "$<$<COMPILE_LANGUAGE:CXX>:-Werror=c99-designator>"

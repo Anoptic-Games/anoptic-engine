@@ -663,7 +663,8 @@ static int test_abuse_inputs(void)
     ano_log(ANO_INFO, "%9000d", 7);                         // width far past the cap: must clamp, not overflow
     ano_log(ANO_INFO, "%d %s %x %o %c %u %ld 100%%",        // every common conversion at once
                  1, "two", 0xab, 64, 'Z', 5u, 6L);
-    ano_log(ANO_INFO, "");                                  // empty format
+    char emptyFormat[] = "";
+    ano_log(ANO_INFO, emptyFormat, 0);                        // empty format
     ano_log(ANO_INFO, "%s%s%s%s%s", "", "", "", "", "");    // five empty %s
     ano_log_flush();
 

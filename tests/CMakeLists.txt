@@ -304,6 +304,12 @@ if(TARGET anoptic_render)
     add_test(NAME anoptic_render_slots COMMAND anotest_render_slots)
     set_tests_properties(anoptic_render_slots PROPERTIES TIMEOUT 10 LABELS "unit;render")
 
+    # Global descriptor layout: reflected schema, fallback equivalence, and invalid-schema rejection.
+    add_executable(anotest_vk_reflection anotest_vk_reflection.c)
+    target_link_libraries(anotest_vk_reflection PRIVATE anoptic_render)
+    add_test(NAME anoptic_vk_reflection COMMAND anotest_vk_reflection)
+    set_tests_properties(anoptic_vk_reflection PROPERTIES TIMEOUT 10 LABELS "unit;render;reflection")
+
     add_executable(anotest_vk_lifecycle anotest_vk_lifecycle.c)
     target_link_libraries(anotest_vk_lifecycle PRIVATE anoptic_render)
     add_test(NAME anotest_vk_lifecycle COMMAND anotest_vk_lifecycle)

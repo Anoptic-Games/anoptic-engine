@@ -28,7 +28,11 @@ static int g_cleanup_fired = 0;
 static void mark_cleanup(const int *in) { (void)in; g_cleanup_fired = 1; }
 
 // 16-byte-aligned POD with 128-bit member (lo/hi vs u128).
+#if defined(__GNUC__) && !defined(__clang__)
+typedef __int128 u128;
+#else
 typedef _BitInt(128) u128;
+#endif
 typedef struct {
     union {
         struct { uint64_t lo; uint64_t hi; };

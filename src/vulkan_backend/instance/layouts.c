@@ -7,6 +7,7 @@
 #include <anoptic_filesystem.h>
 #include <anoptic_log.h>
 #include "pipeline.h"
+#include "global_layout_schema.h"
 #include "pipelines/flat.h"
 #include "pipelines/transmission.h"
 #include "pipelines/additive.h"
@@ -23,126 +24,16 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 		? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
 		| (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 
-	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
-	uboLayoutBinding.binding = 0;
-	uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	uboLayoutBinding.descriptorCount = 1;
-	uboLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
-	uboLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding ssboLayoutBinding = {};
-	ssboLayoutBinding.binding = 1;
-	ssboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	ssboLayoutBinding.descriptorCount = 1;
-	// Fragment-visible: lights derive world pose from their entity transform.
-	ssboLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
-	ssboLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding materialLayoutBinding = {};
-	materialLayoutBinding.binding = 2;
-	materialLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	materialLayoutBinding.descriptorCount = 1;
-	// Geometry reads doubleSided for meshlet cone culling, fragment reads the rest.
-	materialLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
-	materialLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding entityLayoutBinding = {};
-	entityLayoutBinding.binding = 3;
-	entityLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	entityLayoutBinding.descriptorCount = 1;
-	entityLayoutBinding.stageFlags = geometryStage;
-	entityLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding vertexBufferLayoutBinding = {};
-	vertexBufferLayoutBinding.binding = 4;
-	vertexBufferLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	vertexBufferLayoutBinding.descriptorCount = 1;
-	vertexBufferLayoutBinding.stageFlags = geometryStage;
-	vertexBufferLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding indexBufferLayoutBinding = {};
-	indexBufferLayoutBinding.binding = 5;
-	indexBufferLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	indexBufferLayoutBinding.descriptorCount = 1;
-	indexBufferLayoutBinding.stageFlags = geometryStage;
-	indexBufferLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding meshDataLayoutBinding = {};
-	meshDataLayoutBinding.binding = 6;
-	meshDataLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	meshDataLayoutBinding.descriptorCount = 1;
-	meshDataLayoutBinding.stageFlags = geometryStage;
-	meshDataLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding compactedEntityIndicesLayoutBinding = {};
-	compactedEntityIndicesLayoutBinding.binding = 7;
-	compactedEntityIndicesLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	compactedEntityIndicesLayoutBinding.descriptorCount = 1;
-	compactedEntityIndicesLayoutBinding.stageFlags = geometryStage;
-	compactedEntityIndicesLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding lightLayoutBinding = {};
-	lightLayoutBinding.binding = 8;
-	lightLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lightLayoutBinding.descriptorCount = 1;
-	lightLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	lightLayoutBinding.pImmutableSamplers = NULL;
-
-	// Per-entity instance channel (tint/flags/scalars).
-	VkDescriptorSetLayoutBinding instanceDataLayoutBinding = {};
-	instanceDataLayoutBinding.binding = 9;
-	instanceDataLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	instanceDataLayoutBinding.descriptorCount = 1;
-	instanceDataLayoutBinding.stageFlags = geometryStage | VK_SHADER_STAGE_FRAGMENT_BIT;
-	instanceDataLayoutBinding.pImmutableSamplers = NULL;
-
-	// 10/11: clustered-forward froxel light lists, fragment-only.
-	VkDescriptorSetLayoutBinding clusterCountLayoutBinding = {};
-	clusterCountLayoutBinding.binding = 10;
-	clusterCountLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	clusterCountLayoutBinding.descriptorCount = 1;
-	clusterCountLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	clusterCountLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding clusterIndexLayoutBinding = {};
-	clusterIndexLayoutBinding.binding = 11;
-	clusterIndexLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	clusterIndexLayoutBinding.descriptorCount = 1;
-	clusterIndexLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	clusterIndexLayoutBinding.pImmutableSamplers = NULL;
-
-	// 12: per-light LightRuntime record, precomputed by lightsetup.comp, fragment-only.
-	VkDescriptorSetLayoutBinding lightRuntimeLayoutBinding = {};
-	lightRuntimeLayoutBinding.binding = 12;
-	lightRuntimeLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	lightRuntimeLayoutBinding.descriptorCount = 1;
-	lightRuntimeLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	lightRuntimeLayoutBinding.pImmutableSamplers = NULL;
-
-	// 13: this view's Hi-Z pyramid for the task meshlet cull occlusion test.
-	VkDescriptorSetLayoutBinding hizPyramidLayoutBinding = {};
-	hizPyramidLayoutBinding.binding = 13;
-	hizPyramidLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	hizPyramidLayoutBinding.descriptorCount = 1;
-	hizPyramidLayoutBinding.stageFlags = VK_SHADER_STAGE_TASK_BIT_EXT;
-	hizPyramidLayoutBinding.pImmutableSamplers = NULL;
-
-	VkDescriptorSetLayoutBinding bindings[14] = {
-		uboLayoutBinding,
-		ssboLayoutBinding,
-		materialLayoutBinding,
-		entityLayoutBinding,
-		vertexBufferLayoutBinding,
-		indexBufferLayoutBinding,
-		meshDataLayoutBinding,
-		compactedEntityIndicesLayoutBinding,
-		lightLayoutBinding,
-		instanceDataLayoutBinding,
-		clusterCountLayoutBinding,
-		clusterIndexLayoutBinding,
-		lightRuntimeLayoutBinding,
-		hizPyramidLayoutBinding
-	};
+	const auto& specs = ano_vk_global_binding_specs();
+	VkDescriptorSetLayoutBinding bindings[14] = {};
+	for (size_t i = 0; i < specs.count; ++i) {
+		bindings[i].binding = specs.values[i].binding;
+		bindings[i].descriptorType = specs.values[i].descriptorType;
+		bindings[i].descriptorCount = 1;
+		bindings[i].stageFlags = ano_vk_global_stage_flags(
+			specs.values[i].stage, geometryStage);
+		bindings[i].pImmutableSamplers = NULL;
+	}
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;

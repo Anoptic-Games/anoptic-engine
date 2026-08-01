@@ -85,7 +85,7 @@ static void test_append_file_api(void)
     ano_fspath base = ano_fs_gamepath();
     char dir[512];
     snprintf(dir, sizeof dir, "%s/anotest_filesystem_scratch", base.str);
-    char path[512];
+    char path[sizeof dir + sizeof "/append.log"];
     snprintf(path, sizeof path, "%s/append.log", dir);
     scratch_make_dir(dir);
 

@@ -43,7 +43,11 @@ void heapCleanup(mi_heap_t **in) {
 */
 
 typedef void ano_void;
+#if defined(__GNUC__) && !defined(__clang__)
+typedef __int128 u128;
+#else
 typedef _BitInt(128) u128;
+#endif
 
 typedef struct {
     union {
