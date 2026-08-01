@@ -26,7 +26,7 @@ static void ano_vk_materialize_layout_bindings(
 	VkShaderStageFlags geometryStage)
 {
 	for (size_t i = 0; i < Count; ++i) {
-		bindings[i].binding = specs.values[i].binding;
+		bindings[i].binding = (uint32_t)i;
 		bindings[i].descriptorType = specs.values[i].descriptorType;
 		bindings[i].descriptorCount = specs.values[i].descriptorCount;
 		bindings[i].stageFlags = ano_vk_descriptor_stage_flags(
@@ -42,13 +42,14 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 		? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
 		| (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 
-	const auto& specs = ano_vk_global_binding_specs();
-	VkDescriptorSetLayoutBinding bindings[14] = {};
+	const auto& specs = ANO_VK_GLOBAL_BINDINGS;
+	VkDescriptorSetLayoutBinding bindings[ANO_VK_GLOBAL_BINDINGS.count] = {};
 	ano_vk_materialize_layout_bindings(specs, bindings, geometryStage);
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = state->taskCull ? 14 : 13;
+	layoutInfo.bindingCount = specs.count
+		- (state->taskCull ? 0 : AnoVkGlobalSetSchema::optionalTail);
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->globalSetLayout) != VK_SUCCESS)
@@ -62,13 +63,13 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 
 bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 {
-	const auto& cullSpecs = ano_vk_cull_binding_specs<ANO_VIEW_COUNT>();
-	VkDescriptorSetLayoutBinding bindings[12] = {};
+	const auto& cullSpecs = ANO_VK_CULL_BINDINGS<ANO_VIEW_COUNT>;
+	VkDescriptorSetLayoutBinding bindings[ANO_VK_CULL_BINDINGS<ANO_VIEW_COUNT>.count] = {};
 	ano_vk_materialize_layout_bindings(cullSpecs, bindings, 0);
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = (uint32_t)cullSpecs.count;
+	layoutInfo.bindingCount = cullSpecs.count;
 	layoutInfo.pBindings = bindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->culling.setLayout) != VK_SUCCESS)
@@ -77,13 +78,13 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 		return false;
 	}
 
-	const auto& hizSpecs = ano_vk_hiz_binding_specs();
-	VkDescriptorSetLayoutBinding hizBindings[3] = {};
+	const auto& hizSpecs = ANO_VK_HIZ_BINDINGS;
+	VkDescriptorSetLayoutBinding hizBindings[ANO_VK_HIZ_BINDINGS.count] = {};
 	ano_vk_materialize_layout_bindings(hizSpecs, hizBindings, 0);
 
 	VkDescriptorSetLayoutCreateInfo hizLayoutInfo = {};
 	hizLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	hizLayoutInfo.bindingCount = (uint32_t)hizSpecs.count;
+	hizLayoutInfo.bindingCount = hizSpecs.count;
 	hizLayoutInfo.pBindings = hizBindings;
 	if (vkCreateDescriptorSetLayout(ctx->device, &hizLayoutInfo, NULL, &state->hizSetLayout) != VK_SUCCESS)
 	{
@@ -91,12 +92,12 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 		return false;
 	}
 
-	const auto& setupSpecs = ano_vk_shadow_setup_binding_specs();
-	VkDescriptorSetLayoutBinding setupBindings[5] = {};
+	const auto& setupSpecs = ANO_VK_SHADOW_SETUP_BINDINGS;
+	VkDescriptorSetLayoutBinding setupBindings[ANO_VK_SHADOW_SETUP_BINDINGS.count] = {};
 	ano_vk_materialize_layout_bindings(setupSpecs, setupBindings, 0);
 	VkDescriptorSetLayoutCreateInfo setupInfo = {};
 	setupInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	setupInfo.bindingCount = (uint32_t)setupSpecs.count;
+	setupInfo.bindingCount = setupSpecs.count;
 	setupInfo.pBindings = setupBindings;
 	if (vkCreateDescriptorSetLayout(ctx->device, &setupInfo, NULL, &state->shadowSetupSetLayout) != VK_SUCCESS)
 		return false;
@@ -104,12 +105,12 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 	VkShaderStageFlags geomStage = (ctx->deviceCapabilities.meshShader
 		? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
 		| (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
-	const auto& geomSpecs = ano_vk_shadow_geometry_binding_specs();
-	VkDescriptorSetLayoutBinding geomBindings[4] = {};
+	const auto& geomSpecs = ANO_VK_SHADOW_GEOMETRY_BINDINGS;
+	VkDescriptorSetLayoutBinding geomBindings[ANO_VK_SHADOW_GEOMETRY_BINDINGS.count] = {};
 	ano_vk_materialize_layout_bindings(geomSpecs, geomBindings, geomStage);
 	VkDescriptorSetLayoutCreateInfo geomInfo = {};
 	geomInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	geomInfo.bindingCount = (uint32_t)geomSpecs.count;
+	geomInfo.bindingCount = geomSpecs.count;
 	geomInfo.pBindings = geomBindings;
 	if (vkCreateDescriptorSetLayout(ctx->device, &geomInfo, NULL, &state->shadowGeomSetLayout) != VK_SUCCESS)
 		return false;
