@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <meta>
+#include <type_traits>
 
 // Drawing pipeline types in draw-slot order.
 const PipelineType ano_draw_pipelines[] = {
@@ -139,65 +141,24 @@ PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct Rend
 void ano_vk_init_default_material_data(struct MaterialData* mat) {
     memset(mat, 0, sizeof(struct MaterialData));
 
-    // Texture indices: 0xFFFFFFFF = no texture.
-    mat->baseColorTexture = 0xFFFFFFFF;
-    mat->metallicRoughnessTexture = 0xFFFFFFFF;
-    mat->normalTexture = 0xFFFFFFFF;
-    mat->occlusionTexture = 0xFFFFFFFF;
-    mat->emissiveTexture = 0xFFFFFFFF;
-    mat->clearcoatTexture = 0xFFFFFFFF;
-    mat->clearcoatRoughnessTexture = 0xFFFFFFFF;
-    mat->clearcoatNormalTexture = 0xFFFFFFFF;
-    mat->transmissionTexture = 0xFFFFFFFF;
-    mat->thicknessTexture = 0xFFFFFFFF;
-    mat->specularTexture = 0xFFFFFFFF;
-    mat->specularColorTexture = 0xFFFFFFFF;
-    mat->sheenColorTexture = 0xFFFFFFFF;
-    mat->sheenRoughnessTexture = 0xFFFFFFFF;
-    mat->iridescenceTexture = 0xFFFFFFFF;
-    mat->iridescenceThicknessTexture = 0xFFFFFFFF;
-    mat->anisotropyTexture = 0xFFFFFFFF;
-    mat->diffuseTransmissionTexture = 0xFFFFFFFF;
-    mat->diffuseTransmissionColorTexture = 0xFFFFFFFF;
-
-    mat->features = PBR_FEATURE_NONE;
-
-    mat->baseColorFactor[0] = 1.0f;
-    mat->baseColorFactor[1] = 1.0f;
-    mat->baseColorFactor[2] = 1.0f;
-    mat->baseColorFactor[3] = 1.0f;
-
-    mat->metallicFactor = 1.0f;
-    mat->roughnessFactor = 1.0f;
-    mat->normalScale = 1.0f;
-    mat->occlusionStrength = 1.0f;
-    mat->emissiveStrength = 1.0f;
-
-    mat->alphaCutoff = 0.5f;
-    mat->alphaMode = 0; // OPAQUE
-
-    mat->ior = 1.5f;
-
-    mat->specularFactor = 1.0f;
-    mat->specularColorFactor[0] = 1.0f;
-    mat->specularColorFactor[1] = 1.0f;
-    mat->specularColorFactor[2] = 1.0f;
-    mat->specularColorFactor[3] = 1.0f;
-
-    mat->attenuationDistance = 1e30f;
-    mat->attenuationColor[0] = 1.0f;
-    mat->attenuationColor[1] = 1.0f;
-    mat->attenuationColor[2] = 1.0f;
-    mat->attenuationColor[3] = 1.0f;
-
-    mat->iridescenceIor = 1.3f;
-    mat->iridescenceThicknessMinimum = 100.0f;
-    mat->iridescenceThicknessMaximum = 400.0f;
-
-    mat->diffuseTransmissionColorFactor[0] = 1.0f;
-    mat->diffuseTransmissionColorFactor[1] = 1.0f;
-    mat->diffuseTransmissionColorFactor[2] = 1.0f;
-    mat->diffuseTransmissionColorFactor[3] = 1.0f;
-
-    mat->pipelineType = 0; // PIPELINE_FLAT
+    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
+        ^^MaterialData, std::meta::access_context::unchecked()));
+    template for (constexpr auto member : members) {
+        constexpr auto defaults = std::define_static_array(
+            std::meta::annotations_of_with_type(member, ^^AnoMaterialDefault));
+        static_assert(defaults.size() <= 1);
+        if constexpr (!defaults.empty()) {
+            constexpr auto value = std::meta::extract<AnoMaterialDefault>(defaults[0]).value;
+            using Field = [:std::meta::type_of(member):];
+            auto& field = mat->*(&[:member:]);
+            if constexpr (std::is_array_v<Field>) {
+                using Element = std::remove_extent_t<Field>;
+                static_assert(std::is_arithmetic_v<Element>);
+                for (auto& element : field) element = static_cast<Element>(value);
+            } else {
+                static_assert(std::is_arithmetic_v<Field>);
+                field = static_cast<Field>(value);
+            }
+        }
+    }
 }

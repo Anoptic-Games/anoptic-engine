@@ -132,7 +132,15 @@ set(MI_BUILD_SHARED OFF)
 set(MI_BUILD_STATIC ON)
 set(MI_OVERRIDE OFF)
 set(MI_BUILD_TESTS OFF)
+set(MI_TRACK_ASAN OFF)
+if(ANOPTIC_SANITIZE STREQUAL "asan")
+    set(MI_TRACK_ASAN ON)
+endif()
 add_subdirectory(${CMAKE_SOURCE_DIR}/external/mimalloc EXCLUDE_FROM_ALL)
+if(ANOPTIC_SANITIZE STREQUAL "tsan")
+    # GCC already instruments this target globally; select mimalloc's TSan-safe page flags and disable racy debug poisoning.
+    target_compile_definitions(mimalloc-static PRIVATE MI_TSAN=1)
+endif()
 
 # FreeType submodule with optional codecs and HarfBuzz disabled.
 set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)

@@ -155,7 +155,7 @@
       '';
 
       # One engine derivation for every permutation.
-      # pkgs/stdenv: host package set + compiler (native clang+lld, or MinGW cross).
+      # pkgs/stdenv: host package set + compiler (native GCC 16, or MinGW GCC 16 cross).
       # variant: qualified attr name, becomes the pname suffix.
       # buildType: Release | Debug. headless: no renderer, no GLFW/Vulkan.
       # wayland/x11: Linux renderer backends (both on = runtime-selected).
@@ -241,8 +241,6 @@
               ninja
               pkg-config
             ])
-            # llvm-ar/llvm-ranlib for the CheckIPOSupported probe (keeps ThinLTO).
-            ++ lib.optionals (!host.isWindows) [ pkgs.buildPackages.llvmPackages_latest.llvm ]
             ++ lib.optionals renderer [ pkgs.buildPackages.shaderc ] # glslc
             # glslangValidator -gV: Debug shader debug info.
             ++ lib.optionals (renderer && isDebug) [ pkgs.buildPackages.glslang ]
@@ -365,11 +363,12 @@
           archTag = if host.isx86_64 then "x64" else "aarch64";
           hostTag = (if isLinux then "linux" else "macos") + "-" + archTag;
 
-          # Latest clang in the pin (full C23): lld on Linux, ld64 via the darwin llvm stdenv.
+          # Reflection is canonical on this branch. Linux uses the pinned GCC 16 stdenv;
+          # Darwin remains evaluable but CMake rejects it until its compiler supports P2996.
           llvmLatest = pkgs.llvmPackages_latest;
           engineStdenv =
             if isLinux then
-              pkgs.overrideCC pkgs.clangStdenv (llvmLatest.clang.override { bintools = llvmLatest.bintools; })
+              pkgs.gcc16Stdenv
             else
               llvmLatest.stdenv;
 
@@ -390,7 +389,7 @@
             mkEngine (
               {
                 pkgs = crossPkgs;
-                stdenv = crossPkgs.stdenv;
+                stdenv = crossPkgs.gcc16Stdenv;
               }
               // args
             );
@@ -693,7 +692,7 @@
                 '';
             };
 
-          # llvm: llvm-ar/-ranlib keep ThinLTO in-shell. lldb version-matched to clang.
+          # Inspection tools remain available even though GCC 16 is the canonical frontend.
           shellTools =
             (with pkgs; [
               cmake
@@ -747,7 +746,7 @@
                     # GPU-less full-suite runs: VK_ICD_FILENAMES=$ANO_LAVAPIPE_ICD ctest ...
                     ANO_LAVAPIPE_ICD = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${host.parsed.cpu.name}.json";
                     shellHook = ''
-                      echo "[anoptic] Linux target 〜 $(clang --version | head -1)"
+                      echo "[anoptic] Linux target 〜 $($CXX --version | head -1)"
                     ''
                     + submodulePinWarn;
                   }
@@ -781,7 +780,7 @@
           }
           // lib.optionalAttrs (system == "x86_64-linux") {
             # Interactive cross env. Artifact path: nix build .#release-wsl
-            windows = crossPkgs.mkShell {
+            windows = (crossPkgs.mkShell.override { stdenv = crossPkgs.gcc16Stdenv; }) {
               name = "anoptic-windows";
               hardeningDisable = fortifyOff;
               nativeBuildInputs = shellTools;

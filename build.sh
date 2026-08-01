@@ -9,14 +9,14 @@ case $1 in
   1)
     build_type="Release"
     build_dir="Release"
-    toolchain_file="clang-linux-x64.cmake"
+    toolchain_file="gcc-linux-x64.cmake"
     extra_flags=""
     run_tests=0
     ;;
   2)
     build_type="Debug"
     build_dir="Debug"
-    toolchain_file="debug_clang-linux-x64.cmake"
+    toolchain_file="gcc-linux-x64.cmake"
     extra_flags=""
     run_tests=0
     ;;
@@ -24,7 +24,7 @@ case $1 in
     # Headless (no GPU, WSL). TESTS=OFF clears stale cache
     build_type="Release"
     build_dir="Headless"
-    toolchain_file="clang-linux-x64.cmake"
+    toolchain_file="gcc-linux-x64.cmake"
     extra_flags="-DANOPTIC_HEADLESS=ON -DANOPTIC_TESTS=OFF"
     run_tests=0
     ;;
@@ -32,7 +32,7 @@ case $1 in
     # Headless debug engine: core + CTest, no renderer
     build_type="Debug"
     build_dir="HeadlessDebug"
-    toolchain_file="debug_clang-linux-x64.cmake"
+    toolchain_file="gcc-linux-x64.cmake"
     extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_HEADLESS=ON"
     run_tests=1
     ;;
@@ -40,21 +40,21 @@ case $1 in
     # Debug build with CTest enabled
     build_type="Debug"
     build_dir="Tests"
-    toolchain_file="debug_clang-linux-x64.cmake"
+    toolchain_file="gcc-linux-x64.cmake"
     extra_flags="-DANOPTIC_TESTS=ON"
     run_tests=1
     ;;
   6)
     build_type="Debug"
     build_dir="Tests-ASan"
-    toolchain_file="debug_clang-linux-x64.cmake"
+    toolchain_file="gcc-linux-x64.cmake"
     extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=asan"
     run_tests=1
     ;;
   7)
     build_type="Debug"
     build_dir="Tests-TSan"
-    toolchain_file="debug_clang-linux-x64.cmake"
+    toolchain_file="gcc-linux-x64.cmake"
     extra_flags="-DANOPTIC_TESTS=ON -DANOPTIC_SANITIZE=tsan"
     run_tests=1
     ;;
@@ -62,7 +62,7 @@ case $1 in
     # Release (-O3) tests, use for benchmarks
     build_type="Release"
     build_dir="O3Tests"
-    toolchain_file="clang-linux-x64.cmake"
+    toolchain_file="gcc-linux-x64.cmake"
     extra_flags="-DANOPTIC_TESTS=ON"
     run_tests=1
     ;;
@@ -85,20 +85,10 @@ esac
 script_dir=$(dirname "$0")
 toolchain_path="$script_dir/cmake/platforms/${toolchain_file}"
 
-# Platform: Darwin Nix/Homebrew clang, else toolchain file
+# P2996 reflection is canonical here; Darwin has no supported compiler yet.
 if [ "$(uname -s)" = "Darwin" ]; then
-    if [ -n "$IN_NIX_SHELL" ] && command -v clang >/dev/null 2>&1; then
-        platform_args="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
-    else
-        # don't abort under set -e when llvm is absent
-        llvm_prefix="$(brew --prefix llvm 2>/dev/null || true)"
-        if [ -z "$llvm_prefix" ] || [ ! -x "$llvm_prefix/bin/clang" ]; then
-            echo "Error: no Nix shell and no Homebrew LLVM clang found."
-            echo "Either 'nix develop' (flake provides all deps) or 'brew install llvm'."
-            exit 1
-        fi
-        platform_args="-DCMAKE_C_COMPILER=$llvm_prefix/bin/clang -DCMAKE_CXX_COMPILER=$llvm_prefix/bin/clang++"
-    fi
+    echo "Error: hyper-c-reflection requires GCC 16.1+; no supported Darwin compiler is available." >&2
+    exit 1
 else
     platform_args="-DCMAKE_TOOLCHAIN_FILE=${toolchain_path}"
 fi

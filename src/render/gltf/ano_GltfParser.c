@@ -5,6 +5,8 @@
 #include "cpp/ano_alloc.h"
 #include <string.h>
 #include <assert.h>
+#include <meta>
+#include <type_traits>
 #include <anoptic_log.h>
 
 #if defined(__clang__)
@@ -104,6 +106,131 @@ static inline void mark_texture(const cgltf_data* d, TextureUsageFlags* imgUsage
 static inline uint32_t gltf_slot(const cgltf_data* d, const uint32_t* slots, const cgltf_texture* tex)
 {
     return (tex && tex->image) ? slots[tex->image - d->images] : ANO_BINDLESS_NONE;
+}
+
+// Inputs: material, canonical texture source. Output: referenced cgltf texture or NULL.
+static inline const cgltf_texture* gltf_material_texture(
+    const cgltf_material* material, AnoGltfTextureSource source)
+{
+    using enum AnoGltfTextureSource;
+    switch (source) {
+    case base_color:
+        return material->has_pbr_metallic_roughness
+            ? material->pbr_metallic_roughness.base_color_texture.texture : NULL;
+    case metallic_roughness:
+        return material->has_pbr_metallic_roughness
+            ? material->pbr_metallic_roughness.metallic_roughness_texture.texture : NULL;
+    case normal: return material->normal_texture.texture;
+    case occlusion: return material->occlusion_texture.texture;
+    case emissive: return material->emissive_texture.texture;
+    case clearcoat: return material->clearcoat.clearcoat_texture.texture;
+    case clearcoat_roughness: return material->clearcoat.clearcoat_roughness_texture.texture;
+    case clearcoat_normal: return material->clearcoat.clearcoat_normal_texture.texture;
+    case transmission: return material->transmission.transmission_texture.texture;
+    case thickness: return material->volume.thickness_texture.texture;
+    case specular: return material->specular.specular_texture.texture;
+    case specular_color: return material->specular.specular_color_texture.texture;
+    case sheen_color: return material->sheen.sheen_color_texture.texture;
+    case sheen_roughness: return material->sheen.sheen_roughness_texture.texture;
+    case iridescence: return material->iridescence.iridescence_texture.texture;
+    case iridescence_thickness: return material->iridescence.iridescence_thickness_texture.texture;
+    case anisotropy: return material->anisotropy.anisotropy_texture.texture;
+    case diffuse_transmission: return material->diffuse_transmission.diffuse_transmission_texture.texture;
+    case diffuse_transmission_color: return material->diffuse_transmission.diffuse_transmission_color_texture.texture;
+    case count: return NULL;
+    }
+    return NULL;
+}
+
+consteval bool gltf_material_texture_schema_valid()
+{
+    bool seen[static_cast<size_t>(AnoGltfTextureSource::count)]{};
+    size_t found = 0;
+    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
+        ^^MaterialData, std::meta::access_context::unchecked()));
+    template for (constexpr auto member : members) {
+        constexpr auto annotations = std::define_static_array(
+            std::meta::annotations_of_with_type(member, ^^AnoMaterialTexture));
+        static_assert(annotations.size() <= 1);
+        if constexpr (!annotations.empty()) {
+            constexpr auto spec = std::meta::extract<AnoMaterialTexture>(annotations[0]);
+            using Field = [:std::meta::type_of(member):];
+            static_assert(std::is_same_v<Field, uint32_t>);
+            const size_t source = static_cast<size_t>(spec.source);
+            if (source >= static_cast<size_t>(AnoGltfTextureSource::count) || seen[source])
+                return false;
+            if (spec.feature == 0 || (spec.feature & (spec.feature - 1u)) != 0)
+                return false;
+            if (spec.domain != AnoMaterialTextureDomain::color &&
+                spec.domain != AnoMaterialTextureDomain::data)
+                return false;
+            seen[source] = true;
+            ++found;
+        }
+    }
+    return found == static_cast<size_t>(AnoGltfTextureSource::count);
+}
+
+static_assert(gltf_material_texture_schema_valid());
+
+static PbrFeatureFlags gltf_material_texture_features(const cgltf_material* material)
+{
+    PbrFeatureFlags features = PBR_FEATURE_NONE;
+    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
+        ^^MaterialData, std::meta::access_context::unchecked()));
+    template for (constexpr auto member : members) {
+        constexpr auto annotations = std::define_static_array(
+            std::meta::annotations_of_with_type(member, ^^AnoMaterialTexture));
+        if constexpr (!annotations.empty()) {
+            constexpr auto spec = std::meta::extract<AnoMaterialTexture>(annotations[0]);
+            if constexpr (spec.detectsFeature) {
+                if (gltf_material_texture(material, spec.source)) features |= spec.feature;
+            }
+        }
+    }
+    return features;
+}
+
+static void gltf_mark_material_textures(const cgltf_data* data, TextureUsageFlags* imageUsage,
+                                        const cgltf_material* material,
+                                        PbrFeatureFlags supportedFeatures)
+{
+    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
+        ^^MaterialData, std::meta::access_context::unchecked()));
+    template for (constexpr auto member : members) {
+        constexpr auto annotations = std::define_static_array(
+            std::meta::annotations_of_with_type(member, ^^AnoMaterialTexture));
+        if constexpr (!annotations.empty()) {
+            constexpr auto spec = std::meta::extract<AnoMaterialTexture>(annotations[0]);
+            if (supportedFeatures & spec.feature) {
+                constexpr TextureUsageFlags usage = spec.domain == AnoMaterialTextureDomain::color
+                    ? TEXTURE_USE_COLOR : TEXTURE_USE_DATA;
+                mark_texture(data, imageUsage, gltf_material_texture(material, spec.source), usage);
+            }
+        }
+    }
+}
+
+static void gltf_project_material_textures(MaterialData* output, const cgltf_data* data,
+                                           const uint32_t* colorIndex, const uint32_t* dataIndex,
+                                           const cgltf_material* material,
+                                           PbrFeatureFlags supportedFeatures)
+{
+    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
+        ^^MaterialData, std::meta::access_context::unchecked()));
+    template for (constexpr auto member : members) {
+        constexpr auto annotations = std::define_static_array(
+            std::meta::annotations_of_with_type(member, ^^AnoMaterialTexture));
+        if constexpr (!annotations.empty()) {
+            constexpr auto spec = std::meta::extract<AnoMaterialTexture>(annotations[0]);
+            const cgltf_texture* texture = gltf_material_texture(material, spec.source);
+            if ((supportedFeatures & spec.feature) && texture) {
+                const uint32_t* slots = spec.domain == AnoMaterialTextureDomain::color
+                    ? colorIndex : dataIndex;
+                output->*(&[:member:]) = gltf_slot(data, slots, texture);
+            }
+        }
+    }
 }
 
 // Inputs: g (validated). Outputs: *primsTotal/*childTotal/*rootTotal.
@@ -312,45 +439,7 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
             ano_debug_log(ANO_INFO, "[GLTF DEBUG] Material %zu (%s): required features = 0x%08X, supported = 0x%08X",
                    m, mat->name ? mat->name : "unnamed", matFeatures, supportedFeatures);
 
-            if (mat->has_pbr_metallic_roughness) {
-                if (supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE)
-                    mark_texture(data, imageUsage, mat->pbr_metallic_roughness.base_color_texture.texture, TEXTURE_USE_COLOR);
-                if (supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE)
-                    mark_texture(data, imageUsage, mat->pbr_metallic_roughness.metallic_roughness_texture.texture, TEXTURE_USE_DATA);
-            }
-            if (supportedFeatures & PBR_FEATURE_NORMAL_TEXTURE)
-                mark_texture(data, imageUsage, mat->normal_texture.texture, TEXTURE_USE_DATA);
-            if (supportedFeatures & PBR_FEATURE_OCCLUSION_TEXTURE)
-                mark_texture(data, imageUsage, mat->occlusion_texture.texture, TEXTURE_USE_DATA);
-            if (supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE)
-                mark_texture(data, imageUsage, mat->emissive_texture.texture, TEXTURE_USE_COLOR);
-            if (supportedFeatures & PBR_FEATURE_CLEARCOAT) {
-                mark_texture(data, imageUsage, mat->clearcoat.clearcoat_texture.texture, TEXTURE_USE_DATA);
-                mark_texture(data, imageUsage, mat->clearcoat.clearcoat_roughness_texture.texture, TEXTURE_USE_DATA);
-                mark_texture(data, imageUsage, mat->clearcoat.clearcoat_normal_texture.texture, TEXTURE_USE_DATA);
-            }
-            if (supportedFeatures & PBR_FEATURE_TRANSMISSION)
-                mark_texture(data, imageUsage, mat->transmission.transmission_texture.texture, TEXTURE_USE_DATA);
-            if (supportedFeatures & PBR_FEATURE_VOLUME)
-                mark_texture(data, imageUsage, mat->volume.thickness_texture.texture, TEXTURE_USE_DATA);
-            if (supportedFeatures & PBR_FEATURE_SPECULAR) {
-                mark_texture(data, imageUsage, mat->specular.specular_texture.texture, TEXTURE_USE_DATA);
-                mark_texture(data, imageUsage, mat->specular.specular_color_texture.texture, TEXTURE_USE_COLOR);
-            }
-            if (supportedFeatures & PBR_FEATURE_SHEEN) {
-                mark_texture(data, imageUsage, mat->sheen.sheen_color_texture.texture, TEXTURE_USE_COLOR);
-                mark_texture(data, imageUsage, mat->sheen.sheen_roughness_texture.texture, TEXTURE_USE_DATA);
-            }
-            if (supportedFeatures & PBR_FEATURE_IRIDESCENCE) {
-                mark_texture(data, imageUsage, mat->iridescence.iridescence_texture.texture, TEXTURE_USE_DATA);
-                mark_texture(data, imageUsage, mat->iridescence.iridescence_thickness_texture.texture, TEXTURE_USE_DATA);
-            }
-            if (supportedFeatures & PBR_FEATURE_ANISOTROPY)
-                mark_texture(data, imageUsage, mat->anisotropy.anisotropy_texture.texture, TEXTURE_USE_DATA);
-            if (supportedFeatures & PBR_FEATURE_DIFFUSE_TRANSMISSION) {
-                mark_texture(data, imageUsage, mat->diffuse_transmission.diffuse_transmission_texture.texture, TEXTURE_USE_DATA);
-                mark_texture(data, imageUsage, mat->diffuse_transmission.diffuse_transmission_color_texture.texture, TEXTURE_USE_COLOR);
-            }
+            gltf_mark_material_textures(data, imageUsage, mat, supportedFeatures);
         }
     }
 
@@ -482,54 +571,26 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                     PbrFeatureFlags supportedFeatures = matFeatures & activeFeatures;
                     
                     matData.features = supportedFeatures;
+                    gltf_project_material_textures(&matData, data, colorIndex, dataIndex,
+                                                   prim->material, supportedFeatures);
                     
                     // 1. pbrMetallicRoughness
                     if (prim->material->has_pbr_metallic_roughness) {
-                        if (supportedFeatures & PBR_FEATURE_BASE_COLOR_TEXTURE) {
-                            cgltf_texture_view* texView = &prim->material->pbr_metallic_roughness.base_color_texture;
-                            if (texView->texture) {
-                                matData.baseColorTexture = gltf_slot(data, colorIndex, texView->texture);
-                            }
-                        }
-                        
                         for (int i = 0; i < 4; i++) {
                             matData.baseColorFactor[i] = (float)prim->material->pbr_metallic_roughness.base_color_factor[i];
                         }
                         matData.metallicFactor = (float)prim->material->pbr_metallic_roughness.metallic_factor;
                         matData.roughnessFactor = (float)prim->material->pbr_metallic_roughness.roughness_factor;
-                        
-                        if (supportedFeatures & PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE) {
-                            cgltf_texture_view* texView = &prim->material->pbr_metallic_roughness.metallic_roughness_texture;
-                            if (texView->texture) {
-                                matData.metallicRoughnessTexture = gltf_slot(data, dataIndex, texView->texture);
-                            }
-                        }
                     }
                     
                     // 2. Core properties
-                    if (supportedFeatures & PBR_FEATURE_NORMAL_TEXTURE) {
-                        if (prim->material->normal_texture.texture) {
-                            matData.normalTexture = gltf_slot(data, dataIndex, prim->material->normal_texture.texture);
-                            if (matData.normalTexture != ANO_BINDLESS_NONE) {
-                                matData.normalScale = (float)prim->material->normal_texture.scale;
-                            }
-                        }
-                    }
+                    if ((supportedFeatures & PBR_FEATURE_NORMAL_TEXTURE) &&
+                        matData.normalTexture != ANO_BINDLESS_NONE)
+                        matData.normalScale = (float)prim->material->normal_texture.scale;
                     
-                    if (supportedFeatures & PBR_FEATURE_OCCLUSION_TEXTURE) {
-                        if (prim->material->occlusion_texture.texture) {
-                            matData.occlusionTexture = gltf_slot(data, dataIndex, prim->material->occlusion_texture.texture);
-                            if (matData.occlusionTexture != ANO_BINDLESS_NONE) {
-                                matData.occlusionStrength = (float)prim->material->occlusion_texture.scale;
-                            }
-                        }
-                    }
-                    
-                    if (supportedFeatures & PBR_FEATURE_EMISSIVE_TEXTURE) {
-                        if (prim->material->emissive_texture.texture) {
-                            matData.emissiveTexture = gltf_slot(data, colorIndex, prim->material->emissive_texture.texture);
-                        }
-                    }
+                    if ((supportedFeatures & PBR_FEATURE_OCCLUSION_TEXTURE) &&
+                        matData.occlusionTexture != ANO_BINDLESS_NONE)
+                        matData.occlusionStrength = (float)prim->material->occlusion_texture.scale;
                     
                     for (int i = 0; i < 3; i++) {
                         matData.emissiveFactor[i] = (float)prim->material->emissive_factor[i];
@@ -551,24 +612,11 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                     if (supportedFeatures & PBR_FEATURE_CLEARCOAT) {
                         matData.clearcoatFactor = (float)prim->material->clearcoat.clearcoat_factor;
                         matData.clearcoatRoughnessFactor = (float)prim->material->clearcoat.clearcoat_roughness_factor;
-                        
-                        if (prim->material->clearcoat.clearcoat_texture.texture) {
-                            matData.clearcoatTexture = gltf_slot(data, dataIndex, prim->material->clearcoat.clearcoat_texture.texture);
-                        }
-                        if (prim->material->clearcoat.clearcoat_roughness_texture.texture) {
-                            matData.clearcoatRoughnessTexture = gltf_slot(data, dataIndex, prim->material->clearcoat.clearcoat_roughness_texture.texture);
-                        }
-                        if (prim->material->clearcoat.clearcoat_normal_texture.texture) {
-                            matData.clearcoatNormalTexture = gltf_slot(data, dataIndex, prim->material->clearcoat.clearcoat_normal_texture.texture);
-                        }
                     }
                     
                     // 4. Transmission
                     if (supportedFeatures & PBR_FEATURE_TRANSMISSION) {
                         matData.transmissionFactor = (float)prim->material->transmission.transmission_factor;
-                        if (prim->material->transmission.transmission_texture.texture) {
-                            matData.transmissionTexture = gltf_slot(data, dataIndex, prim->material->transmission.transmission_texture.texture);
-                        }
                     }
                     
                     // 5. Volume
@@ -579,10 +627,6 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                             matData.attenuationColor[i] = (float)prim->material->volume.attenuation_color[i];
                         }
                         matData.attenuationColor[3] = 1.0f; // Padding
-                        
-                        if (prim->material->volume.thickness_texture.texture) {
-                            matData.thicknessTexture = gltf_slot(data, dataIndex, prim->material->volume.thickness_texture.texture);
-                        }
                     }
                     
                     // 6. IOR
@@ -597,13 +641,6 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                             matData.specularColorFactor[i] = (float)prim->material->specular.specular_color_factor[i];
                         }
                         matData.specularColorFactor[3] = 1.0f; // Padding
-                        
-                        if (prim->material->specular.specular_texture.texture) {
-                            matData.specularTexture = gltf_slot(data, dataIndex, prim->material->specular.specular_texture.texture);
-                        }
-                        if (prim->material->specular.specular_color_texture.texture) {
-                            matData.specularColorTexture = gltf_slot(data, colorIndex, prim->material->specular.specular_color_texture.texture);
-                        }
                     }
                     
                     // 8. Sheen
@@ -613,13 +650,6 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                             matData.sheenColorFactor[i] = (float)prim->material->sheen.sheen_color_factor[i];
                         }
                         matData.sheenColorFactor[3] = 1.0f; // Padding
-                        
-                        if (prim->material->sheen.sheen_color_texture.texture) {
-                            matData.sheenColorTexture = gltf_slot(data, colorIndex, prim->material->sheen.sheen_color_texture.texture);
-                        }
-                        if (prim->material->sheen.sheen_roughness_texture.texture) {
-                            matData.sheenRoughnessTexture = gltf_slot(data, dataIndex, prim->material->sheen.sheen_roughness_texture.texture);
-                        }
                     }
                     
                     // 9. Iridescence
@@ -628,23 +658,12 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                         matData.iridescenceIor = (float)prim->material->iridescence.iridescence_ior;
                         matData.iridescenceThicknessMinimum = (float)prim->material->iridescence.iridescence_thickness_min;
                         matData.iridescenceThicknessMaximum = (float)prim->material->iridescence.iridescence_thickness_max;
-                        
-                        if (prim->material->iridescence.iridescence_texture.texture) {
-                            matData.iridescenceTexture = gltf_slot(data, dataIndex, prim->material->iridescence.iridescence_texture.texture);
-                        }
-                        if (prim->material->iridescence.iridescence_thickness_texture.texture) {
-                            matData.iridescenceThicknessTexture = gltf_slot(data, dataIndex, prim->material->iridescence.iridescence_thickness_texture.texture);
-                        }
                     }
                     
                     // 10. Anisotropy
                     if (supportedFeatures & PBR_FEATURE_ANISOTROPY) {
                         matData.anisotropyStrength = (float)prim->material->anisotropy.anisotropy_strength;
                         matData.anisotropyRotation = (float)prim->material->anisotropy.anisotropy_rotation;
-                        
-                        if (prim->material->anisotropy.anisotropy_texture.texture) {
-                            matData.anisotropyTexture = gltf_slot(data, dataIndex, prim->material->anisotropy.anisotropy_texture.texture);
-                        }
                     }
                     
                     // 11. Dispersion
@@ -659,13 +678,6 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName)
                             matData.diffuseTransmissionColorFactor[i] = (float)prim->material->diffuse_transmission.diffuse_transmission_color_factor[i];
                         }
                         matData.diffuseTransmissionColorFactor[3] = 1.0f; // Padding
-                        
-                        if (prim->material->diffuse_transmission.diffuse_transmission_texture.texture) {
-                            matData.diffuseTransmissionTexture = gltf_slot(data, dataIndex, prim->material->diffuse_transmission.diffuse_transmission_texture.texture);
-                        }
-                        if (prim->material->diffuse_transmission.diffuse_transmission_color_texture.texture) {
-                            matData.diffuseTransmissionColorTexture = gltf_slot(data, colorIndex, prim->material->diffuse_transmission.diffuse_transmission_color_texture.texture);
-                        }
                     }
                     
                     // 13. Emissive Strength
@@ -787,31 +799,15 @@ PbrFeatureFlags ano_gltf_identify_material_features(const cgltf_material* materi
         return PBR_FEATURE_NONE;
     }
     
-    PbrFeatureFlags features = PBR_FEATURE_NONE;
+    PbrFeatureFlags features = gltf_material_texture_features(material);
     
     // 1. pbrMetallicRoughness
     if (material->has_pbr_metallic_roughness) {
         features |= PBR_FEATURE_BASE_COLOR_FACTOR;
         features |= PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR;
-        
-        if (material->pbr_metallic_roughness.base_color_texture.texture) {
-            features |= PBR_FEATURE_BASE_COLOR_TEXTURE;
-        }
-        if (material->pbr_metallic_roughness.metallic_roughness_texture.texture) {
-            features |= PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE;
-        }
     }
     
     // 2. Core properties
-    if (material->normal_texture.texture) {
-        features |= PBR_FEATURE_NORMAL_TEXTURE;
-    }
-    if (material->occlusion_texture.texture) {
-        features |= PBR_FEATURE_OCCLUSION_TEXTURE;
-    }
-    if (material->emissive_texture.texture) {
-        features |= PBR_FEATURE_EMISSIVE_TEXTURE;
-    }
     if (material->emissive_factor[0] > 0.0f || material->emissive_factor[1] > 0.0f || material->emissive_factor[2] > 0.0f) {
         features |= PBR_FEATURE_EMISSIVE_FACTOR;
     }
