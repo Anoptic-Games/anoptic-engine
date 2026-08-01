@@ -12,6 +12,7 @@ Functions in an `include/` header always begin with `ano_`, distinguishing them 
 
 ```plaintext
 include/
+├── anogltf.h           # C++26 reflected glTF loader and typed schema
 ├── anoptic_memory.h    # Public memory allocation API
 ├── anoptic_threads.h   # Platform abstraction of pthread API
 ├── ...                 # other APIs

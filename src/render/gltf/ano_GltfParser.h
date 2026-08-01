@@ -63,10 +63,4 @@ ModelAsset* parseGltf(VulkanContext* ctx, const char* fileName);
 // Cap 0 / out NULL sizes; call again to fill.
 uint32_t model_flatten(const ModelAsset* asset, const mat4 rootTransform, AnoRenderableDesc* out, uint32_t cap);
 
-// Forward declaration of cgltf_material to avoid header inclusion issues
-struct cgltf_material;
-
-// Identifies all the PBR properties and extensions used by a glTF material
-PbrFeatureFlags ano_gltf_identify_material_features(const struct cgltf_material* material);
-
 #endif
