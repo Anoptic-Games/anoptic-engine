@@ -7,7 +7,7 @@
 #include <anoptic_filesystem.h>
 #include <anoptic_log.h>
 #include "pipeline.h"
-#include "global_layout_schema.h"
+#include "descriptor_layout_schema.h"
 #include "pipelines/flat.h"
 #include "pipelines/transmission.h"
 #include "pipelines/additive.h"
@@ -16,6 +16,24 @@
 #include <stddef.h>
 
 #include <vulkan/vulkan.h>
+
+// Inputs: compile-time schema table and geometry-stage expansion for this device.
+// Output: fully initialized Vulkan layout bindings in schema order.
+template<size_t Count>
+static void ano_vk_materialize_layout_bindings(
+	const AnoVkDescriptorBindingTable<Count>& specs,
+	VkDescriptorSetLayoutBinding (&bindings)[Count],
+	VkShaderStageFlags geometryStage)
+{
+	for (size_t i = 0; i < Count; ++i) {
+		bindings[i].binding = specs.values[i].binding;
+		bindings[i].descriptorType = specs.values[i].descriptorType;
+		bindings[i].descriptorCount = specs.values[i].descriptorCount;
+		bindings[i].stageFlags = ano_vk_descriptor_stage_flags(
+			specs.values[i].stage, geometryStage);
+		bindings[i].pImmutableSamplers = NULL;
+	}
+}
 
 bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 {
@@ -26,14 +44,7 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 
 	const auto& specs = ano_vk_global_binding_specs();
 	VkDescriptorSetLayoutBinding bindings[14] = {};
-	for (size_t i = 0; i < specs.count; ++i) {
-		bindings[i].binding = specs.values[i].binding;
-		bindings[i].descriptorType = specs.values[i].descriptorType;
-		bindings[i].descriptorCount = 1;
-		bindings[i].stageFlags = ano_vk_global_stage_flags(
-			specs.values[i].stage, geometryStage);
-		bindings[i].pImmutableSamplers = NULL;
-	}
+	ano_vk_materialize_layout_bindings(specs, bindings, geometryStage);
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -51,162 +62,59 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 
 bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[12] = {};
+	const auto& cullSpecs = ano_vk_cull_binding_specs<ANO_VIEW_COUNT>();
+	VkDescriptorSetLayoutBinding bindings[12] = {};
+	ano_vk_materialize_layout_bindings(cullSpecs, bindings, 0);
 
-    // 0: CullUBO
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = (uint32_t)cullSpecs.count;
+	layoutInfo.pBindings = bindings;
 
-    // 1: TransformSSBO
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->culling.setLayout) != VK_SUCCESS)
+	{
+		ano_log(ANO_FATAL, "Failed to create cull descriptor set layout!");
+		return false;
+	}
 
-    // 2: EntitySSBO
-    bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	const auto& hizSpecs = ano_vk_hiz_binding_specs();
+	VkDescriptorSetLayoutBinding hizBindings[3] = {};
+	ano_vk_materialize_layout_bindings(hizSpecs, hizBindings, 0);
 
-    // 3: MeshSSBO
-    bindings[3].binding = 3;
-    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[3].descriptorCount = 1;
-    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	VkDescriptorSetLayoutCreateInfo hizLayoutInfo = {};
+	hizLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	hizLayoutInfo.bindingCount = (uint32_t)hizSpecs.count;
+	hizLayoutInfo.pBindings = hizBindings;
+	if (vkCreateDescriptorSetLayout(ctx->device, &hizLayoutInfo, NULL, &state->hizSetLayout) != VK_SUCCESS)
+	{
+		ano_log(ANO_FATAL, "Failed to create Hi-Z descriptor set layout!");
+		return false;
+	}
 
-    // 4: MeshBoundsSSBO
-    bindings[4].binding = 4;
-    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[4].descriptorCount = 1;
-    bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	const auto& setupSpecs = ano_vk_shadow_setup_binding_specs();
+	VkDescriptorSetLayoutBinding setupBindings[5] = {};
+	ano_vk_materialize_layout_bindings(setupSpecs, setupBindings, 0);
+	VkDescriptorSetLayoutCreateInfo setupInfo = {};
+	setupInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	setupInfo.bindingCount = (uint32_t)setupSpecs.count;
+	setupInfo.pBindings = setupBindings;
+	if (vkCreateDescriptorSetLayout(ctx->device, &setupInfo, NULL, &state->shadowSetupSetLayout) != VK_SUCCESS)
+		return false;
 
-    // 5: IndirectBuffer
-    bindings[5].binding = 5;
-    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[5].descriptorCount = 1;
-    bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	VkShaderStageFlags geomStage = (ctx->deviceCapabilities.meshShader
+		? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
+		| (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
+	const auto& geomSpecs = ano_vk_shadow_geometry_binding_specs();
+	VkDescriptorSetLayoutBinding geomBindings[4] = {};
+	ano_vk_materialize_layout_bindings(geomSpecs, geomBindings, geomStage);
+	VkDescriptorSetLayoutCreateInfo geomInfo = {};
+	geomInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	geomInfo.bindingCount = (uint32_t)geomSpecs.count;
+	geomInfo.pBindings = geomBindings;
+	if (vkCreateDescriptorSetLayout(ctx->device, &geomInfo, NULL, &state->shadowGeomSetLayout) != VK_SUCCESS)
+		return false;
 
-    // 6: DrawCount
-    bindings[6].binding = 6;
-    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[6].descriptorCount = 1;
-    bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    // 7: CompactedEntityIndices
-    bindings[7].binding = 7;
-    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[7].descriptorCount = 1;
-    bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    // 8: MaterialSSBO
-    bindings[8].binding = 8;
-    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[8].descriptorCount = 1;
-    bindings[8].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    // 9: ShadowFrustumSSBO, GPU-built shadow frustums the cull tests against.
-    bindings[9].binding = 9;
-    bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[9].descriptorCount = 1;
-    bindings[9].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    // 10: SortKeys, cull writes per-draw depth keys, tpsort.comp reads them.
-    bindings[10].binding = 10;
-    bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[10].descriptorCount = 1;
-    bindings[10].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    // 11: Hi-Z occlusion pyramids, one combined-image-sampler per camera view.
-    bindings[11].binding = 11;
-    bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[11].descriptorCount = ANO_VIEW_COUNT;
-    bindings[11].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 12;
-    layoutInfo.pBindings = bindings;
-
-    if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->culling.setLayout) != VK_SUCCESS)
-    {
-        ano_log(ANO_FATAL, "Failed to create cull descriptor set layout!");
-        return false;
-    }
-
-    // Hi-Z pyramid build set: 0 sampled all-mip view, 1 this mip's r32f storage dest, 2 MSAA camera depth.
-    VkDescriptorSetLayoutBinding hizBindings[3] = {};
-    hizBindings[0].binding = 0;
-    hizBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    hizBindings[0].descriptorCount = 1;
-    hizBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    hizBindings[1].binding = 1;
-    hizBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    hizBindings[1].descriptorCount = 1;
-    hizBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    hizBindings[2].binding = 2;
-    hizBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    hizBindings[2].descriptorCount = 1;
-    hizBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo hizLayoutInfo = {};
-    hizLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    hizLayoutInfo.bindingCount = 3;
-    hizLayoutInfo.pBindings = hizBindings;
-    if (vkCreateDescriptorSetLayout(ctx->device, &hizLayoutInfo, NULL, &state->hizSetLayout) != VK_SUCCESS)
-    {
-        ano_log(ANO_FATAL, "Failed to create Hi-Z descriptor set layout!");
-        return false;
-    }
-
-    // --- Dynamic shadow set layouts ---
-
-    // shadowsetup compute set: 0 config, 1 transforms, 2 lights, 3 frustums, 4 packed sampling viewProjs.
-    VkDescriptorSetLayoutBinding setupBindings[5] = {};
-    for (uint32_t b = 0; b < 5; ++b) {
-        setupBindings[b].binding = b;
-        setupBindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        setupBindings[b].descriptorCount = 1;
-        setupBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    }
-    VkDescriptorSetLayoutCreateInfo setupInfo = {};
-    setupInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    setupInfo.bindingCount = 5;
-    setupInfo.pBindings = setupBindings;
-    if (vkCreateDescriptorSetLayout(ctx->device, &setupInfo, NULL, &state->shadowSetupSetLayout) != VK_SUCCESS)
-        return false;
-
-    // Shadow geom set 2: 0 viewProjs, 1 atlas, 2 light info, 3 sampling viewProjs UBO.
-    VkShaderStageFlags geomStage = (ctx->deviceCapabilities.meshShader
-        ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
-        | (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
-    VkDescriptorSetLayoutBinding geomBindings[4] = {};
-    geomBindings[0].binding = 0;
-    geomBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    geomBindings[0].descriptorCount = 1;
-    geomBindings[0].stageFlags = geomStage | VK_SHADER_STAGE_FRAGMENT_BIT;
-    geomBindings[1].binding = 1;
-    geomBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    geomBindings[1].descriptorCount = 1;
-    geomBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    geomBindings[2].binding = 2;
-    geomBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    geomBindings[2].descriptorCount = 1;
-    geomBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    geomBindings[3].binding = 3;
-    geomBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    geomBindings[3].descriptorCount = 1;
-    geomBindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutCreateInfo geomInfo = {};
-    geomInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    geomInfo.bindingCount = 4;
-    geomInfo.pBindings = geomBindings;
-    if (vkCreateDescriptorSetLayout(ctx->device, &geomInfo, NULL, &state->shadowGeomSetLayout) != VK_SUCCESS)
-        return false;
-
-    return true;
+	return true;
 }
 
 
