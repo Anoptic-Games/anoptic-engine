@@ -7,6 +7,7 @@
 // Schedule: full tempo map before placement; order (frame, kind, seq) with params < note; sub-block spans at bar edges and note onsets.
 
 #include "synth_internal.h"
+#include "audio/audio_command_contract.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -653,36 +654,36 @@ bool ano_music_apply_command(AnoMusicEngine *e, const AnoAudioCommand *cmd)
     memcpy(tag, cmd->tag, sizeof tag);
     tag[sizeof tag - 1] = '\0';
 
-    switch ((AnoAudioCommandKind)cmd->kind) {
-    case ACMD_MUSIC_AFFECT:
+    bool applied = false;
+    const bool known = ano::audio_contract::visit_command(
+        cmd->kind, [&]<AnoAudioCommandKind Kind> {
+    constexpr AnoAudioCommandContract contract =
+        ano::audio_contract::commands.contracts[static_cast<size_t>(Kind)];
+    if constexpr (contract.target == AnoAudioCommandTarget::mixer ||
+                  contract.payload == AnoAudioCommandPayload::music_seek) {
+        applied = false;
+    } else if constexpr (Kind == ACMD_MUSIC_AFFECT) {
         ano_music_set_affect(e, cmd->affect[0], cmd->affect[1], cmd->affect[2],
                              cmd->urgent);
-        return true;
-    case ACMD_MUSIC_KEY:
+        applied = true;
+    } else if constexpr (Kind == ACMD_MUSIC_KEY) {
         ano_music_request_key(e, (int)cmd->paramId, cmd->urgent);
-        return true;
-    case ACMD_MUSIC_MOTIF:
+        applied = true;
+    } else if constexpr (Kind == ACMD_MUSIC_MOTIF) {
         ano_music_request_motif(e, tag);
-        return true;
-    case ACMD_MUSIC_OVERRIDE:
-        if (ano_music_set_override(e, tag, (double)cmd->value))
-            return true;
-        ano_debug_log(ANO_WARN, "music: no parameter named '%s'.", tag);
-        return false;
-    case ACMD_MUSIC_RELEASE:
+        applied = true;
+    } else if constexpr (Kind == ACMD_MUSIC_OVERRIDE) {
+        applied = ano_music_set_override(e, tag, (double)cmd->value);
+        if (!applied)
+            ano_debug_log(ANO_WARN, "music: no parameter named '%s'.", tag);
+    } else if constexpr (Kind == ACMD_MUSIC_RELEASE) {
         ano_music_clear_override(e, tag);
-        return true;
-    case ACMD_SOURCE_PLAY:
-    case ACMD_SOURCE_UPDATE:
-    case ACMD_SOURCE_STOP:
-    case ACMD_BUS_SET:
-    case ACMD_FX_SET:
-    case ACMD_BUFFER_REGISTER:
-    case ACMD_BUFFER_RELEASE:
-    case ACMD_MUSIC_SEEK:
-        return false;
+        applied = true;
+    } else {
+        static_assert(ano::dependent_false<Kind>, "unhandled generator command");
     }
-    return false;
+    });
+    return known && applied;
 }
 
 void ano_synth_control(void *user, const AnoAudioCommand *cmd)

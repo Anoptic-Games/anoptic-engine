@@ -6,6 +6,7 @@
 // Audio lifecycle + public bridge endpoints. Hot-path push/pop stay in audio_bridge.h.
 
 #include "audio_internal.h"
+#include "audio_command_contract.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -238,38 +239,17 @@ static void audio_discharge_blocks(AnoAudioMixer *mx)
 {
     AnoAudioCommand cmd;
     while (ano_audio_ring_pop(&mx->bridge->commands, &cmd)) {
-        switch ((AnoAudioCommandKind)cmd.kind) {
-        case ACMD_BUFFER_REGISTER:
-            ano_audio_block_free((void *)cmd.block);
-            break;
-        case ACMD_SOURCE_PLAY:
-        case ACMD_SOURCE_UPDATE:
-        case ACMD_SOURCE_STOP:
-        case ACMD_BUS_SET:
-        case ACMD_FX_SET:
-        case ACMD_BUFFER_RELEASE:
-        case ACMD_MUSIC_AFFECT:
-        case ACMD_MUSIC_KEY:
-        case ACMD_MUSIC_MOTIF:
-        case ACMD_MUSIC_OVERRIDE:
-        case ACMD_MUSIC_RELEASE:
-        case ACMD_MUSIC_SEEK: // borrowed
-            break;
-        }
+        const AnoAudioCommandContract *contract = ano::audio_contract::commands.find(cmd.kind);
+        if (contract && contract->ownership == AnoAudioPayloadOwnership::adopted)
+            ano_audio_block_free(
+                const_cast<void *>(ano::audio_contract::pointer_payload(cmd)));
     }
 
     AnoAudioEvent evt;
     while (ano_audio_ring_pop(&mx->bridge->events, &evt)) {
-        switch (evt.kind) {
-        case AEVT_BUFFER_RETIRED:
+        const AnoAudioEventContract *contract = ano::audio_contract::events.find(static_cast<size_t>(evt.kind));
+        if (contract && contract->ownership == AnoAudioPayloadOwnership::returned)
             ano_audio_block_free(evt.u.buffer.block);
-            break;
-        case AEVT_SOURCE_RETIRED:
-        case AEVT_CAPACITY:
-        case AEVT_MUSIC_BAR:
-        case AEVT_MUSIC_SEEKED:
-            break;
-        }
     }
 
     for (uint32_t i = 0; i < ANO_AUDIO_MAX_BUFFERS; ++i) {

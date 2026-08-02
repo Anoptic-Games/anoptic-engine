@@ -8,6 +8,7 @@
  * Public contract: include/anoptic_render.h. */
 
 #include "render_bridge.h"
+#include "render_command_contract.h"
 #include "cpp/ano_types.h"
 
 #include <stdint.h>
@@ -89,29 +90,12 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
 
 // in:  cmd (POD command being dropped)
 // out: nothing; frees the render-owned block its kind carries
-// inv: switch total over RenderCommandKind (no default). Ownership rides bulk_owned.
+// inv: reflected ownership map is total over RenderCommandKind. Ownership rides bulk_owned.
 void ano_render_command_release(const RenderCommand *cmd)
 {
     if (!cmd || !cmd->bulk_owned) return;
-    const void *blk = NULL;
-    switch (cmd->kind) {
-    case RCMD_BULK_CREATE:  blk = cmd->batch;   break;
-    case RCMD_BULK_UPDATE:  blk = cmd->update;  break;
-    case RCMD_BULK_DESTROY: blk = cmd->destroy; break;
-    case RCMD_TEXT_SET:     blk = cmd->text;    break;
-    case RCMD_UI_SET:       blk = cmd->ui;      break;
-    case RCMD_CREATE:
-    case RCMD_UPDATE:
-    case RCMD_DESTROY:
-    case RCMD_STREAM_TRANSFORMS:
-    case RCMD_LIGHT_ATTACH:
-    case RCMD_LIGHT_UPDATE:
-    case RCMD_LIGHT_DETACH:
-    case RCMD_TEXT_CLEAR:
-    case RCMD_UI_CLEAR:
-        break; // payload rides the command by value
-    }
-    if (blk) mi_free((void *)blk);
+    if (const void *blk = ano::render_contract::owned_payload(*cmd))
+        mi_free(const_cast<void *>(blk));
 }
 
 // inv: caller quiesces both roles first (main.c joins producer, then teardown on consumer thread).
@@ -192,7 +176,8 @@ AnoRenderSubmitResult ano_render_submit_bulk_update(AnoRenderBridge *bridge, con
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_ACCEPTED); // documented no-op
     uint32_t count = batch->count, fields = batch->fields;
     // Absent array for a named field -> INVALID. RFIELD_LIGHT is not bulk.
-    if (batch->render_ids == NULL
+    if ((fields & ~ano::render_contract::allowed_fields(RCMD_BULK_UPDATE)) != 0u
+        || batch->render_ids == NULL
         || ((fields & RFIELD_TRANSFORM) && batch->transforms == NULL)
         || ((fields & RFIELD_ANIM)      && batch->motion == NULL)
         || ((fields & RFIELD_MESH_MAT)  && (batch->mesh == NULL || batch->material == NULL))

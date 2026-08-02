@@ -6,6 +6,7 @@
 // Mixer core: apply, render_block, realtime loop, offline driver. Single-threaded graph.
 
 #include "audio_internal.h"
+#include "audio_command_contract.h"
 
 #include <math.h>
 #include <string.h>
@@ -124,13 +125,14 @@ static void buffer_reject(AnoAudioMixer *mx, uint32_t buffer_id, const void *blo
     mi_free((void *)block);
 }
 
-void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
+// One runtime decoder serves generator, bridge, and offline call sites; none has a constant kind.
+[[gnu::noinline]] void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
 {
     const float nyquist = 0.5f * (float)mx->sampleRate;
 
-    switch ((AnoAudioCommandKind)cmd->kind) {
-
-    case ACMD_SOURCE_PLAY: {
+    const bool known = ano::audio_contract::visit_command(
+        cmd->kind, [&]<AnoAudioCommandKind Kind> {
+    if constexpr (Kind == ACMD_SOURCE_PLAY) {
         const AnoAudioSourceDesc *d = &cmd->desc;
         if (d->bus >= mx->busCount) {
             ano_debug_log(ANO_WARN, "audio: PLAY id %u names bus %u of %u; dropped.",
@@ -222,9 +224,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
             ano_audio_smooth_snap(&slot->airCutoff, slot->airCutoff.target);
         }
         return;
-    }
-
-    case ACMD_SOURCE_UPDATE: {
+    } else if constexpr (Kind == ACMD_SOURCE_UPDATE) {
         for (uint32_t i = 0; i < ANO_AUDIO_MAX_SOURCES; ++i) {
             AnoAudioSource *s = &mx->sources[i];
             if (s->state != ANO_AUDIO_SRC_PLAYING || s->source_id != cmd->source_id)
@@ -245,9 +245,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
             return;
         }
         return;
-    }
-
-    case ACMD_SOURCE_STOP: {
+    } else if constexpr (Kind == ACMD_SOURCE_STOP) {
         for (uint32_t i = 0; i < ANO_AUDIO_MAX_SOURCES; ++i) {
             AnoAudioSource *s = &mx->sources[i];
             if (s->state == ANO_AUDIO_SRC_PLAYING && s->source_id == cmd->source_id) {
@@ -257,9 +255,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
             }
         }
         return;
-    }
-
-    case ACMD_BUS_SET: {
+    } else if constexpr (Kind == ACMD_BUS_SET) {
         if (cmd->bus >= mx->busCount) {
             ano_debug_log(ANO_WARN, "audio: BUS_SET names bus %u of %u; dropped.", cmd->bus, mx->busCount);
             return;
@@ -272,9 +268,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
         if ((cmd->fields & ANO_AUDIO_FIELD_SEND1) && bus->sends[1].target != 0u)
             bus->sends[1].level.target = clampf(cmd->send[1], 0.0f, 4.0f);
         return;
-    }
-
-    case ACMD_FX_SET: {
+    } else if constexpr (Kind == ACMD_FX_SET) {
         if (cmd->bus >= mx->busCount || cmd->fxSlot >= ANO_AUDIO_MAX_FX) {
             ano_debug_log(ANO_WARN, "audio: FX_SET names bus %u slot %u; dropped.", cmd->bus, cmd->fxSlot);
             return;
@@ -287,9 +281,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
         }
         ano_audio_fx_set(fx, cmd->paramId, cmd->value);
         return;
-    }
-
-    case ACMD_BUFFER_REGISTER: {
+    } else if constexpr (Kind == ACMD_BUFFER_REGISTER) {
         if (!mx->bridge) {
             ano_debug_log(ANO_WARN, "audio: BUFFER_REGISTER ignored offline (use desc.buffers).");
             return;
@@ -331,9 +323,7 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
         slot->data      = (const float *)(h + 1);
         slot->block     = (void *)cmd->block;
         return;
-    }
-
-    case ACMD_BUFFER_RELEASE: {
+    } else if constexpr (Kind == ACMD_BUFFER_RELEASE) {
         AnoAudioBufferSlot *slot = buffer_find(mx, cmd->source_id, ANO_AUDIO_BUF_LIVE);
         if (!slot)
             return;
@@ -348,23 +338,20 @@ void ano_audio_apply(AnoAudioMixer *mx, const AnoAudioCommand *cmd)
             }
         }
         return;
-    }
-
-    case ACMD_MUSIC_AFFECT:
-    case ACMD_MUSIC_KEY:
-    case ACMD_MUSIC_MOTIF:
-    case ACMD_MUSIC_OVERRIDE:
-    case ACMD_MUSIC_RELEASE:
-    case ACMD_MUSIC_SEEK:
+    } else if constexpr (
+        Kind == ACMD_MUSIC_AFFECT || Kind == ACMD_MUSIC_KEY ||
+        Kind == ACMD_MUSIC_MOTIF || Kind == ACMD_MUSIC_OVERRIDE ||
+        Kind == ACMD_MUSIC_RELEASE || Kind == ACMD_MUSIC_SEEK) {
         // Mixer owns no music: forward verbatim, do not read.
         if (mx->generatorControl)
             mx->generatorControl(mx->generatorUser, cmd);
         return;
-
-    default:
-        ano_debug_log(ANO_WARN, "audio: unknown command kind %u; dropped.", cmd->kind);
-        return;
+    } else {
+        static_assert(ano::dependent_false<Kind>, "unhandled audio command");
     }
+    });
+    if (!known)
+        ano_debug_log(ANO_WARN, "audio: unknown command kind %u; dropped.", cmd->kind);
 }
 
 /* Block rendering */

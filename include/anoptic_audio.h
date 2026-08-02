@@ -15,6 +15,12 @@
 #include <stdbool.h>
 
 #ifdef __cplusplus
+#define ANO_AUDIO_META(...) [[=__VA_ARGS__]]
+#else
+#define ANO_AUDIO_META(...)
+#endif
+
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -218,27 +224,39 @@ typedef enum AnoAudioFieldBits
     ANO_AUDIO_FIELD_SEND1    = 1 << 6, // bus send slot 1
 } AnoAudioFieldBits;
 
+#ifdef __cplusplus
+enum class AnoAudioCommandPayload : uint8_t { source_play, source_update, source_id, bus_update, fx_parameter, buffer_block, music_affect, music_key, music_tag, music_tag_value, music_seek };
+enum class AnoAudioPayloadOwnership : uint8_t { inline_value, adopted, borrowed, returned };
+enum class AnoAudioCommandTarget : uint8_t { mixer, generator };
+struct AnoAudioCommandContract final { AnoAudioCommandPayload payload; AnoAudioPayloadOwnership ownership; AnoAudioCommandTarget target; };
+#endif
+
 typedef enum AnoAudioCommandKind
 {
-    ACMD_SOURCE_PLAY,     // start/restart source_id from desc
-    ACMD_SOURCE_UPDATE,   // retarget fields mask
-    ACMD_SOURCE_STOP,     // release ramp. retires when inaudible
-    ACMD_BUS_SET,         // GAIN / SEND0 / SEND1
-    ACMD_FX_SET,          // bus, fxSlot, paramId, value
-    ACMD_BUFFER_REGISTER, // adopt owned block under source_id-as-buffer-id
-    ACMD_BUFFER_RELEASE,  // retire. block returns via AEVT_BUFFER_RETIRED
+    ACMD_SOURCE_PLAY ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::source_play, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::mixer}),
+    ACMD_SOURCE_UPDATE ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::source_update, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::mixer}),
+    ACMD_SOURCE_STOP ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::source_id, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::mixer}),
+    ACMD_BUS_SET ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::bus_update, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::mixer}),
+    ACMD_FX_SET ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::fx_parameter, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::mixer}),
+    ACMD_BUFFER_REGISTER ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::buffer_block, AnoAudioPayloadOwnership::adopted, AnoAudioCommandTarget::mixer}),
+    ACMD_BUFFER_RELEASE ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::source_id, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::mixer}),
 
     // Forwarded verbatim to generatorControl at block boundary. No-op without generator.
-    ACMD_MUSIC_AFFECT,   // affect axes (NAN = leave). urgent
-    ACMD_MUSIC_KEY,      // tonic pitch class paramId. urgent
-    ACMD_MUSIC_MOTIF,    // tag at next phrase boundary
-    ACMD_MUSIC_OVERRIDE, // pin tag to value
-    ACMD_MUSIC_RELEASE,  // release tag to mapper
+    ACMD_MUSIC_AFFECT ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::music_affect, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::generator}),
+    ACMD_MUSIC_KEY ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::music_key, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::generator}),
+    ACMD_MUSIC_MOTIF ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::music_tag, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::generator}),
+    ACMD_MUSIC_OVERRIDE ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::music_tag_value, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::generator}),
+    ACMD_MUSIC_RELEASE ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::music_tag, AnoAudioPayloadOwnership::inline_value, AnoAudioCommandTarget::generator}),
 
     // Borrowed engine snapshot (built off the audio thread). Adopt at next barline;
     // already-sounding plays out. Valid until AEVT_MUSIC_SEEKED.
-    ACMD_MUSIC_SEEK,
+    ACMD_MUSIC_SEEK ANO_AUDIO_META(AnoAudioCommandContract{AnoAudioCommandPayload::music_seek, AnoAudioPayloadOwnership::borrowed, AnoAudioCommandTarget::generator}),
 } AnoAudioCommandKind;
+
+#ifdef __cplusplus
+struct AnoAudioFieldUse final { uint32_t fields; uint32_t commands; };
+struct AnoAudioPointerPayloadUse final { uint32_t commands; };
+#endif
 
 // Longest ACMD_MUSIC_* name, NUL included.
 #define ANO_AUDIO_TAG_MAX 24
@@ -267,19 +285,19 @@ typedef struct AnoAudioCommand
     uint32_t source_id;   // logical handle. buffer id for ACMD_BUFFER_*
     uint32_t fields;      // AnoAudioFieldBits (UPDATE / BUS_SET)
     uint32_t bus;         // BUS_SET / FX_SET
-    float    gain;
-    float    pan;
-    float    freqHz;
-    float    rate;
-    float    position[3];
-    float    send[2];     // BUS_SET SEND0/SEND1
+    float    gain ANO_AUDIO_META(AnoAudioFieldUse{ANO_AUDIO_FIELD_GAIN, (1u << ACMD_SOURCE_UPDATE) | (1u << ACMD_BUS_SET)});
+    float    pan ANO_AUDIO_META(AnoAudioFieldUse{ANO_AUDIO_FIELD_PAN, 1u << ACMD_SOURCE_UPDATE});
+    float    freqHz ANO_AUDIO_META(AnoAudioFieldUse{ANO_AUDIO_FIELD_FREQ, 1u << ACMD_SOURCE_UPDATE});
+    float    rate ANO_AUDIO_META(AnoAudioFieldUse{ANO_AUDIO_FIELD_RATE, 1u << ACMD_SOURCE_UPDATE});
+    float    position ANO_AUDIO_META(AnoAudioFieldUse{ANO_AUDIO_FIELD_POSITION, 1u << ACMD_SOURCE_UPDATE})[3];
+    float    send ANO_AUDIO_META(AnoAudioFieldUse{ANO_AUDIO_FIELD_SEND0 | ANO_AUDIO_FIELD_SEND1, 1u << ACMD_BUS_SET})[2];
     uint32_t fxSlot;      // [0, ANO_AUDIO_MAX_FX)
     uint32_t paramId;     // AnoAudioFxParam. MUSIC_KEY tonic
     float    value;       // FX_SET / MUSIC_OVERRIDE
     float    affect[3];   // MUSIC_AFFECT: valence, energy, tension (NAN = leave)
     bool     urgent;      // MUSIC_AFFECT / _KEY: next barline
     char     tag[ANO_AUDIO_TAG_MAX]; // MOTIF / OVERRIDE / RELEASE
-    const void *block;    // BUFFER_REGISTER adopted. MUSIC_SEEK borrowed
+    const void *block ANO_AUDIO_META(AnoAudioPointerPayloadUse{(1u << ACMD_BUFFER_REGISTER) | (1u << ACMD_MUSIC_SEEK)}); // REGISTER adopted; SEEK borrowed
     AnoAudioSourceDesc desc; // SOURCE_PLAY
 } AnoAudioCommand;
 
@@ -290,37 +308,46 @@ bool ano_audio_submit(AnoAudioBridge *bridge, const AnoAudioCommand *cmd);
 
 /* Event protocol: audio -> logic */
 
+#ifdef __cplusplus
+enum class AnoAudioEventPayloadKind : uint8_t { none, source_id, buffer, music, seeked_bar };
+struct AnoAudioEventContract final { AnoAudioEventPayloadKind payload; AnoAudioPayloadOwnership ownership; };
+#endif
+
 typedef enum AnoAudioEventKind
 {
-    AEVT_SOURCE_RETIRED, // finished. source_id recyclable only after this lands
-    AEVT_BUFFER_RETIRED, // block home for ano_audio_block_free
-    AEVT_CAPACITY,       // best-effort (voice pool full)
-    AEVT_MUSIC_BAR,      // composed bar started sounding
-    AEVT_MUSIC_SEEKED,   // SEEK snapshot consumed. block free again
+    AEVT_SOURCE_RETIRED ANO_AUDIO_META(AnoAudioEventContract{AnoAudioEventPayloadKind::source_id, AnoAudioPayloadOwnership::inline_value}),
+    AEVT_BUFFER_RETIRED ANO_AUDIO_META(AnoAudioEventContract{AnoAudioEventPayloadKind::buffer, AnoAudioPayloadOwnership::returned}),
+    AEVT_CAPACITY ANO_AUDIO_META(AnoAudioEventContract{AnoAudioEventPayloadKind::none, AnoAudioPayloadOwnership::inline_value}),
+    AEVT_MUSIC_BAR ANO_AUDIO_META(AnoAudioEventContract{AnoAudioEventPayloadKind::music, AnoAudioPayloadOwnership::inline_value}),
+    AEVT_MUSIC_SEEKED ANO_AUDIO_META(AnoAudioEventContract{AnoAudioEventPayloadKind::seeked_bar, AnoAudioPayloadOwnership::inline_value}),
 } AnoAudioEventKind;
+
+typedef struct AnoAudioBufferRetiredEvent { uint32_t buffer_id; void *block; } AnoAudioBufferRetiredEvent;
+typedef struct AnoAudioMusicBarEvent {
+    int32_t bar, keyTonic, mode, chordDegree, chordInversion;
+    int8_t  cadencePolicy;
+    bool    isCadence, keyArrived, motifStated;
+} AnoAudioMusicBarEvent;
+
+#ifdef __cplusplus
+struct AnoAudioEventPayloadFor final { AnoAudioEventKind kind; AnoAudioEventPayloadKind payload; };
+#endif
+
+typedef union AnoAudioEventPayload
+{
+    uint32_t source_id ANO_AUDIO_META(AnoAudioEventPayloadFor{AEVT_SOURCE_RETIRED, AnoAudioEventPayloadKind::source_id});
+    AnoAudioBufferRetiredEvent buffer ANO_AUDIO_META(AnoAudioEventPayloadFor{AEVT_BUFFER_RETIRED, AnoAudioEventPayloadKind::buffer});
+    AnoAudioMusicBarEvent music ANO_AUDIO_META(AnoAudioEventPayloadFor{AEVT_MUSIC_BAR, AnoAudioEventPayloadKind::music});
+    int32_t seekedBar ANO_AUDIO_META(AnoAudioEventPayloadFor{AEVT_MUSIC_SEEKED, AnoAudioEventPayloadKind::seeked_bar});
+} AnoAudioEventPayload;
 
 // Fixed POD. Retirement facts re-emit until landed. CAPACITY best-effort.
 typedef struct AnoAudioEvent
 {
     AnoAudioEventKind kind;
-    union {
-        uint32_t source_id; // AEVT_SOURCE_RETIRED
-        struct {
-            uint32_t buffer_id;
-            void    *block;  // ano_audio_block_free
-        } buffer;           // AEVT_BUFFER_RETIRED
-
-        // AEVT_MUSIC_BAR. Projection of AnoMusicMeaning (anoptic_music.h).
-        // Arrives when the bar sounds (held to downbeat; composer runs ahead). Lossless.
-        struct {
-            int32_t bar, keyTonic, mode, chordDegree, chordInversion;
-            int8_t  cadencePolicy;
-            bool    isCadence, keyArrived, motifStated;
-        } music;
-
-        // AEVT_MUSIC_SEEKED: adoption bar when snapshot copied, before audible. Borrowed block free.
-        int32_t seekedBar;
-    } u;
+    // MUSIC_BAR is a projection of AnoMusicMeaning, held to the audible downbeat.
+    // MUSIC_SEEKED carries the adoption bar; the borrowed snapshot may then be freed.
+    AnoAudioEventPayload u;
 } AnoAudioEvent;
 
 // Dequeue next event. false if empty. Sole consumer: drain every tick.
@@ -442,5 +469,7 @@ float *ano_audio_wav_load(const char *path, uint32_t targetRate,
 #ifdef __cplusplus
 }
 #endif
+
+#undef ANO_AUDIO_META
 
 #endif // ANOPTIC_AUDIO_H

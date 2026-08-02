@@ -15,6 +15,7 @@
 #include "vulkan_backend/light_registry.h"
 #include "vulkan_backend/shadow/shadow.h"
 #include "vulkan_backend/bridge/bridge.h"
+#include "render_bridge/render_command_contract.h"
 
 // Bridge consumer: drain commands -> GPU by slot; advance quarantine; report retired ids.
 
@@ -29,10 +30,10 @@ static void stage_command_fields(RendererState* s, const RenderCommand* c, uint3
         return;
     }
 
-    uint32_t fields = (c->kind == RCMD_CREATE)
-        ? (RFIELD_TRANSFORM | RFIELD_MESH_MAT | RFIELD_ANIM | RFIELD_USERDATA |
-           (c->light_index != ANO_RENDER_NO_LIGHT ? RFIELD_LIGHT : 0u))
-        : c->fields;
+    uint32_t fields = c->kind == RCMD_CREATE
+        ? ano::render_contract::allowed_fields(RCMD_CREATE) : c->fields;
+    if (c->kind == RCMD_CREATE && c->light_index == ANO_RENDER_NO_LIGHT)
+        fields &= ~RFIELD_LIGHT;
 
     if (fields & RFIELD_TRANSFORM) {
         slot_upload_stage(&s->initialTransformBuffer, f, slot, &c->transform);
@@ -112,9 +113,11 @@ static void stage_stream_frame(RendererState* state, uint32_t frameIndex)
 // out: false == drop command (no batch block owned)
 [[nodiscard]] static bool gate_light_domain(RenderCommand* c)
 {
-    switch (c->kind) {
-    case RCMD_CREATE:
-    case RCMD_UPDATE:
+    const AnoRenderCommandContract *contract = ano::render_contract::commands.find(static_cast<size_t>(c->kind));
+    if (!contract)
+        return false;
+    switch (contract->lightPolicy) {
+    case AnoRenderLightPolicy::entity:
         // Refuse bad type/row; entity lands unlit (NO_LIGHT).
         if (c->light_index != ANO_RENDER_NO_LIGHT &&
             ((uint32_t)c->light.type >= LIGHT_TYPE_COUNT || c->light_index >= ANO_STATIC_LIGHT_COUNT)) {
@@ -123,23 +126,14 @@ static void stage_stream_frame(RendererState* state, uint32_t frameIndex)
             c->light_index = ANO_RENDER_NO_LIGHT;
         }
         return true;
-    case RCMD_LIGHT_ATTACH:
+    case AnoRenderLightPolicy::attach:
         return (uint32_t)c->light.type < LIGHT_TYPE_COUNT; // no light to attach: drop
-    case RCMD_LIGHT_UPDATE: {
+    case AnoRenderLightPolicy::update: {
         // Partial updates carry a type only when the mask names it (0 == ALL).
         uint32_t fields = c->light_fields ? c->light_fields : ANO_LIGHT_FIELD_ALL;
         return !(fields & ANO_LIGHT_FIELD_TYPE) || (uint32_t)c->light.type < LIGHT_TYPE_COUNT;
     }
-    case RCMD_DESTROY:
-    case RCMD_BULK_CREATE:
-    case RCMD_BULK_UPDATE:
-    case RCMD_BULK_DESTROY:
-    case RCMD_STREAM_TRANSFORMS:
-    case RCMD_LIGHT_DETACH:
-    case RCMD_TEXT_SET:
-    case RCMD_TEXT_CLEAR:
-    case RCMD_UI_SET:
-    case RCMD_UI_CLEAR:
+    case AnoRenderLightPolicy::none:
         return true;
     }
     return false;
@@ -159,22 +153,23 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             continue;
         }
         if (!gate_light_domain(&cmd)) continue; // light type/row outside its domain: refuse the command
-        switch (cmd.kind) {
-        case RCMD_STREAM_TRANSFORMS:
+        (void)ano::render_contract::visit_command(
+            cmd.kind, [&]<RenderCommandKind Kind> {
+        if constexpr (Kind == RCMD_STREAM_TRANSFORMS) {
             // Adopt published slice; bump resolveGen (scatter re-resolves when stagedGen lags).
             state->transformStream.curSeq   = cmd.stream_seq;
             state->transformStream.curCount = cmd.stream_count;
             state->transformStream.resolveGen++;
-            break;
+            return;
 
-        case RCMD_CREATE: {
+        } else if constexpr (Kind == RCMD_CREATE) {
             // Live id already refused at the drain head, so the id is unmapped here.
             // Grow if no recycled hole is available and the high-water is at the ceiling.
             if (state->slots.freeCount == 0u && state->slots.slotHighWater >= state->slots.slotCapacity &&
                 !ensureEntityCapacity(state, state->slots.slotHighWater + 1u, frameIndex))
-                break; // growth failed: drop the spawn
+                return; // growth failed: drop the spawn
             uint32_t slot = render_slots_alloc(&state->slots, cmd.render_id);
-            if (slot == ANO_RENDER_SLOT_UNMAPPED) break; // capacity/OOM/out-of-domain id: drop
+            if (slot == ANO_RENDER_SLOT_UNMAPPED) return; // capacity/OOM/out-of-domain id: drop
             stage_command_fields(state, &cmd, slot, frameIndex); // stages the light photometrics if present
             shadow_track_motion(state, slot, &cmd.motion);
             state->shadowGlobalDirty = true; // caster set changed
@@ -182,10 +177,9 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             if (cmd.light_index < ANO_STATIC_LIGHT_COUNT && cmd.light.castsShadow)
                 register_static_shadow(state, cmd.light_index, (uint32_t)cmd.light.type, frameIndex,
                                        slot, cmd.light.range);
-            break;
-        }
+            return;
 
-        case RCMD_UPDATE: {
+        } else if constexpr (Kind == RCMD_UPDATE) {
             uint32_t slot = render_slots_resolve(&state->slots, cmd.render_id);
             if (slot != ANO_RENDER_SLOT_UNMAPPED) {
                 stage_command_fields(state, &cmd, slot, frameIndex);
@@ -193,10 +187,9 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                     shadow_track_motion(state, slot, &cmd.motion);
                 state->shadowGlobalDirty = true; // transform/mesh/motion may move a caster
             }
-            break;
-        }
+            return;
 
-        case RCMD_DESTROY: {
+        } else if constexpr (Kind == RCMD_DESTROY) {
             uint32_t slot = render_slots_resolve(&state->slots, cmd.render_id);
             if (slot != ANO_RENDER_SLOT_UNMAPPED) {
                 stage_command_fields(state, &cmd, slot, frameIndex);     // dead-mark
@@ -205,16 +198,15 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 cascade_detach_lights(state, cmd.render_id, frameIndex); // disable lights riding this slot
                 render_slots_retire(&state->slots, cmd.render_id, state->globalFrame);
             }
-            break;
-        }
+            return;
 
-        case RCMD_BULK_CREATE: {
+        } else if constexpr (Kind == RCMD_BULK_CREATE) {
             const RenderCreateBatch* b = cmd.batch;
             // Empty batch: release and bail before alloc_range logs.
-            if (!b || b->count == 0u) { ano_render_command_release(&cmd); break; }
+            if (!b || b->count == 0u) { ano_render_command_release(&cmd); return; }
             // alloc_range needs a contiguous run from the high-water mark.
             if (!ensureEntityCapacity(state, state->slots.slotHighWater + b->count, frameIndex)) {
-                ano_render_command_release(&cmd); break; // growth failed: drop the batch
+                ano_render_command_release(&cmd); return; // growth failed: drop the batch
             }
             // alloc_range refuses live/dup/cap/OOM atomically.
             uint32_t base = render_slots_alloc_range(&state->slots, b->render_ids, b->count);
@@ -222,7 +214,7 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 ano_log(ANO_ERROR, "Render bridge: BULK_CREATE refused (live id, duplicate in batch, "
                         "capacity, or OOM); batch dropped.");
                 ano_render_command_release(&cmd);
-                break;
+                return;
             }
             AnoInstanceData inert = {0};
             for (uint32_t e = 0; e < b->count; e++) {
@@ -245,13 +237,12 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             }
             state->shadowGlobalDirty = true; // caster set changed
             ano_render_command_release(&cmd);
-            break;
-        }
+            return;
 
-        case RCMD_BULK_UPDATE: {
+        } else if constexpr (Kind == RCMD_BULK_UPDATE) {
             // Apply shared field mask to resolvable targets.
             const RenderUpdateBatch* u = cmd.update;
-            if (!u) break;
+            if (!u) return;
             for (uint32_t e = 0; e < u->count; e++) {
                 uint32_t slot = render_slots_resolve(&state->slots, u->render_ids[e]);
                 if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
@@ -285,12 +276,11 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             }
             state->shadowGlobalDirty = true; // casters may have moved/changed
             ano_render_command_release(&cmd);
-            break;
-        }
+            return;
 
-        case RCMD_BULK_DESTROY: {
+        } else if constexpr (Kind == RCMD_BULK_DESTROY) {
             const RenderDestroyBatch* d = cmd.destroy;
-            if (!d) break;
+            if (!d) return;
             GpuEntityInfo dead = { .meshIndex = NO_MESH_INDEX };
             for (uint32_t e = 0; e < d->count; e++) {
                 uint32_t rid  = d->render_ids[e];
@@ -303,15 +293,14 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
             }
             state->shadowGlobalDirty = true; // caster set changed
             ano_render_command_release(&cmd);
-            break;
-        }
+            return;
 
-        case RCMD_LIGHT_ATTACH: {
+        } else if constexpr (Kind == RCMD_LIGHT_ATTACH) {
             // Attach runtime light to renderable (slot transform + light_offset).
             uint32_t parentSlot = render_slots_resolve(&state->slots, cmd.render_id);
-            if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) break; // parent not (yet) resolvable: drop
+            if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) return; // parent not (yet) resolvable: drop
             uint32_t row = light_registry_alloc(&state->lightRegistry, cmd.light_id, cmd.render_id);
-            if (row == ANO_RENDER_SLOT_UNMAPPED) break; // palette full / double-attach: drop
+            if (row == ANO_RENDER_SLOT_UNMAPPED) return; // palette full / double-attach: drop
             uint32_t regRow = row - state->lightRegistry.base;
             LightData L = light_data_from_params(&cmd.light, parentSlot, cmd.light_offset);
             state->lightRegistry.rowMirror[regRow] = L; // seed the partial-update RMW base
@@ -324,15 +313,14 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 slot_upload_stage(&state->shadowInfo, frameIndex, row, &si);
                 state->lightRegistry.rowShadowBase[regRow] = ANO_SHADOW_NONE;
             }
-            break;
-        }
+            return;
 
-        case RCMD_LIGHT_UPDATE: {
+        } else if constexpr (Kind == RCMD_LIGHT_UPDATE) {
             uint32_t row = light_registry_resolve(&state->lightRegistry, cmd.light_id);
-            if (row == ANO_RENDER_SLOT_UNMAPPED) break; // unknown light: drop
+            if (row == ANO_RENDER_SLOT_UNMAPPED) return; // unknown light: drop
             uint32_t parentRid  = light_registry_parent_of(&state->lightRegistry, cmd.light_id);
             uint32_t parentSlot = render_slots_resolve(&state->slots, parentRid);
-            if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) break; // parent gone: drop
+            if (parentSlot == ANO_RENDER_SLOT_UNMAPPED) return; // parent gone: drop
             // RMW mirror: merge fields, refresh transformIndex+enabled, re-stage.
             uint32_t fields = cmd.light_fields ? cmd.light_fields : ANO_LIGHT_FIELD_ALL;
             uint32_t regRow = row - state->lightRegistry.base;
@@ -362,40 +350,38 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 shadow_volume_set(state, state->lightRegistry.rowShadowBase[regRow],
                     mir->type == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u,
                     mir->transformIndex, mir->localOffset, mir->range);
-            break;
-        }
+            return;
 
-        case RCMD_LIGHT_DETACH: {
+        } else if constexpr (Kind == RCMD_LIGHT_DETACH) {
             uint32_t row = light_registry_detach(&state->lightRegistry, cmd.light_id, state->globalFrame);
             if (row != ANO_RENDER_SLOT_UNMAPPED) {
                 LightData off = {0}; // enabled == 0
                 slot_upload_stage(&state->lightBuffer, frameIndex, row, &off);
                 shadow_caster_detach(state, row - state->lightRegistry.base, frameIndex); // free its frustum if casting
             }
-            break;
-        }
+            return;
 
-        case RCMD_TEXT_SET:
+        } else if constexpr (Kind == RCMD_TEXT_SET) {
             // The registry adopts the packed block and frees it. NOT ano_render_command_release.
             ano_vk_text_block_set(state, cmd.text_id, cmd.text);
-            break;
+            return;
 
-        case RCMD_TEXT_CLEAR:
+        } else if constexpr (Kind == RCMD_TEXT_CLEAR) {
             ano_vk_text_block_clear(state, cmd.text_id);
-            break;
+            return;
 
-        case RCMD_UI_SET:
+        } else if constexpr (Kind == RCMD_UI_SET) {
             // Same adoption contract as text blocks.
             ano_vk_ui_block_set(state, cmd.ui_id, cmd.ui);
-            break;
+            return;
 
-        case RCMD_UI_CLEAR:
+        } else if constexpr (Kind == RCMD_UI_CLEAR) {
             ano_vk_ui_block_clear(state, cmd.ui_id);
-            break;
-
-        default:
-            break;
+            return;
+        } else {
+            static_assert(ano::dependent_false<Kind>, "unhandled render command");
         }
+        });
     }
 
     // Free + report slots whose quarantine has elapsed (every referencing frame retired).
