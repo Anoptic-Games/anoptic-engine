@@ -6,9 +6,9 @@
  * raw arrays, final plain-data structures, strong indices and no C++ runtime.
  * Define ANOGLTF_IMPLEMENTATION in exactly one first-party .c translation unit.
  *
- * cgltf provenance: parsing and validation behavior is being replaced against
- * cgltf 1.15 as the differential oracle. The bounded JSON tokenizer below is
- * adapted from the jsmn copy shipped by cgltf. Copyright and MIT terms appear
+ * cgltf provenance: parsing and validation behavior was developed and tested
+ * differentially against cgltf 1.15. The bounded JSON tokenizer below is adapted
+ * from the jsmn copy shipped by cgltf. Copyright and MIT terms appear
  * at the end of this file and must remain with substantial derived portions.
  */
 

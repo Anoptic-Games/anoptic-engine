@@ -55,11 +55,6 @@
       url = "github:glfw/glfw/7b6aead9fb88b3623e3b3725ebb42670cbe4c579";
       flake = false;
     };
-    cgltf-src = {
-      url = "github:jkuhlmann/cgltf/85cd62382dfea638278962690cf515023f33ed00";
-      flake = false;
-    };
-
     # Public asset pack. Private full pack:
     #   nix build --override-input anoptic-assets git+ssh://git@github.com/Anoptic-Games/assets
     anoptic-assets = {
@@ -81,7 +76,6 @@
       mimalloc-src,
       freetype-src,
       glfw-src,
-      cgltf-src,
       anoptic-assets,
       nix-gl-host,
     }:
@@ -139,7 +133,7 @@
       '';
 
       # path=rev pairs shared by the shell warning and the nix-run fatal gate.
-      pinList = "external/glfw=${glfw-src.rev} external/mimalloc=${mimalloc-src.rev} external/freetype=${freetype-src.rev} external/cgltf=${cgltf-src.rev}";
+      pinList = "external/glfw=${glfw-src.rev} external/mimalloc=${mimalloc-src.rev} external/freetype=${freetype-src.rev}";
 
       # Shell-entry warning when recorded gitlinks disagree with the flake pins.
       submodulePinWarn = ''
@@ -263,7 +257,7 @@
           postUnpack =
             injectSubmodule "mimalloc" mimalloc-src
             + injectSubmodule "freetype" freetype-src
-            + lib.optionalString renderer (injectSubmodule "glfw" glfw-src + injectSubmodule "cgltf" cgltf-src);
+            + lib.optionalString renderer (injectSubmodule "glfw" glfw-src);
 
           cmakeFlags = [
             "-DCMAKE_BUILD_TYPE=${buildType}"

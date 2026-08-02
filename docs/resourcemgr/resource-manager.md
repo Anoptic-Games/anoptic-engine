@@ -71,7 +71,7 @@ Every load/write site, and how its path is formed:
 | `src/vulkan_backend/instance/pipelines/flat.c:58,63` | mesh/vert + frag shaders | **`PROJECT_ROOT`-baked** |
 | `src/vulkan_backend/instance/pipelines/transmission.c:61,66` | geom + frag shaders | **`PROJECT_ROOT`-baked** |
 | `src/vulkan_backend/vulkanMaster.c:1458,1477` | `parseGltf("viking_room.gltf")`, `"GlassHurricaneCandleHolder.gltf"` | **CWD-relative**, behind the `main.c:129` chdir shim; files live in gitignored `assets/` |
-| `src/vulkan_backend/texture/texture.c:18` | `stbi_load(fileName,…)` with the raw glTF image URI (passed through `src/render/gltf/ano_GltfParser.c:253-255`) | **CWD-relative** |
+| `src/vulkan_backend/texture/texture.c:18` | `stbi_load(fileName,…)` with the raw glTF image URI (passed through `src/render/gltf/ano_GltfParser_reflect.c`) | **CWD-relative** |
 | logger output file | append handle via `ano_fs_open_append` | gamepath + hand-rolled `snprintf` |
 | `ano_fs_userpath()` probe/writes | per-user dir | correct, but **on Windows possibly SMB** |
 
@@ -181,8 +181,8 @@ int ano_res_mount(const char *prefix, ano_fspath root);
 
 // -- Resolution (prefer ano_res_load; these exist for parsers that open files themselves) --
 
-// Absolute OS path where a logical path's bytes live right now -- for parser libraries
-// that open files themselves (cgltf sibling URIs, stb_image). Loose-directory mounts
+// Absolute OS path where a logical path's bytes live right now -- for parsers that
+// still open files themselves (anogltf path helpers, stb_image). Loose-directory mounts
 // only: once an asset moves into a pack file (v2), resolution for it returns the empty
 // path. Every call site of this function is migration work owed to ano_res_load.
 // Output: path by value; length == 0 if invalid or absent from every mount.
@@ -328,12 +328,12 @@ Truncation is caught three independent ways (length vs bytes read, missing foote
 |---|---|---|
 | 1 | `pipeline.c:395,442`; `flat.c:58,63`; `transmission.c:61,66` | each `snprintf(...PROJECT_ROOT...)` + `loadFile` → `ano_res_load(heap, "shaders/X.spv")` with a `LOCALHEAPATTR` scoped heap per pipeline-build function. **`loadFile` (pipeline.c:23) is deleted outright**: size-then-read antipattern and free()-vs-aligned-free bug die with it. |
 | 2 | root `CMakeLists.txt:115,148` | delete `-DPROJECT_ROOT`; add `-DANO_DEV_RESOURCES="${CMAKE_SOURCE_DIR}/resources"` consumed at exactly **one** site, `main()`: the dev mount. Install rule: exe + `resources/`. |
-| 3 | `vulkanMaster.c:1458,1477` | move `assets/*` into `resources/models/` (or mount `"models/"` → assets dir via the prefix graft); `parseGltf(&ctx, p.str)` with `p = ano_res_resolve("models/…gltf")`. cgltf resolves sibling `.bin`/image URIs against the `.gltf`'s own directory: zero cgltf changes. |
-| 4 | `ano_GltfParser.c:253-255` → `texture.c:18` | image URI joined against the model's resolved directory via `ano_res_subpath` before `stbi_load`. |
+| 3 | `vulkanMaster.c:1458,1477` | move `assets/*` into `resources/models/` (or mount `"models/"` → assets dir via the prefix graft); `parseGltf(&ctx, p.str)` with `p = ano_res_resolve("models/…gltf")`. `ano_gltf_load_buffers` resolves sibling `.bin` URIs against the `.gltf` directory without parser changes. |
+| 4 | `ano_GltfParser_reflect.c` → `texture.c:18` | image URI joined against the model's resolved directory via `ano_res_subpath` before `stbi_load`. |
 | 5 | `src/engine/main.c:129` | delete the chdir shim; later delete `ano_fs_chdir_gamepath` itself when nothing needs it. |
 | 6 | logger | optional later one-liner: output dir from `ano_res_resolve_write("logs/…")`. |
 
-`ano_res_resolve` call sites (steps 3–4) are **named migration work**: the doc comment self-destructs them (returns empty for pak-backed assets in v2), making the cgltf memory-buffer migration compulsory rather than optional later.
+`ano_res_resolve` call sites (steps 3–4) are **named migration work**: the doc comment self-destructs them (returns empty for pak-backed assets in v2), making the anogltf parse-memory/bind-buffer migration compulsory rather than optional later.
 
 ### 7. v1: async + identity (spec now, code when needed)
 
@@ -358,7 +358,7 @@ Triggered by the first real level/audio streaming or load-time pain. **New publi
   header `{magic 'ANOPAK\0\1', u32 entry_count, u64 toc_offset}`; TOC entries
   `{u64 rid, u64 offset, u64 size, u64 csize, u8 codec, u8 hash_id, u16 flags, u64 payload_hash}`;
   payloads 4 KiB-aligned. Per-entry compression: LZ4 for latency-sensitive streaming, zstd-3 for bulk, **trained zstd dictionaries** for many-small-similar classes (SPIR-V, config), store-raw for already-compressed formats (PNG, Opus). Codec byte reserves GDeflate's ID without implementing it. ⊕ **TOC is checksum-verified at mount**: a corrupt pack refuses loudly at startup, never lazily at load. A ~200-line builder tool wires into install.
-- cgltf migrates to memory buffers + file callbacks, retiring every `ano_res_resolve` call site exactly as its doc comment promised.
+- anogltf switches from `ano_gltf_parse_file`/`ano_gltf_load_buffers` to `ano_gltf_parse_memory` plus explicit `ano_gltf_bind_buffer` calls, retiring every `ano_res_resolve` call site exactly as its doc comment promised.
 - **io_uring (Linux) / IOCP (Windows) backends** swap in behind the unchanged rings if profiling demands: batched submission (depth 8–32), registered buffers, reads chunked ≤ 512 KiB (already the platform constant): one narrow completion-shaped interface, N backends (the TigerBeetle lesson).
 - `hash_id` flips to xxh3 for large saves; offline conditioning (KTX2 textures, `.glb`) becomes worth doing when asset count justifies a cooker.
 

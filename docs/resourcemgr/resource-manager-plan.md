@@ -24,7 +24,7 @@ tier below is a port of shipped machinery, not new design.
 4. **Identity is an integer.** rid = FNV-1a-64 of the logical path: `ANOSTR_SID` at
    compiled sites (zero cost), `anostr_hash` for parsed/discovered strings; one key
    space.
-5. **Bytes vs meaning.** The resource manager never parses. cgltf, stb_image, FreeType,
+5. **Bytes vs meaning.** The resource manager never parses. anogltf, stb_image, FreeType,
    the config parser, the future audio decoder keep the meaning half; they stop doing
    their own file I/O.
 
@@ -87,8 +87,8 @@ hardcoded path it kills (proof the old path is gone). **Tests** = the battery.
 
 ### Step 2: models, textures, fonts ride it; the shim dies
 
-- **Lands:** glTF sites take logical names (`ano_res_resolve` bridging cgltf's
-  self-opened files initially; each such call site is named migration work); image
+- **Lands:** glTF sites take logical names (`ano_res_resolve` bridging anogltf's
+  path-based convenience functions initially; each such call site is named migration work); image
   URIs join via `ano_res_subpath` before `stbi_load`; fonts load as blobs +
   `FT_New_Memory_Face` (the text module's heap already owns bake blobs, the font bytes
   join them).
@@ -182,11 +182,11 @@ hardcoded path it kills (proof the old path is gone). **Tests** = the battery.
   builder. Load-in-place bake for one class through the whole pipeline (models): PODS image, pointers
   as offsets, one fix-up loop over an offset table at load: zero runtime parsing.
   Loose files keep shadowing packs (dev loop and modding unchanged).
-- **Deletes:** runtime JSON parsing for baked models; cgltf leaves the shipped path
+- **Deletes:** runtime JSON parsing for baked models; anogltf leaves the shipped path
   (remaining a dev-import tool), retiring the last `ano_res_resolve` debt.
 - **Tests:** bake determinism (same input → byte-identical pack); TOC bit-flip refuses
   at mount; shadow test (loose file wins over pack entry); load-equivalence (baked
-  model renders identically to the cgltf path; same oracle culture as the font tools,
+  model renders identically to the anogltf path; same oracle culture as the font tools,
   applied to models); `anotest_resbench` TOC-lookup series.
 - **Bar:** the demo scene loads with zero parse work and zero path strings at runtime.
 

@@ -198,8 +198,8 @@ const dataSourceNodes: FlowNode[] = [
   },
   {
     id: "subs",
-    label: "4 pinned submodule srcs",
-    detail: "mimalloc · freetype · glfw · cgltf, revs matching .gitmodules",
+    label: "3 pinned submodule srcs",
+    detail: "mimalloc · freetype · glfw, revs matching .gitmodules",
   },
   {
     id: "assets",

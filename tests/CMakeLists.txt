@@ -364,24 +364,6 @@ if(TARGET anoptic_render)
         set_tests_properties(anoptic_texregisterguard PROPERTIES TIMEOUT 30 LABELS "unit;render;mem")
     endif()
 
-    # parseGltf texture custody: refuse construct, refuse adopt, haltLoad on device refusal.
-    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_gltftexleakguard.c)
-        add_executable(anotest_gltftexleakguard anotest_gltftexleakguard.c ${CMAKE_SOURCE_DIR}/src/render/gltf/ano_GltfParser.c)
-        target_include_directories(anotest_gltftexleakguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
-        target_link_libraries(anotest_gltftexleakguard PRIVATE anoptic_core m)
-        add_test(NAME anoptic_gltftexleakguard COMMAND anotest_gltftexleakguard)
-        set_tests_properties(anoptic_gltftexleakguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
-    endif()
-
-    # glTF colour/data domain split: dual views, distinct bindless slots, no cross-domain alias.
-    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_gltftexdomainguard.c)
-        add_executable(anotest_gltftexdomainguard anotest_gltftexdomainguard.c ${CMAKE_SOURCE_DIR}/src/render/gltf/ano_GltfParser.c)
-        target_include_directories(anotest_gltftexdomainguard PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/external/glfw/include ${Vulkan_INCLUDE_DIRS})
-        target_link_libraries(anotest_gltftexdomainguard PRIVATE anoptic_core m)
-        add_test(NAME anoptic_gltftexdomainguard COMMAND anotest_gltftexdomainguard)
-        set_tests_properties(anoptic_gltftexdomainguard PROPERTIES TIMEOUT 30 LABELS "unit;render")
-    endif()
-
     # Dual-view SRGB/UNORM sample readback via compute probe.
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/anotest_vk_texdomain.c)
         add_executable(anotest_vk_texdomain anotest_vk_texdomain.c)

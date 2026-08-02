@@ -6,7 +6,6 @@ The `external/` directory stores third-party source libraries and dependencies f
 
 ```
 external/
-├── cgltf/          # glTF 2.0 parsing (submodule)
 ├── freetype/       # Font outlines for the text stack (submodule)
 ├── glfw/           # Windowing + input (submodule) — currently v3.4
 ├── jsmn/           # Minimal JSON parser (vendored header)
@@ -19,7 +18,6 @@ Not under `external/`: Vulkan SDK (system), platform audio APIs (PipeWire/ALSA, 
 
 ## Purpose of Each Subdirectory
 
-- **`cgltf/`**: [cgltf](https://github.com/jkuhlmann/cgltf) — single-header glTF 2.0 loader/writer. Submodule.
 - **`freetype/`**: [FreeType](https://freetype.org/) — font face/outline access for `src/text/`. Submodule (FTL).
 - **`glfw/`**: [GLFW](https://www.glfw.org/) — windows, Vulkan surfaces, input. Submodule.
 - **`jsmn/`**: [jsmn](https://github.com/zserge/jsmn) — vendored `jsmn.h` (MIT in-header).
@@ -28,7 +26,7 @@ Not under `external/`: Vulkan SDK (system), platform audio APIs (PipeWire/ALSA, 
 
 ## Usage
 
-Prefer public engine headers (`include/anoptic_*.h`) over reaching into `external/` from game/engine code. Modules that must include third-party headers do so from their `src/<module>/` TUs / CMake include dirs (e.g. cgltf from render, FreeType from text).
+Prefer public engine headers (`include/anoptic_*.h`) over reaching into `external/` from game/engine code. Modules that must include third-party headers do so from their `src/<module>/` TUs / CMake include dirs (e.g. FreeType from text).
 
 Typical include style when a module is allowed to see the vendor header:
 ```c
@@ -38,7 +36,7 @@ Typical include style when a module is allowed to see the vendor header:
 
 ## Git Submodules
 
-Submodules today: `glfw`, `freetype`, `mimalloc`, `cgltf`. Vendored (not submodules): `jsmn`, `stb`.
+Submodules today: `glfw`, `freetype`, `mimalloc`. Vendored (not submodules): `jsmn`, `stb`.
 
 Procedure:
 - **Adding a Submodule**:
@@ -51,7 +49,7 @@ Procedure:
 
 ## CMake Integration
 
-Root `CMakeLists.txt` already wires the common set (`add_subdirectory` for mimalloc/freetype/glfw, include path for cgltf, link `freetype` / `glfw` / `mimalloc-static` as appropriate). New libraries:
+Root `CMakeLists.txt` already wires the common set (`add_subdirectory` for mimalloc/freetype/glfw, linking `freetype` / `glfw` / `mimalloc-static` as appropriate). New libraries:
 
 1. `add_subdirectory(${CMAKE_SOURCE_DIR}/external/[library_name])` (or header-only include dirs)
 2. `target_link_libraries(... [library_target])` on the right engine target (`anoptic_core` vs `anoptic_render`)

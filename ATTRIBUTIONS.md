@@ -21,11 +21,11 @@ This project makes use of the following third-party libraries and SDKs. Layout a
 - **Path**: `external/mimalloc` (git submodule)
 - **License**: [MIT License](https://github.com/microsoft/mimalloc/blob/master/LICENSE)
 
-### cgltf - v1.15 line
-- **Description**: Single-header glTF 2.0 loader used by the render/gltf path.
+### cgltf - historical v1.15 provenance
+- **Description**: The previous glTF loader and differential oracle. The first-party `anogltf` implementation retains cgltf-derived tokenizer and compatibility behavior.
 - **Source**: [cgltf GitHub Repository](https://github.com/jkuhlmann/cgltf)
-- **Path**: `external/cgltf` (git submodule)
-- **License**: [MIT License](https://github.com/jkuhlmann/cgltf/blob/master/LICENSE)
+- **Path**: Former submodule removed; derived portions and the complete notice are retained in `include/anogltf.h`.
+- **License**: [MIT License](https://github.com/jkuhlmann/cgltf/blob/master/LICENSE), reproduced in `include/anogltf.h`.
 
 ### stb (stb_image.h v2.30)
 - **Description**: Single-file public-domain / MIT libraries for C/C++. We vendor `stb_image` for textures.

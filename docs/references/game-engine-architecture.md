@@ -73,7 +73,7 @@ Hardware basis for DOD and cache-line-striped lock-free design.
 
 **Book -- undefined behavior & type punning (§3.3, *new in 4th ed.*).** Pointer-cast reinterpret + deref (**type punning**) breaks under **strict aliasing** (default at `-O2`) → **UB**: optimizer may reorder/fold/delete. Example: endian-swap `float` as `u32`. Warning: **even a `union` is UB for punning in C++**; safe path: **`memcpy` into a fresh object** (elided), or **C++20 `std::bit_cast`**.
 
-**Anoptic (C23 nuance -- sharpest C++→C divergence).** "Unions aren't safe" is **C++-only**. In C, **union type-punning well-defined since C99** (§6.5.2.3). C23: three legal puns vs C++'s one: (1) `memcpy` (portable, elided), (2) **`union`** (legal C, illegal C++), (3) **`char*` / `unsigned char*`** (always aliases). Clang: `__builtin_bit_cast`. Hot spots: **glTF byte-buffer reads** in [ano_GltfParser.c](../../src/render/gltf/ano_GltfParser.c), **arena reinterprets of raw bytes as typed objects** (planned **load-in-place**, action item 7), endian/format conversion. Bare pointer-cast pun = latent miscompile at high `-O`.
+**Anoptic (C+Ultra nuance).** First-party `.c` translation units compile as C++26, so C's union-punning permission does not apply. Use `memcpy` (portable and normally elided) or `__builtin_bit_cast`; `char*` / `unsigned char*` may inspect object representations but do not legalize fabricating typed lvalues. Hot spots: **glTF byte-buffer reads** in [anogltf.h](../../include/anogltf.h), **arena reinterprets of raw bytes as typed objects** (planned **load-in-place**, action item 7), endian/format conversion. Bare pointer-cast pun = latent miscompile at high `-O`.
 
 **Verdict.**
 - ✅ DOD, contiguous SoA arrays, hugepages grounded here.
@@ -198,11 +198,11 @@ Biggest *gap*: we parse glTF JSON at runtime with loose `malloc`/`free`; book wa
 
 **Anoptic.**
 - `ano_fs_gamepath`/`ano_fs_userpath` = §7.1.1 path API. **No async I/O yet** -- §7.1.3 thread+queue+semaphore+callback is the blueprint; early consumer of lock-free queue + `anoptic_threads`.
-- glTF path ([ano_GltfParser.c](../../src/render/gltf/ano_GltfParser.c), cgltf, scratch-heap staging) = runtime text-parse the book argues against. Scratch staging = **temporary load-time section** (§7.2.2); loose `malloc`/`free` (notes.md debt) = what §7.2 pushes offline.
+- glTF path ([ano_GltfParser_reflect.c](../../src/render/gltf/ano_GltfParser_reflect.c), anogltf, scratch-heap staging) = runtime text-parse the book argues against. Scratch staging = **temporary load-time section** (§7.2.2); loose `malloc`/`free` (notes.md debt) = what §7.2 pushes offline.
 
 **Verdict.**
 - ✅ Wrap FS + stripped-down path API match `ano_fs`.
-- ✅ **C23 load-in-place PODS is free** -- no placement-new. Pointer fix-up + arenas: load image into one arena block, fix up, done. C-over-C++ advantage.
+- ✅ **C+Ultra load-in-place standard-layout data is free** -- no virtual or placement-new machinery. Pointer fix-up + arenas: load image into one arena block, fix up, done.
 - ⚠️ **Console seek-time largely moot on SSD/desktop** (book notes SSDs, p. 505) -- other bake reasons hold: **no per-file open cost, sequential bulk reads, zero runtime parse**. Don't cargo-cult optical-disc layout; do adopt offline conditioning + load-in-place.
 - ➕ **Resource manager is an architectural hole.** Before glTF grows: (1) **registry** (GUID→pointer; GUID = hashed string id from [Ch 6](#ch-6)); (2) **refcounted lifetimes** on level/session arena; (3) **offline bake** glTF → load-in-place binary (no runtime jsmn); (4) **handles** for inter-resource refs. Largest "book has it, we don't" item.
 - ➕ **Async streaming** (§7.1.3) enables hitch-free scoped-resolution catch-up. Build thread+queue+callback async-I/O on lock-free queue.
