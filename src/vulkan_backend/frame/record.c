@@ -124,35 +124,8 @@ static inline void record_shared_compute_pass(VkCommandBuffer cmd, uint32_t enti
             dispatchX = pass.dispatchX;
     }
     vkCmdDispatch(cmd, dispatchX, 1, 1);
-
-    VkMemoryBarrier memoryBarrier = {};
-    memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    if constexpr (Prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
-        VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
-            ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
-            | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
-        memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 1, &memoryBarrier, 0, NULL, 0, NULL);
-    } else if constexpr (Prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
-        // Shadow setup carries the shared barrier for these disjoint writes.
-    } else if constexpr (Prototype == PIPELINE_COMPUTE_UPDATE
-                         || Prototype == PIPELINE_COMPUTE_SCATTER) {
-        memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memoryBarrier, 0, NULL, 0, NULL);
-    } else {
-        VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
-            ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
-            | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
-        memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT
-            | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | geomStage | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 1, &memoryBarrier, 0, NULL, 0, NULL);
-    }
+    ano_record_frame_compute_barrier<Pass>(cmd,
+        ctx.deviceCapabilities.meshShader, rendererState.taskCull);
 }
 
 // Record this frame slot's command buffer(s). imageIndex = acquired swapchain image.

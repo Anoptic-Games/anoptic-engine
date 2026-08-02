@@ -36,14 +36,8 @@ static inline void record_view_compute_pass(VkCommandBuffer cmd, uint32_t entity
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
         rendererState.prototypes[Prototype].layout, 0, 1, &vr->lightcullSet, 0, NULL);
     vkCmdDispatch(cmd, (ANO_CLUSTER_COUNT + 63u) / 64u, 1, 1);
-
-    VkMemoryBarrier barrier = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-    };
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+    ano_record_frame_compute_barrier<Pass>(cmd,
+        ctx.deviceCapabilities.meshShader, rendererState.taskCull);
 }
 
 template<AnoFramePass Pass>

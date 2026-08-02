@@ -111,7 +111,7 @@ void ano_synth_bake_bell(float *out, uint64_t frames, float sampleRate)
 
 /* Spawn */
 
-static uint32_t default_patch(uint32_t layer)
+static constexpr uint32_t default_patch(uint32_t layer)
 {
     switch (layer) {
     case ANO_MUSIC_PAD:     return ANO_SYNTH_PATCH_WARM;
@@ -180,25 +180,30 @@ static void spawn_bass(AnoSynth *s, AnoSynthVoice *v, float dur, bool driven)
     pan_gains(0.0f, &v->panL, &v->panR);
 }
 
-static void spawn_lead(AnoSynth *s, AnoSynthVoice *v, float dur, uint32_t patch)
+template<AnoSynthPatch Patch>
+static void spawn_lead(AnoSynth *s, AnoSynthVoice *v, float dur)
 {
+    static_assert(Patch == ANO_SYNTH_PATCH_SOFT
+                  || Patch == ANO_SYNTH_PATCH_HARD
+                  || Patch == ANO_SYNTH_PATCH_MELLOW);
     float fs = (float)s->sampleRate;
     v->u.lead.ph1 = v->u.lead.ph2 = v->u.lead.vibPh = 0.0f;
     v->u.lead.tri1 = v->u.lead.tri2 = (AnoDspTri){0};
     float attack, release, mult, res, pan, vibRate, vibDelay, vibDepth;
-    if (patch == ANO_SYNTH_PATCH_HARD) {
+    if constexpr (Patch == ANO_SYNTH_PATCH_HARD) {
         v->recipe = ANO_SYNTH_RECIPE_LEAD_HARD;
         v->u.lead.a1 = 0.6f;
         v->u.lead.a2 = 0.3f;
         vibRate = 6.2f; vibDelay = 0.15f; vibDepth = 0.009f;
         attack = 0.006f; release = 0.18f; mult = 1.4f; res = 0.2f; pan = 0.12f;
-    } else if (patch == ANO_SYNTH_PATCH_MELLOW) {
+    } else if constexpr (Patch == ANO_SYNTH_PATCH_MELLOW) {
         v->recipe = ANO_SYNTH_RECIPE_LEAD_MELLOW;
         v->u.lead.a1 = 0.8f;
         v->u.lead.a2 = 0.2f;
         vibRate = 4.8f; vibDelay = 0.5f; vibDepth = 0.004f;
         attack = 0.035f; release = 0.22f; mult = 0.8f; res = 0.1f; pan = -0.14f;
     } else { // SOFT
+        static_assert(Patch == ANO_SYNTH_PATCH_SOFT);
         v->recipe = ANO_SYNTH_RECIPE_LEAD_SOFT;
         v->u.lead.a1 = 0.7f;
         v->u.lead.a2 = 0.25f;
@@ -344,6 +349,75 @@ static void spawn_drum(AnoSynth *s, AnoSynthVoice *v, uint8_t pitch)
     pan_gains(pan, &v->panL, &v->panR);
 }
 
+template<AnoSynthPatch Patch>
+inline constexpr bool patch_uses_layer_default =
+    Patch == ANO_SYNTH_PATCH_DEFAULT
+    || Patch == ANO_SYNTH_PATCH_BREEZE
+    || Patch == ANO_SYNTH_PATCH_BAD_GROUND
+    || Patch == ANO_SYNTH_PATCH_WHISTLE;
+
+template<AnoSynthPatch Patch>
+static bool spawn_patch(AnoSynth *s, AnoSynthVoice *v, const AnoSynthNote *n,
+                        float dur)
+{
+    static_assert(Patch >= ANO_SYNTH_PATCH_DEFAULT
+                  && Patch < ANO_SYNTH_PATCH_COUNT);
+    if constexpr (patch_uses_layer_default<Patch>) {
+        v->active = false;
+        return false;
+    } else if constexpr (Patch == ANO_SYNTH_PATCH_WARM
+                         || Patch == ANO_SYNTH_PATCH_BRIGHT) {
+        spawn_pad(s, v, dur, Patch == ANO_SYNTH_PATCH_BRIGHT);
+    } else if constexpr (Patch == ANO_SYNTH_PATCH_MORPH) {
+        spawn_wtpad(s, v, dur);
+    } else if constexpr (Patch == ANO_SYNTH_PATCH_ROUND
+                         || Patch == ANO_SYNTH_PATCH_DRIVEN) {
+        spawn_bass(s, v, dur, Patch == ANO_SYNTH_PATCH_DRIVEN);
+    } else if constexpr (Patch == ANO_SYNTH_PATCH_SOFT
+                         || Patch == ANO_SYNTH_PATCH_HARD
+                         || Patch == ANO_SYNTH_PATCH_MELLOW) {
+        spawn_lead<Patch>(s, v, dur);
+    } else if constexpr (Patch == ANO_SYNTH_PATCH_KEYS) {
+        spawn_sampler(s, v, dur, n->ev.pitch);
+    } else if constexpr (Patch == ANO_SYNTH_PATCH_PLUCK
+                         || Patch == ANO_SYNTH_PATCH_GLASS) {
+        spawn_fm(s, v, dur, Patch == ANO_SYNTH_PATCH_GLASS);
+    } else if constexpr (Patch == ANO_SYNTH_PATCH_CHIMES) {
+        spawn_chime(s, v, dur, n->ev.pitch);
+    } else {
+        static_assert(Patch != Patch, "unhandled synth patch spawn contract");
+    }
+    return true;
+}
+
+using VoiceSpawnKernel =
+    bool (*)(AnoSynth *, AnoSynthVoice *, const AnoSynthNote *, float);
+
+struct VoiceSpawnContract final {
+    VoiceSpawnKernel spawn;
+    bool layerDefault;
+};
+
+static_assert(ano::reflected_enum_domain<AnoSynthPatch>.valid);
+static constexpr auto voice_spawn_contracts =
+    ano::reflect_enum_values<AnoSynthPatch, VoiceSpawnContract,
+                             ANO_SYNTH_PATCH_COUNT, 0>(
+        []<auto enumerator>() consteval {
+            return VoiceSpawnContract {
+                .spawn = &spawn_patch<([:enumerator:])>,
+                .layerDefault =
+                    patch_uses_layer_default<([:enumerator:])>,
+            };
+        });
+
+static_assert(
+    !voice_spawn_contracts.values[default_patch(ANO_MUSIC_PAD)].layerDefault
+    && !voice_spawn_contracts.values[default_patch(ANO_MUSIC_BASS)].layerDefault
+    && !voice_spawn_contracts.values[default_patch(ANO_MUSIC_MELODY)].layerDefault
+    && !voice_spawn_contracts.values[default_patch(ANO_MUSIC_COUNTER)].layerDefault
+    && !voice_spawn_contracts.values[default_patch(ANO_MUSIC_ARP)].layerDefault,
+    "every melodic layer default must name a concrete spawn kernel");
+
 bool ano_synth_voice_spawn(AnoSynth *s, AnoSynthVoice *v, const AnoSynthNote *n)
 {
     memset(v, 0, sizeof *v);
@@ -358,29 +432,15 @@ bool ano_synth_voice_spawn(AnoSynth *s, AnoSynthVoice *v, const AnoSynthNote *n)
         return true;
     }
 
-    uint32_t patch = s->instruments[n->ev.layer];
-    if (patch == ANO_SYNTH_PATCH_DEFAULT || patch >= ANO_SYNTH_PATCH_COUNT
-        || patch == ANO_SYNTH_PATCH_BREEZE || patch == ANO_SYNTH_PATCH_WHISTLE
-        || patch == ANO_SYNTH_PATCH_BAD_GROUND) // reserved -> layer default
+    size_t patch = s->instruments[n->ev.layer];
+    if (patch >= voice_spawn_contracts.size()
+        || voice_spawn_contracts.values[patch].layerDefault)
         patch = default_patch(n->ev.layer);
-
-    switch (patch) {
-    case ANO_SYNTH_PATCH_WARM:   spawn_pad(s, v, dur, false); return true;
-    case ANO_SYNTH_PATCH_BRIGHT: spawn_pad(s, v, dur, true); return true;
-    case ANO_SYNTH_PATCH_MORPH:  spawn_wtpad(s, v, dur); return true;
-    case ANO_SYNTH_PATCH_ROUND:  spawn_bass(s, v, dur, false); return true;
-    case ANO_SYNTH_PATCH_DRIVEN: spawn_bass(s, v, dur, true); return true;
-    case ANO_SYNTH_PATCH_SOFT:
-    case ANO_SYNTH_PATCH_HARD:
-    case ANO_SYNTH_PATCH_MELLOW: spawn_lead(s, v, dur, patch); return true;
-    case ANO_SYNTH_PATCH_KEYS:   spawn_sampler(s, v, dur, n->ev.pitch); return true;
-    case ANO_SYNTH_PATCH_PLUCK:  spawn_fm(s, v, dur, false); return true;
-    case ANO_SYNTH_PATCH_GLASS:  spawn_fm(s, v, dur, true); return true;
-    case ANO_SYNTH_PATCH_CHIMES: spawn_chime(s, v, dur, n->ev.pitch); return true;
-    default:
+    if (patch >= voice_spawn_contracts.size()) {
         v->active = false;
         return false;
     }
+    return voice_spawn_contracts.values[patch].spawn(s, v, n, dur);
 }
 
 
