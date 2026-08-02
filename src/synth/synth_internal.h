@@ -32,34 +32,39 @@
 #define ANO_SYNTH_WT_FRAMES 4u
 #define ANO_SYNTH_WT_LEN    2048u
 
-typedef enum AnoSynthVoiceClass
+typedef struct AnoSynthRecipeCurves final
 {
-    ANO_SYNTH_VC_PAD = 0, // 3-saw subtractive
-    ANO_SYNTH_VC_WTPAD,   // morphing wavetable
-    ANO_SYNTH_VC_BASS,    // saw + sub sine, filter-envelope pluck
-    ANO_SYNTH_VC_LEAD,    // dual-osc, delayed vibrato
-    ANO_SYNTH_VC_SAMPLER, // repitched bell
-    ANO_SYNTH_VC_FM,      // 2-op FM pluck
-    ANO_SYNTH_VC_CHIME,   // 5-partial tubular additive
-    ANO_SYNTH_VC_DRUM,    // GM-pitch recipes
-} AnoSynthVoiceClass;
+    AnoDspCurve main;
+    AnoDspCurve aux0;
+    AnoDspCurve aux1;
+} AnoSynthRecipeCurves;
 
-typedef enum AnoSynthDrumKind
+typedef enum AnoSynthVoiceRecipe : uint8_t
 {
-    ANO_SYNTH_DRUM_KICK = 0,
-    ANO_SYNTH_DRUM_SNARE,
-    ANO_SYNTH_DRUM_RIM,
-    ANO_SYNTH_DRUM_CHAT,
-    ANO_SYNTH_DRUM_OHAT,
-    ANO_SYNTH_DRUM_TOM,
-    ANO_SYNTH_DRUM_CRASH,
-    ANO_SYNTH_DRUM_SHAKER,
-} AnoSynthDrumKind;
+    ANO_SYNTH_RECIPE_PAD [[=AnoSynthRecipeCurves{AnoDspCurve::three_halves, AnoDspCurve::none, AnoDspCurve::none}]] = 0,
+    ANO_SYNTH_RECIPE_WTPAD [[=AnoSynthRecipeCurves{AnoDspCurve::three_halves, AnoDspCurve::linear, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_BASS [[=AnoSynthRecipeCurves{AnoDspCurve::square, AnoDspCurve::cube, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_LEAD_SOFT [[=AnoSynthRecipeCurves{AnoDspCurve::nine_fifths, AnoDspCurve::none, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_LEAD_HARD [[=AnoSynthRecipeCurves{AnoDspCurve::nine_fifths, AnoDspCurve::none, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_LEAD_MELLOW [[=AnoSynthRecipeCurves{AnoDspCurve::nine_fifths, AnoDspCurve::none, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_SAMPLER [[=AnoSynthRecipeCurves{AnoDspCurve::square, AnoDspCurve::none, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_FM [[=AnoSynthRecipeCurves{AnoDspCurve::cube, AnoDspCurve::fourth, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_CHIME [[=AnoSynthRecipeCurves{AnoDspCurve::linear, AnoDspCurve::cube, AnoDspCurve::cube}]],
+    ANO_SYNTH_RECIPE_DRUM_KICK [[=AnoSynthRecipeCurves{AnoDspCurve::cube, AnoDspCurve::fourth, AnoDspCurve::cube}]],
+    ANO_SYNTH_RECIPE_DRUM_SNARE [[=AnoSynthRecipeCurves{AnoDspCurve::cube, AnoDspCurve::none, AnoDspCurve::cube}]],
+    ANO_SYNTH_RECIPE_DRUM_RIM [[=AnoSynthRecipeCurves{AnoDspCurve::cube, AnoDspCurve::none, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_DRUM_CHAT [[=AnoSynthRecipeCurves{AnoDspCurve::cube, AnoDspCurve::none, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_DRUM_OHAT [[=AnoSynthRecipeCurves{AnoDspCurve::cube, AnoDspCurve::none, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_DRUM_TOM [[=AnoSynthRecipeCurves{AnoDspCurve::five_halves, AnoDspCurve::cube, AnoDspCurve::cube}]],
+    ANO_SYNTH_RECIPE_DRUM_CRASH [[=AnoSynthRecipeCurves{AnoDspCurve::five_halves, AnoDspCurve::none, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_DRUM_SHAKER [[=AnoSynthRecipeCurves{AnoDspCurve::three_halves, AnoDspCurve::none, AnoDspCurve::none}]],
+    ANO_SYNTH_RECIPE_COUNT,
+} AnoSynthVoiceRecipe;
 
 typedef struct AnoSynthVoice
 {
     bool     active;
-    uint8_t  cls;   // AnoSynthVoiceClass
+    AnoSynthVoiceRecipe recipe;
     uint8_t  layer; // AnoMusicLayer
     uint64_t age;   // frames rendered
     uint64_t total; // frames until slot frees
@@ -93,7 +98,6 @@ typedef struct AnoSynthVoice
         struct { // LEAD
             float     ph1, ph2;
             AnoDspTri tri1, tri2;
-            uint8_t   t1, t2; // 0 sine, 1 tri, 2 saw, 3 square
             float     a1, a2;
             float     vibPh, vibRate, vibDepth;
             uint64_t  vibDelay; // frames to full depth
@@ -115,7 +119,6 @@ typedef struct AnoSynthVoice
             AnoDspRng rng;
         } chime;
         struct { // DRUM
-            uint8_t   kind; // AnoSynthDrumKind
             float     ph;
             AnoDspAsr e2, e3;
             AnoDspRng rng, rng2;
@@ -232,12 +235,10 @@ struct AnoSynth
 // Configure voice from note. false = drop.
 bool ano_synth_voice_spawn(AnoSynth *s, AnoSynthVoice *v, const AnoSynthNote *n);
 
-// Per-span filter coef from staged cutoff for v's layer.
-void ano_synth_voice_span_coef(AnoSynth *s, AnoSynthVoice *v, const float *staged);
-
-// One sample; accumulate stereo.
-void ano_synth_voice_step(AnoSynth *s, AnoSynthVoice *v, const float *staged,
-                          float *l, float *r);
+// One stable-recipe dispatch; render and accumulate a complete span.
+void ano_synth_voice_render_span(AnoSynth *s, AnoSynthVoice *v, const float *staged,
+                                 const float *duckGain, bool ducked, float *strip,
+                                 uint32_t pos, uint32_t span);
 
 void ano_synth_bake_wavetable(float *bank);
 void ano_synth_bake_bell(float *out, uint64_t frames, float sampleRate);

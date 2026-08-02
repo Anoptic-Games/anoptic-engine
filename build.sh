@@ -106,6 +106,11 @@ if command -v ninja >/dev/null 2>&1; then
     if [ -f "$cache" ] && ! grep -qxF "CMAKE_HOME_DIRECTORY:INTERNAL=$src" "$cache"; then
         rm -rf "./build/${build_dir}"
     fi
+    compiler_state="$(find "./build/${build_dir}/CMakeFiles" -name CMakeCXXCompiler.cmake -print -quit 2>/dev/null || true)"
+    if [ -f "$compiler_state" ] && ! grep -q 'set(CMAKE_CXX_COMPILER_ID "GNU")' "$compiler_state"; then
+        echo "[anoptic] cached compiler is not GCC; rebuilding ${build_dir} configuration."
+        rm -rf "./build/${build_dir}"
+    fi
 else
     echo "[anoptic] ninja not found; falling back to Makefiles (slower)." \
          "Install it: brew install ninja / apt install ninja-build / pacman -S ninja"

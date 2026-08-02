@@ -1700,13 +1700,48 @@ static bool token_string_equal(
     return decodedLength == expectedLength && memcmp(decoded, expected, expectedLength) == 0;
 }
 
-static bool token_string_valid(const char* json, const Token& token)
+static constexpr uint32_t json_name_hash(const char* bytes, size_t length)
 {
-    if (token.type != TokenType::string)
-        return false;
-    size_t decodedLength = 0;
-    return decode_json_string(json + token.start, static_cast<size_t>(token.end - token.start),
-        nullptr, 0, &decodedLength);
+    uint32_t hash = UINT32_C(2166136261);
+    for (size_t i = 0; i < length; ++i) {
+        hash ^= static_cast<uint8_t>(bytes[i]);
+        hash *= UINT32_C(16777619);
+    }
+    return hash;
+}
+
+inline constexpr size_t maxJsonFieldNameBytes = 64;
+
+enum class DecodedJsonNameStatus : uint8_t {
+    invalid,
+    unbuffered,
+    buffered,
+};
+
+struct DecodedJsonName final {
+    char bytes[maxJsonFieldNameBytes];
+    size_t length;
+    uint32_t hash;
+};
+
+[[gnu::noinline]] static DecodedJsonNameStatus decode_json_name(
+    const char* json, const Token& token, DecodedJsonName* output)
+{
+    const char* raw = json + token.start;
+    const size_t rawLength = static_cast<size_t>(token.end - token.start);
+    if (decode_json_string(
+            raw, rawLength, output->bytes, sizeof(output->bytes), &output->length)) {
+        output->hash = json_name_hash(output->bytes, output->length);
+        return DecodedJsonNameStatus::buffered;
+    }
+    return decode_json_string(raw, rawLength, nullptr, 0, &output->length)
+        ? DecodedJsonNameStatus::unbuffered : DecodedJsonNameStatus::invalid;
+}
+
+[[gnu::noinline, gnu::noclone]] static bool decoded_json_name_equal(
+    const DecodedJsonName& decoded, const char* expected)
+{
+    return memcmp(decoded.bytes, expected, decoded.length) == 0;
 }
 
 static bool parse_u64(const char* json, const Token& token, uint64_t* output)
@@ -1842,6 +1877,32 @@ template<bool Write, class T>
 static AnoGltfResult decode_value(
     const char* json, const Token* tokens, uint32_t tokenIndex, T* output, Arena* arena);
 
+template<class T>
+consteval uint64_t object_required_mask()
+{
+    static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
+        ^^T, std::meta::access_context::unchecked()));
+    static_assert(members.size() <= 64, "reflected JSON objects use a 64-bit presence mask");
+    uint64_t requiredMask = 0;
+    size_t memberIndex = 0;
+    template for (constexpr auto member : members) {
+        constexpr auto ignored = std::define_static_array(
+            std::meta::annotations_of_with_type(member, ^^AnoGltfIgnore));
+        constexpr auto required = std::define_static_array(
+            std::meta::annotations_of_with_type(member, ^^AnoGltfRequired));
+        static_assert(ignored.size() <= 1 && required.size() <= 1);
+        static_assert(ignored.empty() || required.empty(), "ignored JSON fields cannot be required");
+        if constexpr (ignored.empty()) {
+            constexpr auto name = std::meta::identifier_of(member);
+            static_assert(!name.empty() && name.size() <= maxJsonFieldNameBytes);
+            if constexpr (!required.empty())
+                requiredMask |= UINT64_C(1) << memberIndex;
+        }
+        ++memberIndex;
+    }
+    return requiredMask;
+}
+
 template<bool Write, class T>
 static AnoGltfResult decode_array(
     const char* json, const Token* tokens, uint32_t tokenIndex, T* output, Arena* arena)
@@ -1883,59 +1944,57 @@ static AnoGltfResult decode_object(
         return AnoGltfResult::invalid_gltf;
     static constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(
         ^^T, std::meta::access_context::unchecked()));
-    static_assert(members.size() <= 64, "reflected JSON objects use a 64-bit presence mask");
+    static constexpr uint64_t requiredMask = object_required_mask<T>();
     if constexpr (Write)
         *output = T{};
     uint64_t seen = 0;
     uint32_t child = tokenIndex + 1;
     for (int32_t pair = 0; pair < token.size; ++pair) {
         if (child >= token.next || tokens[child].type != TokenType::string
-            || child + 1 >= token.next || !token_string_valid(json, tokens[child]))
+            || child + 1 >= token.next)
             return AnoGltfResult::invalid_json;
         const uint32_t valueIndex = child + 1;
-        bool matched = false;
-        AnoGltfResult result = AnoGltfResult::success;
-        size_t memberIndex = 0;
-        template for (constexpr auto member : members) {
-            constexpr auto ignored = std::define_static_array(
-                std::meta::annotations_of_with_type(member, ^^AnoGltfIgnore));
-            static_assert(ignored.size() <= 1);
-            if constexpr (ignored.empty()) {
-                constexpr auto identifier = std::meta::identifier_of(member);
-                if (!matched && token_string_equal(json, tokens[child], identifier.data(), identifier.size())) {
-                    const uint64_t bit = UINT64_C(1) << memberIndex;
-                    if ((seen & bit) != 0)
-                        return AnoGltfResult::invalid_gltf;
-                    seen |= bit;
-                    using Field = [:std::meta::type_of(member):];
-                    Field* field = nullptr;
-                    if constexpr (Write)
-                        field = &(output->*(&[:member:]));
-                    result = decode_value<Write>(json, tokens, valueIndex, field, arena);
-                    matched = true;
+        DecodedJsonName key{};
+        const DecodedJsonNameStatus keyStatus =
+            decode_json_name(json, tokens[child], &key);
+        if (keyStatus == DecodedJsonNameStatus::invalid) {
+            return AnoGltfResult::invalid_json;
+        } else if (keyStatus == DecodedJsonNameStatus::buffered) {
+            bool matched = false;
+            AnoGltfResult result = AnoGltfResult::success;
+            size_t memberIndex = 0;
+            template for (constexpr auto member : members) {
+                constexpr auto ignored = std::define_static_array(
+                    std::meta::annotations_of_with_type(member, ^^AnoGltfIgnore));
+                if constexpr (ignored.empty()) {
+                    constexpr auto name = std::meta::identifier_of(member);
+                    constexpr uint32_t fieldHash = json_name_hash(name.data(), name.size());
+                    if (!matched && key.hash == fieldHash && key.length == name.size()
+                        && decoded_json_name_equal(key, name.data())) {
+                        const uint64_t bit = UINT64_C(1) << memberIndex;
+                        if ((seen & bit) != 0)
+                            return AnoGltfResult::invalid_gltf;
+                        seen |= bit;
+                        using Field = [:std::meta::type_of(member):];
+                        Field* field = nullptr;
+                        if constexpr (Write)
+                            field = &(output->*(&[:member:]));
+                        result = decode_value<Write>(
+                            json, tokens, valueIndex, field, arena);
+                        matched = true;
+                    }
                 }
+                ++memberIndex;
             }
-            ++memberIndex;
+            if (result != AnoGltfResult::success)
+                return result;
         }
-        if (result != AnoGltfResult::success)
-            return result;
         child = tokens[valueIndex].next;
     }
     if (child != token.next)
         return AnoGltfResult::invalid_json;
-
-    size_t memberIndex = 0;
-    template for (constexpr auto member : members) {
-        constexpr auto required = std::define_static_array(
-            std::meta::annotations_of_with_type(member, ^^AnoGltfRequired));
-        static_assert(required.size() <= 1);
-        if constexpr (!required.empty()) {
-            if ((seen & (UINT64_C(1) << memberIndex)) == 0)
-                return AnoGltfResult::invalid_gltf;
-        }
-        ++memberIndex;
-    }
-    return AnoGltfResult::success;
+    return (seen & requiredMask) == requiredMask
+        ? AnoGltfResult::success : AnoGltfResult::invalid_gltf;
 }
 
 template<bool Write>
@@ -2226,29 +2285,52 @@ static bool enum_value_valid(T value)
     return valid;
 }
 
+template<class T>
+consteval bool enum_has_json_names()
+{
+    static_assert(std::is_enum_v<T>);
+    static constexpr auto enumerators =
+        std::define_static_array(std::meta::enumerators_of(^^T));
+    bool named = false;
+    template for (constexpr auto enumerator : enumerators) {
+        constexpr auto names = std::define_static_array(
+            std::meta::annotations_of_with_type(enumerator, ^^AnoGltfJsonName));
+        static_assert(names.size() <= 1);
+        if constexpr (!names.empty())
+            named = true;
+    }
+    return named;
+}
+
 template<bool Write, class T>
 static AnoGltfResult decode_enum(const char* json, const Token& token, T* output)
 {
     static_assert(std::is_enum_v<T>);
     static constexpr auto enumerators =
         std::define_static_array(std::meta::enumerators_of(^^T));
-    bool named = false;
-    bool matched = false;
     T value{};
-    template for (constexpr auto enumerator : enumerators) {
-        constexpr auto names = std::define_static_array(
-            std::meta::annotations_of_with_type(enumerator, ^^AnoGltfJsonName));
-        static_assert(names.size() <= 1);
-        if constexpr (!names.empty()) {
-            named = true;
-            constexpr AnoGltfJsonName name = std::meta::extract<AnoGltfJsonName>(names[0]);
-            if (!matched && token_string_equal(json, token, name.text, name.length)) {
-                value = [:enumerator:];
-                matched = true;
+    bool matched = false;
+    if constexpr (enum_has_json_names<T>()) {
+        if (token.type != TokenType::string)
+            return AnoGltfResult::invalid_gltf;
+        DecodedJsonName decoded{};
+        if (decode_json_name(json, token, &decoded) != DecodedJsonNameStatus::buffered)
+            return AnoGltfResult::invalid_gltf;
+        template for (constexpr auto enumerator : enumerators) {
+            constexpr auto names = std::define_static_array(
+                std::meta::annotations_of_with_type(enumerator, ^^AnoGltfJsonName));
+            if constexpr (!names.empty()) {
+                constexpr AnoGltfJsonName name =
+                    std::meta::extract<AnoGltfJsonName>(names[0]);
+                constexpr uint32_t hash = json_name_hash(name.text, name.length);
+                if (!matched && decoded.hash == hash && decoded.length == name.length
+                    && decoded_json_name_equal(decoded, name.text)) {
+                    value = [:enumerator:];
+                    matched = true;
+                }
             }
         }
-    }
-    if (!named) {
+    } else {
         using Underlying = std::underlying_type_t<T>;
         static_assert(std::is_unsigned_v<Underlying>);
         uint64_t raw = 0;

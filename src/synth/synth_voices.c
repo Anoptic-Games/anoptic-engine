@@ -12,6 +12,7 @@
 
 #include "synth_internal.h"
 #include "../audio/dsp/wavetable.h"
+#include "cpp/ano_reflect.h"
 
 // constant-power pan: p in [-1, 1] -> L/R
 static void pan_gains(float p, float *gl, float *gr)
@@ -125,7 +126,7 @@ static uint32_t default_patch(uint32_t layer)
 static void spawn_pad(AnoSynth *s, AnoSynthVoice *v, float dur, bool bright)
 {
     float fs = (float)s->sampleRate;
-    v->cls = ANO_SYNTH_VC_PAD;
+    v->recipe = ANO_SYNTH_RECIPE_PAD;
     float detune = bright ? 1.009f : 1.004f;
     float f[3] = { v->freq, v->freq * detune, v->freq / detune };
     static const float brightPan[3] = { 0.0f, -0.7f, 0.7f };
@@ -138,7 +139,7 @@ static void spawn_pad(AnoSynth *s, AnoSynthVoice *v, float dur, bool bright)
         v->u.pad.og[i][1] = gr * (1.0f / 3.0f);
     }
     float attack = fminf(bright ? 0.15f : 0.5f, dur * 0.35f);
-    ano_dsp_asr_init(&v->env, attack, fmaxf(dur - attack, 0.05f), 0.8f, 1.5f, fs);
+    ano_dsp_asr_init(&v->env, attack, fmaxf(dur - attack, 0.05f), 0.8f, fs);
     v->cutMult = (bright ? 1.7f : 1.0f) * keytrack(v->freq, 0.2f);
     v->resQ    = q_from_res(bright ? 0.32f : 0.15f);
     v->total   = (uint64_t)((dur + 0.8f) * fs);
@@ -148,14 +149,14 @@ static void spawn_pad(AnoSynth *s, AnoSynthVoice *v, float dur, bool bright)
 static void spawn_wtpad(AnoSynth *s, AnoSynthVoice *v, float dur)
 {
     float fs = (float)s->sampleRate;
-    v->cls = ANO_SYNTH_VC_WTPAD;
+    v->recipe = ANO_SYNTH_RECIPE_WTPAD;
     v->u.wt.ph = 0.0f;
     v->u.wt.dt = v->freq / fs;
     v->u.wt.morphAmp = fminf(1.0f, v->amp * 1.4f);
     ano_dsp_asr_init(&v->u.wt.morph, fminf(1.2f, fmaxf(0.3f, dur * 0.6f)),
-                     fmaxf(dur - 1.2f, 0.05f), 1.0f, 1.2f, fs);
+                     fmaxf(dur - 1.2f, 0.05f), 1.2f, fs);
     float attack = fminf(0.4f, dur * 0.35f);
-    ano_dsp_asr_init(&v->env, attack, fmaxf(dur - attack, 0.05f), 0.9f, 1.5f, fs);
+    ano_dsp_asr_init(&v->env, attack, fmaxf(dur - attack, 0.05f), 0.9f, fs);
     v->cutMult = 1.2f * keytrack(v->freq, 0.2f);
     v->resQ    = q_from_res(0.12f);
     v->amp    *= 0.8f;
@@ -166,48 +167,48 @@ static void spawn_wtpad(AnoSynth *s, AnoSynthVoice *v, float dur)
 static void spawn_bass(AnoSynth *s, AnoSynthVoice *v, float dur, bool driven)
 {
     float fs = (float)s->sampleRate;
-    v->cls = ANO_SYNTH_VC_BASS;
+    v->recipe = ANO_SYNTH_RECIPE_BASS;
     v->u.bass.sawPh = v->u.bass.subPh = 0.0f;
     v->u.bass.drive = driven ? 2.2f : 0.0f;
     v->u.bass.sweepBase  = driven ? 0.25f : 0.35f;
     v->u.bass.sweepScale = driven ? 1.05f : 0.65f;
-    ano_dsp_asr_init(&v->u.bass.fenv, 0.001f, 0.05f, 0.25f, 3.0f, fs);
-    ano_dsp_asr_init(&v->env, 0.004f, fmaxf(dur - 0.004f, 0.03f), 0.1f, 2.0f, fs);
+    ano_dsp_asr_init(&v->u.bass.fenv, 0.001f, 0.05f, 0.25f, fs);
+    ano_dsp_asr_init(&v->env, 0.004f, fmaxf(dur - 0.004f, 0.03f), 0.1f, fs);
     v->cutMult = (driven ? 1.4f : 1.0f) * keytrack(v->freq, 0.3f);
     v->resQ    = q_from_res(driven ? 0.3f : 0.2f);
     v->total   = (uint64_t)((dur + 0.1f) * fs);
     pan_gains(0.0f, &v->panL, &v->panR);
 }
 
-enum { LO_SINE = 0, LO_TRI, LO_SAW, LO_SQUARE };
-
 static void spawn_lead(AnoSynth *s, AnoSynthVoice *v, float dur, uint32_t patch)
 {
     float fs = (float)s->sampleRate;
-    v->cls = ANO_SYNTH_VC_LEAD;
     v->u.lead.ph1 = v->u.lead.ph2 = v->u.lead.vibPh = 0.0f;
     v->u.lead.tri1 = v->u.lead.tri2 = (AnoDspTri){0};
     float attack, release, mult, res, pan, vibRate, vibDelay, vibDepth;
     if (patch == ANO_SYNTH_PATCH_HARD) {
-        v->u.lead.t1 = LO_SAW;    v->u.lead.a1 = 0.6f;
-        v->u.lead.t2 = LO_SQUARE; v->u.lead.a2 = 0.3f;
+        v->recipe = ANO_SYNTH_RECIPE_LEAD_HARD;
+        v->u.lead.a1 = 0.6f;
+        v->u.lead.a2 = 0.3f;
         vibRate = 6.2f; vibDelay = 0.15f; vibDepth = 0.009f;
         attack = 0.006f; release = 0.18f; mult = 1.4f; res = 0.2f; pan = 0.12f;
     } else if (patch == ANO_SYNTH_PATCH_MELLOW) {
-        v->u.lead.t1 = LO_TRI;  v->u.lead.a1 = 0.8f;
-        v->u.lead.t2 = LO_SINE; v->u.lead.a2 = 0.2f;
+        v->recipe = ANO_SYNTH_RECIPE_LEAD_MELLOW;
+        v->u.lead.a1 = 0.8f;
+        v->u.lead.a2 = 0.2f;
         vibRate = 4.8f; vibDelay = 0.5f; vibDepth = 0.004f;
         attack = 0.035f; release = 0.22f; mult = 0.8f; res = 0.1f; pan = -0.14f;
     } else { // SOFT
-        v->u.lead.t1 = LO_TRI; v->u.lead.a1 = 0.7f;
-        v->u.lead.t2 = LO_SAW; v->u.lead.a2 = 0.25f;
+        v->recipe = ANO_SYNTH_RECIPE_LEAD_SOFT;
+        v->u.lead.a1 = 0.7f;
+        v->u.lead.a2 = 0.25f;
         vibRate = 5.5f; vibDelay = 0.35f; vibDepth = 0.006f;
         attack = 0.02f; release = 0.18f; mult = 1.0f; res = 0.1f; pan = 0.12f;
     }
     v->u.lead.vibRate  = vibRate;
     v->u.lead.vibDepth = vibDepth;
     v->u.lead.vibDelay = (uint64_t)(vibDelay * fs);
-    ano_dsp_asr_init(&v->env, attack, fmaxf(dur - attack, 0.03f), release, 1.8f, fs);
+    ano_dsp_asr_init(&v->env, attack, fmaxf(dur - attack, 0.03f), release, fs);
     v->cutMult = mult * keytrack(v->freq, 0.4f);
     v->resQ    = q_from_res(res);
     v->total   = (uint64_t)((dur + release) * fs);
@@ -217,12 +218,12 @@ static void spawn_lead(AnoSynth *s, AnoSynthVoice *v, float dur, uint32_t patch)
 static void spawn_sampler(AnoSynth *s, AnoSynthVoice *v, float dur, uint8_t pitch)
 {
     float fs = (float)s->sampleRate;
-    v->cls = ANO_SYNTH_VC_SAMPLER;
+    v->recipe = ANO_SYNTH_RECIPE_SAMPLER;
     v->u.smp.cur  = 0.0;
     v->u.smp.rate = exp2(((double)pitch - 72.0) / 12.0);
     float natural = (float)((double)s->bellFrames / fs / v->u.smp.rate);
     float total   = fminf(natural, dur + 1.2f);
-    ano_dsp_asr_init(&v->env, 0.001f, fmaxf(total - 0.4f, 0.02f), 0.4f, 2.0f, fs);
+    ano_dsp_asr_init(&v->env, 0.001f, fmaxf(total - 0.4f, 0.02f), 0.4f, fs);
     v->cutMult = 1.5f * keytrack(midi_hz(pitch), 0.2f);
     v->resQ    = q_from_res(0.0f);
     v->total   = (uint64_t)(total * fs);
@@ -232,14 +233,14 @@ static void spawn_sampler(AnoSynth *s, AnoSynthVoice *v, float dur, uint8_t pitc
 static void spawn_fm(AnoSynth *s, AnoSynthVoice *v, float dur, bool glass)
 {
     float fs = (float)s->sampleRate;
-    v->cls = ANO_SYNTH_VC_FM;
+    v->recipe = ANO_SYNTH_RECIPE_FM;
     v->u.fm.carPh = v->u.fm.modPh = 0.0f;
     v->u.fm.ratio = glass ? 7.003f : 3.007f;
     v->u.fm.index = glass ? 2.6f : 1.8f;
-    ano_dsp_asr_init(&v->u.fm.menv, 0.001f, 0.0f, fminf(dur, glass ? 0.5f : 0.35f), 4.0f, fs);
+    ano_dsp_asr_init(&v->u.fm.menv, 0.001f, 0.0f, fminf(dur, glass ? 0.5f : 0.35f), fs);
     float sustain = fmaxf(dur * 0.5f, 0.02f);
     float release = fminf(dur, glass ? 0.5f : 0.3f);
-    ano_dsp_asr_init(&v->env, 0.002f, sustain, release, 3.0f, fs);
+    ano_dsp_asr_init(&v->env, 0.002f, sustain, release, fs);
     v->total = (uint64_t)((0.002f + sustain + release) * fs);
     pan_gains(-0.2f, &v->panL, &v->panR);
 }
@@ -247,21 +248,21 @@ static void spawn_fm(AnoSynth *s, AnoSynthVoice *v, float dur, bool glass)
 static void spawn_chime(AnoSynth *s, AnoSynthVoice *v, float dur, uint8_t pitch)
 {
     float fs = (float)s->sampleRate;
-    v->cls = ANO_SYNTH_VC_CHIME;
+    v->recipe = ANO_SYNTH_RECIPE_CHIME;
     static const float ratios[5] = { 1.0f, 2.76f, 5.40f, 8.93f, 11.34f };
     static const float decays[5] = { 1.0f, 1.7f, 2.6f, 3.8f, 5.2f };
     float ring = fminf(dur + 1.6f, 2.6f);
     for (int i = 0; i < 5; ++i) {
         v->u.chime.ph[i] = 0.0f;
         ano_dsp_asr_init(&v->u.chime.penv[i], 0.001f, 0.0f,
-                         fmaxf(ring / decays[i], 0.05f), 3.0f, fs);
+                         fmaxf(ring / decays[i], 0.05f), fs);
     }
     (void)ratios; // read in step
-    ano_dsp_asr_init(&v->u.chime.chiff, 0.0005f, 0.0f, 0.02f, 3.0f, fs);
+    ano_dsp_asr_init(&v->u.chime.chiff, 0.0005f, 0.0f, 0.02f, fs);
     ano_dsp_svf_coef(&v->u.chime.bpc, 5200.0f, q_from_res(0.4f), fs);
     v->u.chime.bps = (AnoDspSvfState){0};
     ano_dsp_rng_seed(&v->u.chime.rng, 0xC41Eu);
-    ano_dsp_asr_init(&v->env, 0.0f, ring + 0.1f, 0.0f, 1.0f, fs); // partials shape decay
+    ano_dsp_asr_init(&v->env, 0.0f, ring + 0.1f, 0.0f, fs); // partials shape decay
     v->cutMult = 1.3f * keytrack(v->freq, 0.2f);
     v->resQ    = q_from_res(0.05f);
     v->amp    *= 0.6f;
@@ -274,51 +275,50 @@ static void spawn_chime(AnoSynth *s, AnoSynthVoice *v, float dur, uint8_t pitch)
 static void spawn_drum(AnoSynth *s, AnoSynthVoice *v, uint8_t pitch)
 {
     float fs = (float)s->sampleRate;
-    v->cls = ANO_SYNTH_VC_DRUM;
     v->u.drum.ph = 0.0f;
     v->u.drum.s1 = v->u.drum.s2 = (AnoDspSvfState){0};
     float total, pan;
     switch (pitch) {
     case 36: // kick: 44->129 Hz sweep + BP click
-        v->u.drum.kind = ANO_SYNTH_DRUM_KICK;
-        ano_dsp_asr_init(&v->u.drum.e2, 0.0005f, 0.0f, 0.09f, 4.0f, fs);
-        ano_dsp_asr_init(&v->u.drum.e3, 0.0005f, 0.0f, 0.012f, 3.0f, fs);
-        ano_dsp_asr_init(&v->env, 0.001f, 0.02f, 0.22f, 3.0f, fs);
+        v->recipe = ANO_SYNTH_RECIPE_DRUM_KICK;
+        ano_dsp_asr_init(&v->u.drum.e2, 0.0005f, 0.0f, 0.09f, fs);
+        ano_dsp_asr_init(&v->u.drum.e3, 0.0005f, 0.0f, 0.012f, fs);
+        ano_dsp_asr_init(&v->env, 0.001f, 0.02f, 0.22f, fs);
         ano_dsp_svf_coef(&v->u.drum.c1, 3500.0f, q_from_res(0.4f), fs);
         ano_dsp_rng_seed(&v->u.drum.rng, 0xD1C4u);
         total = 0.30f; pan = 0.0f;
         break;
     case 38: // snare: BP rattle + 195 Hz tone
-        v->u.drum.kind = ANO_SYNTH_DRUM_SNARE;
-        ano_dsp_asr_init(&v->env, 0.001f, 0.01f, 0.16f, 3.0f, fs);      // rattle
-        ano_dsp_asr_init(&v->u.drum.e3, 0.001f, 0.0f, 0.08f, 3.0f, fs); // tone
+        v->recipe = ANO_SYNTH_RECIPE_DRUM_SNARE;
+        ano_dsp_asr_init(&v->env, 0.001f, 0.01f, 0.16f, fs);      // rattle
+        ano_dsp_asr_init(&v->u.drum.e3, 0.001f, 0.0f, 0.08f, fs); // tone
         ano_dsp_svf_coef(&v->u.drum.c1, 1900.0f, q_from_res(0.3f), fs);
         ano_dsp_rng_seed(&v->u.drum.rng, 0xD5A2u);
         total = 0.22f; pan = 0.04f;
         break;
     case 42: case 46: { // hats: HP noise, closed/open decay
         bool open = pitch == 46;
-        v->u.drum.kind = open ? ANO_SYNTH_DRUM_OHAT : ANO_SYNTH_DRUM_CHAT;
+        v->recipe = open ? ANO_SYNTH_RECIPE_DRUM_OHAT : ANO_SYNTH_RECIPE_DRUM_CHAT;
         float decay = open ? 0.28f : 0.045f;
-        ano_dsp_asr_init(&v->env, 0.001f, open ? 0.005f : 0.0f, decay, 3.0f, fs);
+        ano_dsp_asr_init(&v->env, 0.001f, open ? 0.005f : 0.0f, decay, fs);
         ano_dsp_svf_coef(&v->u.drum.c1, 7800.0f, q_from_res(0.2f), fs);
         ano_dsp_rng_seed(&v->u.drum.rng, 0xDCA7u);
         total = decay + 0.03f; pan = -0.22f;
         break;
     }
     case 45: case 47: case 50: { // toms: swept sine + thump
-        v->u.drum.kind = ANO_SYNTH_DRUM_TOM;
+        v->recipe = ANO_SYNTH_RECIPE_DRUM_TOM;
         v->freq = pitch == 45 ? 105.0f : pitch == 47 ? 135.0f : 170.0f;
-        ano_dsp_asr_init(&v->u.drum.e2, 0.001f, 0.0f, 0.18f, 3.0f, fs);
-        ano_dsp_asr_init(&v->u.drum.e3, 0.0005f, 0.0f, 0.02f, 3.0f, fs);
-        ano_dsp_asr_init(&v->env, 0.001f, 0.02f, 0.30f, 2.5f, fs);
+        ano_dsp_asr_init(&v->u.drum.e2, 0.001f, 0.0f, 0.18f, fs);
+        ano_dsp_asr_init(&v->u.drum.e3, 0.0005f, 0.0f, 0.02f, fs);
+        ano_dsp_asr_init(&v->env, 0.001f, 0.02f, 0.30f, fs);
         ano_dsp_rng_seed(&v->u.drum.rng, 0xD703u);
         total = 0.36f; pan = 0.0f;
         break;
     }
     case 49: // crash: HP wash + BP shimmer
-        v->u.drum.kind = ANO_SYNTH_DRUM_CRASH;
-        ano_dsp_asr_init(&v->env, 0.002f, 0.05f, 1.3f, 2.5f, fs);
+        v->recipe = ANO_SYNTH_RECIPE_DRUM_CRASH;
+        ano_dsp_asr_init(&v->env, 0.002f, 0.05f, 1.3f, fs);
         ano_dsp_svf_coef(&v->u.drum.c1, 5200.0f, q_from_res(0.1f), fs);
         ano_dsp_svf_coef(&v->u.drum.c2, 9000.0f, q_from_res(0.6f), fs);
         ano_dsp_rng_seed(&v->u.drum.rng, 0xDC4Au);
@@ -326,15 +326,15 @@ static void spawn_drum(AnoSynth *s, AnoSynthVoice *v, uint8_t pitch)
         total = 1.45f; pan = 0.15f;
         break;
     case 70: // shaker
-        v->u.drum.kind = ANO_SYNTH_DRUM_SHAKER;
-        ano_dsp_asr_init(&v->env, 0.015f, 0.0f, 0.06f, 1.5f, fs);
+        v->recipe = ANO_SYNTH_RECIPE_DRUM_SHAKER;
+        ano_dsp_asr_init(&v->env, 0.015f, 0.0f, 0.06f, fs);
         ano_dsp_svf_coef(&v->u.drum.c1, 6300.0f, q_from_res(0.5f), fs);
         ano_dsp_rng_seed(&v->u.drum.rng, 0xD5ACu);
         total = 0.10f; pan = -0.3f;
         break;
     default: // rim / unmapped
-        v->u.drum.kind = ANO_SYNTH_DRUM_RIM;
-        ano_dsp_asr_init(&v->env, 0.0005f, 0.0f, 0.045f, 3.0f, fs);
+        v->recipe = ANO_SYNTH_RECIPE_DRUM_RIM;
+        ano_dsp_asr_init(&v->env, 0.0005f, 0.0f, 0.045f, fs);
         ano_dsp_svf_coef(&v->u.drum.c1, 4500.0f, q_from_res(0.6f), fs);
         ano_dsp_rng_seed(&v->u.drum.rng, 0xD814u);
         total = 0.06f; pan = 0.1f;
@@ -384,49 +384,52 @@ bool ano_synth_voice_spawn(AnoSynth *s, AnoSynthVoice *v, const AnoSynthNote *n)
 }
 
 
-/* Span Coefs */
+/* Render */
 
-void ano_synth_voice_span_coef(AnoSynth *s, AnoSynthVoice *v, const float *staged)
+template<AnoSynthVoiceRecipe Recipe>
+inline constexpr bool lead_recipe =
+    Recipe == ANO_SYNTH_RECIPE_LEAD_SOFT
+    || Recipe == ANO_SYNTH_RECIPE_LEAD_HARD
+    || Recipe == ANO_SYNTH_RECIPE_LEAD_MELLOW;
+
+static constexpr auto voice_recipe_curves =
+    ano::reflect_dense_enum_contracts<AnoSynthVoiceRecipe, AnoSynthRecipeCurves>();
+
+template<AnoSynthVoiceRecipe Recipe>
+inline constexpr AnoDspCurve main_curve =
+    voice_recipe_curves.values[static_cast<size_t>(Recipe)].main;
+
+template<AnoSynthVoiceRecipe Recipe>
+inline constexpr AnoDspCurve aux0_curve =
+    voice_recipe_curves.values[static_cast<size_t>(Recipe)].aux0;
+
+template<AnoSynthVoiceRecipe Recipe>
+inline constexpr AnoDspCurve aux1_curve =
+    voice_recipe_curves.values[static_cast<size_t>(Recipe)].aux1;
+
+template<AnoSynthVoiceRecipe Recipe>
+static inline void voice_span_coef(AnoSynth *s, AnoSynthVoice *v, const float *staged)
 {
-    float fs = (float)s->sampleRate;
-    switch (v->cls) {
-    case ANO_SYNTH_VC_PAD:
-    case ANO_SYNTH_VC_WTPAD:
-    case ANO_SYNTH_VC_LEAD:
-    case ANO_SYNTH_VC_SAMPLER:
-    case ANO_SYNTH_VC_CHIME:
+    if constexpr (Recipe == ANO_SYNTH_RECIPE_PAD
+                  || Recipe == ANO_SYNTH_RECIPE_WTPAD
+                  || lead_recipe<Recipe>
+                  || Recipe == ANO_SYNTH_RECIPE_SAMPLER
+                  || Recipe == ANO_SYNTH_RECIPE_CHIME) {
+        float fs = (float)s->sampleRate;
         ano_dsp_svf_coef(&v->fc, staged[v->layer] * v->cutMult, v->resQ, fs);
         ano_dsp_svf_flush(&v->f0);
         ano_dsp_svf_flush(&v->f1);
-        return;
-    case ANO_SYNTH_VC_BASS: // per-sample sweep; flush denormals
+    } else if constexpr (Recipe == ANO_SYNTH_RECIPE_BASS) {
         ano_dsp_svf_flush(&v->f0);
-        return;
-    default:
-        return;
     }
 }
 
-
-/* Step */
-
-static float lead_osc(uint8_t type, AnoDspTri *tri, float phase, float dt)
-{
-    switch (type) {
-    case LO_TRI:    return ano_dsp_triangle(tri, phase, dt);
-    case LO_SAW:    return ano_dsp_saw(phase, dt);
-    case LO_SQUARE: return ano_dsp_square(phase, dt);
-    default:        return ano_dsp_sine(phase);
-    }
-}
-
-void ano_synth_voice_step(AnoSynth *s, AnoSynthVoice *v, const float *staged,
-                          float *l, float *r)
+template<AnoSynthVoiceRecipe Recipe>
+static inline void voice_step(AnoSynth *s, AnoSynthVoice *v, const float *staged,
+                              float *l, float *r)
 {
     float fs = (float)s->sampleRate;
-    switch (v->cls) {
-
-    case ANO_SYNTH_VC_PAD: {
+    if constexpr (Recipe == ANO_SYNTH_RECIPE_PAD) {
         float sl = 0.0f, sr = 0.0f;
         for (int i = 0; i < 3; ++i) {
             float p = v->u.pad.ph[i];
@@ -435,25 +438,20 @@ void ano_synth_voice_step(AnoSynth *s, AnoSynthVoice *v, const float *staged,
             sl += smp * v->u.pad.og[i][0];
             sr += smp * v->u.pad.og[i][1];
         }
-        float e = ano_dsp_asr_step(&v->env) * v->amp;
+        float e = ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp;
         *l += ano_dsp_svf_step(&v->fc, &v->f0, sl, ANO_DSP_SVF_LOWPASS) * e;
         *r += ano_dsp_svf_step(&v->fc, &v->f1, sr, ANO_DSP_SVF_LOWPASS) * e;
-        return;
-    }
-
-    case ANO_SYNTH_VC_WTPAD: {
+    } else if constexpr (Recipe == ANO_SYNTH_RECIPE_WTPAD) {
         AnoDspWavetable wt = { s->wtBank, ANO_SYNTH_WT_LEN, ANO_SYNTH_WT_FRAMES };
-        float morph = ano_dsp_asr_step(&v->u.wt.morph) * v->u.wt.morphAmp;
+        float morph = ano_dsp_asr_step<aux0_curve<Recipe>>(&v->u.wt.morph)
+                    * v->u.wt.morphAmp;
         float smp = ano_dsp_wavetable_read(&wt, v->u.wt.ph, morph);
         ano_dsp_phase_step(&v->u.wt.ph, v->u.wt.dt);
-        float e = ano_dsp_asr_step(&v->env) * v->amp;
+        float e = ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp;
         float o = ano_dsp_svf_step(&v->fc, &v->f0, smp, ANO_DSP_SVF_LOWPASS) * e;
         *l += o * v->panL;
         *r += o * v->panR;
-        return;
-    }
-
-    case ANO_SYNTH_VC_BASS: {
+    } else if constexpr (Recipe == ANO_SYNTH_RECIPE_BASS) {
         float dt = v->freq / fs;
         float body = ano_dsp_saw(v->u.bass.sawPh, dt) * 0.6f
                    + ano_dsp_sine(v->u.bass.subPh) * 0.5f;
@@ -461,35 +459,40 @@ void ano_synth_voice_step(AnoSynth *s, AnoSynthVoice *v, const float *staged,
         ano_dsp_phase_step(&v->u.bass.subPh, 0.5f * dt);
         if (v->u.bass.drive > 0.0f)
             body = tanhf(body * v->u.bass.drive) * 0.8f;
-        float fe  = ano_dsp_asr_step(&v->u.bass.fenv);
+        float fe  = ano_dsp_asr_step<aux0_curve<Recipe>>(&v->u.bass.fenv);
         float cut = staged[ANO_MUSIC_BASS]
                   * (v->u.bass.sweepBase + fe * v->u.bass.sweepScale) * v->cutMult;
         ano_dsp_svf_coef(&v->fc, cut, v->resQ, fs);
-        float e = ano_dsp_asr_step(&v->env) * v->amp;
+        float e = ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp;
         float o = ano_dsp_svf_step(&v->fc, &v->f0, body, ANO_DSP_SVF_LOWPASS) * e;
         *l += o * v->panL;
         *r += o * v->panR;
-        return;
-    }
-
-    case ANO_SYNTH_VC_LEAD: {
+    } else if constexpr (lead_recipe<Recipe>) {
         float ramp = v->u.lead.vibDelay
                    ? fminf((float)v->age / (float)v->u.lead.vibDelay, 1.0f) : 1.0f;
         float vib = 1.0f + ano_dsp_sine(v->u.lead.vibPh) * ramp * v->u.lead.vibDepth;
         ano_dsp_phase_step(&v->u.lead.vibPh, v->u.lead.vibRate / fs);
         float dt = v->freq * vib / fs;
-        float smp = lead_osc(v->u.lead.t1, &v->u.lead.tri1, v->u.lead.ph1, dt) * v->u.lead.a1
-                  + lead_osc(v->u.lead.t2, &v->u.lead.tri2, v->u.lead.ph2, dt) * v->u.lead.a2;
+        float osc1;
+        if constexpr (Recipe == ANO_SYNTH_RECIPE_LEAD_HARD)
+            osc1 = ano_dsp_saw(v->u.lead.ph1, dt);
+        else
+            osc1 = ano_dsp_triangle(&v->u.lead.tri1, v->u.lead.ph1, dt);
+        float osc2;
+        if constexpr (Recipe == ANO_SYNTH_RECIPE_LEAD_HARD)
+            osc2 = ano_dsp_square(v->u.lead.ph2, dt);
+        else if constexpr (Recipe == ANO_SYNTH_RECIPE_LEAD_MELLOW)
+            osc2 = ano_dsp_sine(v->u.lead.ph2);
+        else
+            osc2 = ano_dsp_saw(v->u.lead.ph2, dt);
+        float smp = osc1 * v->u.lead.a1 + osc2 * v->u.lead.a2;
         ano_dsp_phase_step(&v->u.lead.ph1, dt);
         ano_dsp_phase_step(&v->u.lead.ph2, dt);
-        float e = ano_dsp_asr_step(&v->env) * v->amp;
+        float e = ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp;
         float o = ano_dsp_svf_step(&v->fc, &v->f0, smp, ANO_DSP_SVF_LOWPASS) * e;
         *l += o * v->panL;
         *r += o * v->panR;
-        return;
-    }
-
-    case ANO_SYNTH_VC_SAMPLER: {
+    } else if constexpr (Recipe == ANO_SYNTH_RECIPE_SAMPLER) {
         double cur = v->u.smp.cur;
         uint64_t i0 = (uint64_t)cur;
         float smp = 0.0f;
@@ -498,106 +501,133 @@ void ano_synth_voice_step(AnoSynth *s, AnoSynthVoice *v, const float *staged,
             smp = s->bell[i0] + (s->bell[i0 + 1u] - s->bell[i0]) * frac;
         }
         v->u.smp.cur = cur + v->u.smp.rate;
-        float e = ano_dsp_asr_step(&v->env) * v->amp;
+        float e = ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp;
         float o = ano_dsp_svf_step(&v->fc, &v->f0, smp, ANO_DSP_SVF_LOWPASS) * e;
         *l += o * v->panL;
         *r += o * v->panR;
-        return;
-    }
-
-    case ANO_SYNTH_VC_FM: {
-        float me  = ano_dsp_asr_step(&v->u.fm.menv);
+    } else if constexpr (Recipe == ANO_SYNTH_RECIPE_FM) {
+        float me  = ano_dsp_asr_step<aux0_curve<Recipe>>(&v->u.fm.menv);
         float mod = ano_dsp_sine(v->u.fm.modPh) * v->freq * v->u.fm.index * me;
         ano_dsp_phase_step(&v->u.fm.modPh, v->freq * v->u.fm.ratio / fs);
         float smp = ano_dsp_sine(v->u.fm.carPh);
         ano_dsp_phase_step(&v->u.fm.carPh, (v->freq + mod) / fs);
-        float e = ano_dsp_asr_step(&v->env) * v->amp;
+        float e = ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp;
         *l += smp * e * v->panL;
         *r += smp * e * v->panR;
-        return;
-    }
-
-    case ANO_SYNTH_VC_CHIME: {
+    } else if constexpr (Recipe == ANO_SYNTH_RECIPE_CHIME) {
         static const float ratios[5] = { 1.0f, 2.76f, 5.40f, 8.93f, 11.34f };
         static const float gains[5]  = { 1.0f, 0.6f, 0.35f, 0.2f, 0.12f };
         float body = 0.0f;
         for (int i = 0; i < 5; ++i) {
             body += gains[i] * ano_dsp_sine(v->u.chime.ph[i])
-                  * ano_dsp_asr_step(&v->u.chime.penv[i]);
+                  * ano_dsp_asr_step<aux0_curve<Recipe>>(&v->u.chime.penv[i]);
             ano_dsp_phase_step(&v->u.chime.ph[i], v->freq * ratios[i] / fs);
         }
         float chiff = ano_dsp_svf_step(&v->u.chime.bpc, &v->u.chime.bps,
                                        ano_dsp_noise(&v->u.chime.rng), ANO_DSP_SVF_BANDPASS)
-                    * ano_dsp_asr_step(&v->u.chime.chiff) * 0.3f;
-        (void)ano_dsp_asr_step(&v->env); // lifecycle; partials shape decay
+                    * ano_dsp_asr_step<aux1_curve<Recipe>>(&v->u.chime.chiff) * 0.3f;
+        (void)ano_dsp_asr_step<main_curve<Recipe>>(&v->env); // lifecycle
         float o = ano_dsp_svf_step(&v->fc, &v->f0, body + chiff, ANO_DSP_SVF_LOWPASS) * v->amp;
         *l += o * v->panL;
         *r += o * v->panR;
-        return;
-    }
-
-    case ANO_SYNTH_VC_DRUM: {
+    } else {
         float o = 0.0f;
-        switch (v->u.drum.kind) {
-        case ANO_SYNTH_DRUM_KICK: {
-            float pe = ano_dsp_asr_step(&v->u.drum.e2);
+        if constexpr (Recipe == ANO_SYNTH_RECIPE_DRUM_KICK) {
+            float pe = ano_dsp_asr_step<aux0_curve<Recipe>>(&v->u.drum.e2);
             float body = ano_dsp_sine(v->u.drum.ph);
             ano_dsp_phase_step(&v->u.drum.ph, (44.0f + pe * 85.0f) / fs);
             float click = ano_dsp_svf_step(&v->u.drum.c1, &v->u.drum.s1,
                                            ano_dsp_noise(&v->u.drum.rng), ANO_DSP_SVF_BANDPASS)
-                        * ano_dsp_asr_step(&v->u.drum.e3) * 0.5f;
-            o = (body + click) * ano_dsp_asr_step(&v->env) * v->amp * 1.2f;
-            break;
-        }
-        case ANO_SYNTH_DRUM_SNARE: {
+                        * ano_dsp_asr_step<aux1_curve<Recipe>>(&v->u.drum.e3) * 0.5f;
+            o = (body + click) * ano_dsp_asr_step<main_curve<Recipe>>(&v->env)
+              * v->amp * 1.2f;
+        } else if constexpr (Recipe == ANO_SYNTH_RECIPE_DRUM_SNARE) {
             float rattle = ano_dsp_svf_step(&v->u.drum.c1, &v->u.drum.s1,
                                             ano_dsp_noise(&v->u.drum.rng), ANO_DSP_SVF_BANDPASS)
-                         * ano_dsp_asr_step(&v->env) * 0.8f;
-            float tone = ano_dsp_sine(v->u.drum.ph) * ano_dsp_asr_step(&v->u.drum.e3) * 0.4f;
+                         * ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * 0.8f;
+            float tone = ano_dsp_sine(v->u.drum.ph)
+                       * ano_dsp_asr_step<aux1_curve<Recipe>>(&v->u.drum.e3) * 0.4f;
             ano_dsp_phase_step(&v->u.drum.ph, 195.0f / fs);
             o = (rattle + tone) * v->amp;
-            break;
-        }
-        case ANO_SYNTH_DRUM_TOM: {
-            float pe = ano_dsp_asr_step(&v->u.drum.e2);
+        } else if constexpr (Recipe == ANO_SYNTH_RECIPE_DRUM_TOM) {
+            float pe = ano_dsp_asr_step<aux0_curve<Recipe>>(&v->u.drum.e2);
             float body = ano_dsp_sine(v->u.drum.ph);
             ano_dsp_phase_step(&v->u.drum.ph, v->freq * (1.0f + pe * 0.55f) / fs);
             float thump = ano_dsp_noise(&v->u.drum.rng)
-                        * ano_dsp_asr_step(&v->u.drum.e3) * 0.2f;
-            o = (body + thump) * ano_dsp_asr_step(&v->env) * v->amp;
-            break;
-        }
-        case ANO_SYNTH_DRUM_CRASH: {
+                        * ano_dsp_asr_step<aux1_curve<Recipe>>(&v->u.drum.e3) * 0.2f;
+            o = (body + thump) * ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp;
+        } else if constexpr (Recipe == ANO_SYNTH_RECIPE_DRUM_CRASH) {
             float wash = ano_dsp_svf_step(&v->u.drum.c1, &v->u.drum.s1,
                                           ano_dsp_noise(&v->u.drum.rng), ANO_DSP_SVF_HIGHPASS);
             float shim = ano_dsp_svf_step(&v->u.drum.c2, &v->u.drum.s2,
                                           ano_dsp_noise(&v->u.drum.rng2), ANO_DSP_SVF_BANDPASS) * 0.5f;
-            o = (wash + shim) * ano_dsp_asr_step(&v->env) * v->amp * 0.6f;
-            break;
-        }
-        case ANO_SYNTH_DRUM_CHAT:
-        case ANO_SYNTH_DRUM_OHAT:
+            o = (wash + shim) * ano_dsp_asr_step<main_curve<Recipe>>(&v->env)
+              * v->amp * 0.6f;
+        } else if constexpr (Recipe == ANO_SYNTH_RECIPE_DRUM_CHAT
+                             || Recipe == ANO_SYNTH_RECIPE_DRUM_OHAT) {
             o = ano_dsp_svf_step(&v->u.drum.c1, &v->u.drum.s1,
                                  ano_dsp_noise(&v->u.drum.rng), ANO_DSP_SVF_HIGHPASS)
-              * ano_dsp_asr_step(&v->env) * v->amp * 0.7f;
-            break;
-        case ANO_SYNTH_DRUM_SHAKER:
+              * ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp * 0.7f;
+        } else if constexpr (Recipe == ANO_SYNTH_RECIPE_DRUM_SHAKER) {
             o = ano_dsp_svf_step(&v->u.drum.c1, &v->u.drum.s1,
                                  ano_dsp_noise(&v->u.drum.rng), ANO_DSP_SVF_BANDPASS)
-              * ano_dsp_asr_step(&v->env) * v->amp * 0.6f;
-            break;
-        default: // RIM
+              * ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp * 0.6f;
+        } else if constexpr (Recipe == ANO_SYNTH_RECIPE_DRUM_RIM) {
             o = ano_dsp_svf_step(&v->u.drum.c1, &v->u.drum.s1,
                                  ano_dsp_noise(&v->u.drum.rng), ANO_DSP_SVF_BANDPASS)
-              * ano_dsp_asr_step(&v->env) * v->amp;
-            break;
+              * ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp;
+        } else {
+            static_assert(Recipe != Recipe, "unhandled synth render recipe");
         }
         *l += o * v->panL;
         *r += o * v->panR;
-        return;
     }
+}
 
-    default:
+template<AnoSynthVoiceRecipe Recipe>
+static void render_voice_span(AnoSynth *s, AnoSynthVoice *v, const float *staged,
+                              const float *duckGain, bool ducked, float *strip,
+                              uint32_t pos, uint32_t span)
+{
+    voice_span_coef<Recipe>(s, v, staged);
+    for (uint32_t n = 0; n < span; ++n) {
+        if (v->age >= v->total) {
+            v->active = false;
+            break;
+        }
+        float l = 0.0f, r = 0.0f;
+        voice_step<Recipe>(s, v, staged, &l, &r);
+        if (ducked) {
+            l *= duckGain[n];
+            r *= duckGain[n];
+        }
+        strip[2u * (pos + n)]      += l;
+        strip[2u * (pos + n) + 1u] += r;
+        v->age++;
+    }
+}
+
+using VoiceSpanKernel = void (*)(AnoSynth *, AnoSynthVoice *, const float *,
+                                 const float *, bool, float *, uint32_t, uint32_t);
+
+static_assert(sizeof(AnoSynthVoiceRecipe) == sizeof(uint8_t));
+static_assert(ano::reflected_enum_domain<AnoSynthVoiceRecipe>.valid);
+
+static constexpr auto voice_span_kernels =
+    ano::reflect_enum_values<AnoSynthVoiceRecipe, VoiceSpanKernel,
+                             ANO_SYNTH_RECIPE_COUNT, 0>(
+        []<auto enumerator>() consteval {
+            return &render_voice_span<([:enumerator:])>;
+        });
+
+void ano_synth_voice_render_span(AnoSynth *s, AnoSynthVoice *v, const float *staged,
+                                 const float *duckGain, bool ducked, float *strip,
+                                 uint32_t pos, uint32_t span)
+{
+    size_t recipe = static_cast<size_t>(v->recipe);
+    if (recipe >= voice_span_kernels.size()) {
+        v->active = false;
         return;
     }
+    voice_span_kernels.values[recipe](s, v, staged, duckGain, ducked, strip, pos, span);
 }

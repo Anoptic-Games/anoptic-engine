@@ -791,7 +791,7 @@ static void synth_apply_bar(AnoSynth *s, const AnoSynthBar *bar)
             if (s->sweeps[i].barsLeft > 0)
                 continue;
             ano_dsp_asr_init(&s->sweeps[i].env, bar->barSeconds * 0.9f, 0.0f,
-                             bar->barSeconds * 1.5f, 1.5f, (float)s->sampleRate);
+                             bar->barSeconds * 1.5f, (float)s->sampleRate);
             s->sweeps[i].barsLeft = 6;
             break;
         }
@@ -836,7 +836,7 @@ static void synth_spawn_note(AnoSynth *s, AnoSynthNote *n)
         for (uint32_t i = 0; i < ANO_SYNTH_MAX_DUCKS; ++i) {
             if (s->duckLive[i])
                 continue;
-            ano_dsp_asr_init(&s->ducks[i], 0.001f, 0.02f, 0.28f, 2.0f, (float)s->sampleRate);
+            ano_dsp_asr_init(&s->ducks[i], 0.001f, 0.02f, 0.28f, (float)s->sampleRate);
             s->duckLive[i] = true;
             break;
         }
@@ -868,13 +868,13 @@ static void synth_render_span(AnoSynth *s, float *const *busMix, uint32_t pos, u
         float sweep = 0.0f;
         for (uint32_t i = 0; i < ANO_SYNTH_MAX_SWEEPS; ++i)
             if (s->sweeps[i].barsLeft > 0)
-                sweep += ano_dsp_asr_step(&s->sweeps[i].env);
+                sweep += ano_dsp_asr_step<AnoDspCurve::three_halves>(&s->sweeps[i].env);
         s->sweepVal = sweep;
         float duck = 0.0f;
         for (uint32_t i = 0; i < ANO_SYNTH_MAX_DUCKS; ++i) {
             if (!s->duckLive[i])
                 continue;
-            duck += ano_dsp_asr_step(&s->ducks[i]);
+            duck += ano_dsp_asr_step<AnoDspCurve::square>(&s->ducks[i]);
             if (ano_dsp_asr_done(&s->ducks[i]))
                 s->duckLive[i] = false;
         }
@@ -888,24 +888,9 @@ static void synth_render_span(AnoSynth *s, float *const *busMix, uint32_t pos, u
         AnoSynthVoice *v = &s->voices[i];
         if (!v->active)
             continue;
-        ano_synth_voice_span_coef(s, v, staged);
         float *strip = busMix[ANO_SYNTH_BUS_STRIP0 + v->layer];
         bool ducked = v->layer == ANO_MUSIC_PAD || v->layer == ANO_MUSIC_ARP;
-        for (uint32_t n = 0; n < span; ++n) {
-            if (v->age >= v->total) {
-                v->active = false;
-                break;
-            }
-            float l = 0.0f, r = 0.0f;
-            ano_synth_voice_step(s, v, staged, &l, &r);
-            if (ducked) {
-                l *= s->duckGain[n];
-                r *= s->duckGain[n];
-            }
-            strip[2u * (pos + n)]      += l;
-            strip[2u * (pos + n) + 1u] += r;
-            v->age++;
-        }
+        ano_synth_voice_render_span(s, v, staged, s->duckGain, ducked, strip, pos, span);
     }
 
     // shimmer: granulate pad history an octave up
