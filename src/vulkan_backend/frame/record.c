@@ -13,6 +13,147 @@
 #include "vulkan_backend/shadow/shadow.h"
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/frame/frame.h"
+#include "vulkan_backend/frame/pass_schema.h"
+
+static constexpr auto frame_pass_enumerators =
+    std::define_static_array(std::meta::enumerators_of(^^AnoFramePass));
+
+template<AnoFramePass Pass>
+static inline void record_shared_compute_pass(VkCommandBuffer cmd, uint32_t entityCount,
+                                              uint32_t streamCount, uint32_t lightCount)
+{
+    constexpr RenderPassDef pass = ano_frame_pass<Pass>();
+    constexpr PipelineType Prototype = pass.prototype;
+    static_assert(pass.type == PASS_COMPUTE && !pass.perView);
+    static_assert(pass.dispatchY == 0 && pass.dispatchZ == 0);
+    static_assert(Prototype == PIPELINE_COMPUTE_UPDATE
+                  || Prototype == PIPELINE_COMPUTE_SCATTER
+                  || Prototype == PIPELINE_COMPUTE_LIGHTSETUP
+                  || Prototype == PIPELINE_COMPUTE_SHADOWSETUP
+                  || Prototype == PIPELINE_COMPUTE_CULL);
+
+    if constexpr (Prototype == PIPELINE_COMPUTE_SCATTER)
+        if (streamCount == 0)
+            return;
+
+    if constexpr (Prototype == PIPELINE_COMPUTE_CULL) {
+        if (!ctx.deviceCapabilities.drawIndirectCount) {
+            VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
+                ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
+            vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0,
+                cmdStride * rendererState.indirectBuffer.capacity * ano_draw_partition_count(), 0);
+        }
+        vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
+            sizeof(uint32_t) * ano_draw_partition_count(), 0);
+
+        VkMemoryBarrier fillBarrier = {};
+        fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &fillBarrier, 0, NULL, 0, NULL);
+
+        if (!rendererState.asyncHiz) {
+            uint32_t hizPrevSlot = (rendererState.frameIndex + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
+            VkImageMemoryBarrier hizRead[ANO_VIEW_COUNT] = {};
+            for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
+                hizRead[v].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                hizRead[v].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                hizRead[v].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                hizRead[v].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                hizRead[v].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                hizRead[v].image = rendererState.frames[hizPrevSlot].views[v].hizImage;
+                hizRead[v].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                hizRead[v].subresourceRange.levelCount = rendererState.frames[hizPrevSlot].views[v].hizMipCount;
+                hizRead[v].subresourceRange.layerCount = 1;
+                hizRead[v].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                hizRead[v].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            }
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                    | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
+                0, 0, NULL, 0, NULL, ANO_VIEW_COUNT, hizRead);
+        }
+    }
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        rendererState.prototypes[Prototype].implementations[pass.implementationIndex].pipeline);
+
+    VkDescriptorSet set;
+    if constexpr (Prototype == PIPELINE_COMPUTE_UPDATE)
+        set = rendererState.frames[rendererState.frameIndex].updateSet;
+    else if constexpr (Prototype == PIPELINE_COMPUTE_SCATTER)
+        set = rendererState.frames[rendererState.frameIndex].scatterSet;
+    else if constexpr (Prototype == PIPELINE_COMPUTE_SHADOWSETUP)
+        set = rendererState.frames[rendererState.frameIndex].shadow.setupSet;
+    else if constexpr (Prototype == PIPELINE_COMPUTE_LIGHTSETUP)
+        set = rendererState.frames[rendererState.frameIndex].lightsetupSet;
+    else
+        set = rendererState.frames[rendererState.frameIndex].cullSet;
+
+    uint32_t dynCount = 0;
+    const uint32_t* dynOff = NULL;
+    if constexpr (Prototype == PIPELINE_COMPUTE_SCATTER) {
+        dynCount = 1;
+        dynOff = &rendererState.transformStream.dynOffset[rendererState.frameIndex];
+    }
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        rendererState.prototypes[Prototype].layout, 0, 1, &set, dynCount, dynOff);
+
+    if constexpr (Prototype == PIPELINE_COMPUTE_UPDATE)
+        vkCmdPushConstants(cmd, rendererState.prototypes[Prototype].layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &entityCount);
+    else if constexpr (Prototype == PIPELINE_COMPUTE_SCATTER)
+        vkCmdPushConstants(cmd, rendererState.prototypes[Prototype].layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &streamCount);
+    else if constexpr (Prototype == PIPELINE_COMPUTE_LIGHTSETUP)
+        vkCmdPushConstants(cmd, rendererState.prototypes[Prototype].layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &lightCount);
+
+    uint32_t dispatchX;
+    if constexpr (Prototype == PIPELINE_COMPUTE_SHADOWSETUP)
+        dispatchX = (ANO_SHADOW_FRUSTUM_COUNT + 63u) / 64u;
+    else if constexpr (Prototype == PIPELINE_COMPUTE_LIGHTSETUP)
+        dispatchX = (lightCount + 63u) / 64u;
+    else {
+        const uint32_t workItems = Prototype == PIPELINE_COMPUTE_SCATTER
+            ? streamCount : entityCount;
+        if constexpr (pass.dispatchX == 0)
+            dispatchX = (workItems + 255u) / 256u;
+        else
+            dispatchX = pass.dispatchX;
+    }
+    vkCmdDispatch(cmd, dispatchX, 1, 1);
+
+    VkMemoryBarrier memoryBarrier = {};
+    memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    if constexpr (Prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
+        VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
+            ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
+            | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
+        memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+    } else if constexpr (Prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
+        // Shadow setup carries the shared barrier for these disjoint writes.
+    } else if constexpr (Prototype == PIPELINE_COMPUTE_UPDATE
+                         || Prototype == PIPELINE_COMPUTE_SCATTER) {
+        memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+    } else {
+        VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
+            ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
+            | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
+        memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT
+            | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | geomStage | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+    }
+}
 
 // Record this frame slot's command buffer(s). imageIndex = acquired swapchain image.
 // False on begin/end refusal. No vkCmd* without a begun buffer.
@@ -80,118 +221,13 @@ bool recordCommandBuffer(uint32_t imageIndex)
     if (entityCount > 0) {
         uint32_t streamCount = rendererState.transformStream.count[rendererState.frameIndex];
         uint32_t lightCount = rendererState.lightBuffer.count; // active light rows
-        for (int p = 0; p < (int)ano_frame_pass_count; p++) {
-            const RenderPassDef* pass = &ano_frame_passes[p];
-            if (pass->type != PASS_COMPUTE || pass->perView) continue;
-            if (pass->prototype == PIPELINE_COMPUTE_SCATTER && streamCount == 0)
-                continue; // nothing streamed this frame
-
-            if (pass->prototype == PIPELINE_COMPUTE_CULL) {
-                // Zero the per-partition draw counts, and fill the full indirect buffer only on the fallback path.
-                if (!ctx.deviceCapabilities.drawIndirectCount) {
-                    VkDeviceSize cmdStride = sizeof(VkDrawIndexedIndirectCommand) > sizeof(VkDrawMeshTasksIndirectCommandEXT)
-                        ? sizeof(VkDrawIndexedIndirectCommand) : sizeof(VkDrawMeshTasksIndirectCommandEXT);
-                    vkCmdFillBuffer(cmd, rendererState.indirectBuffer.buffer[rendererState.frameIndex], 0,
-                        cmdStride * rendererState.indirectBuffer.capacity * ano_draw_partition_count(), 0);
-                }
-                vkCmdFillBuffer(cmd, rendererState.culling.drawCountBuffer[rendererState.frameIndex], 0,
-                    sizeof(uint32_t) * ano_draw_partition_count(), 0);
-
-                VkMemoryBarrier fillBarrier = {};
-                fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0, 1, &fillBarrier, 0, NULL, 0, NULL);
-
-                // Prev-slot Hi-Z writes -> this cull's reads.
-                if (!rendererState.asyncHiz) {
-                    uint32_t hizPrevSlot = (rendererState.frameIndex + MAX_FRAMES_IN_FLIGHT - 1u) % MAX_FRAMES_IN_FLIGHT;
-                    VkImageMemoryBarrier hizRead[ANO_VIEW_COUNT] = {};
-                    for (uint32_t v = 0; v < ANO_VIEW_COUNT; v++) {
-                        hizRead[v].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                        hizRead[v].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                        hizRead[v].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                        hizRead[v].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                        hizRead[v].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                        hizRead[v].image = rendererState.frames[hizPrevSlot].views[v].hizImage;
-                        hizRead[v].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                        hizRead[v].subresourceRange.levelCount = rendererState.frames[hizPrevSlot].views[v].hizMipCount;
-                        hizRead[v].subresourceRange.layerCount = 1;
-                        hizRead[v].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                        hizRead[v].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                    }
-                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                            | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0),
-                        0, 0, NULL, 0, NULL, ANO_VIEW_COUNT, hizRead);
-                }
-            }
-
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, rendererState.prototypes[pass->prototype].implementations[0].pipeline);
-
-            VkDescriptorSet set =
-                pass->prototype == PIPELINE_COMPUTE_UPDATE      ? rendererState.frames[rendererState.frameIndex].updateSet :
-                pass->prototype == PIPELINE_COMPUTE_SCATTER     ? rendererState.frames[rendererState.frameIndex].scatterSet :
-                pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP ? rendererState.frames[rendererState.frameIndex].shadow.setupSet :
-                pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP  ? rendererState.frames[rendererState.frameIndex].lightsetupSet :
-                                                                  rendererState.frames[rendererState.frameIndex].cullSet;
-
-            // Scatter binding 1 is STORAGE_BUFFER_DYNAMIC, bound by per-frame dynamic offset (others have none).
-            uint32_t dynCount = pass->prototype == PIPELINE_COMPUTE_SCATTER ? 1u : 0u;
-            const uint32_t* dynOff = pass->prototype == PIPELINE_COMPUTE_SCATTER
-                ? &rendererState.transformStream.dynOffset[rendererState.frameIndex] : NULL;
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                rendererState.prototypes[pass->prototype].layout, 0, 1, &set, dynCount, dynOff);
-
-            if (pass->prototype == PIPELINE_COMPUTE_UPDATE) {
-                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &entityCount);
-            } else if (pass->prototype == PIPELINE_COMPUTE_SCATTER) {
-                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &streamCount);
-            } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
-                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &lightCount);
-            }
-
-            uint32_t dispatchX;
-            if (pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
-                dispatchX = (ANO_SHADOW_FRUSTUM_COUNT + 63u) / 64u; // one invocation per shadow frustum
-            } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
-                dispatchX = (lightCount + 63u) / 64u; // one invocation per light
-            } else {
-                uint32_t workItems = pass->prototype == PIPELINE_COMPUTE_SCATTER ? streamCount : entityCount;
-                dispatchX = pass->dispatchX == 0 ? (workItems + 255) / 256 : pass->dispatchX;
-            }
-            vkCmdDispatch(cmd, dispatchX, 1, 1);
-
-            VkMemoryBarrier memoryBarrier = {};
-            memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            if (pass->prototype == PIPELINE_COMPUTE_SHADOWSETUP) {
-                // One barrier covers lightsetup + shadowsetup (disjoint writes), dst scope is COMPUTE, geom, and FRAGMENT.
-                VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
-                    ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
-                    | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
-                // UNIFORM_READ for fragments reading the packed sampling viewProjs as a UBO.
-                memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | geomStage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    0, 1, &memoryBarrier, 0, NULL, 0, NULL);
-            } else if (pass->prototype == PIPELINE_COMPUTE_LIGHTSETUP) {
-                // No barrier, shadowsetup carries the shared one above.
-            } else if (pass->prototype == PIPELINE_COMPUTE_UPDATE || pass->prototype == PIPELINE_COMPUTE_SCATTER) {
-                // update -> scatter is a WAW on streamed slots, both -> cull is a read.
-                memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0, 1, &memoryBarrier, 0, NULL, 0, NULL);
-            } else {
-                // Cull -> DRAW_INDIRECT + geom + COMPUTE (indirect + entity/compacted SSBOs).
-                VkPipelineStageFlags geomStage = (ctx.deviceCapabilities.meshShader
-                    ? VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT)
-                    | (rendererState.taskCull ? VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT : 0);
-                memoryBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | geomStage | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0, 1, &memoryBarrier, 0, NULL, 0, NULL);
+        template for (constexpr auto reflectedPass : frame_pass_enumerators) {
+            constexpr AnoFramePass passId = [:reflectedPass:];
+            if constexpr (passId != ANO_FRAME_PASS_COUNT) {
+                constexpr RenderPassDef pass = ano_frame_pass<passId>();
+                if constexpr (pass.type == PASS_COMPUTE && !pass.perView)
+                    record_shared_compute_pass<passId>(
+                        cmd, entityCount, streamCount, lightCount);
             }
         }
     }

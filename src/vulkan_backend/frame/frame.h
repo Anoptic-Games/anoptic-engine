@@ -16,12 +16,6 @@
 
 #include "vulkan_backend/structs.h"
 
-/* frame/passes.c */
-
-// The frame pass table (order encodes the depth/EQUAL contract, do not reorder).
-extern const RenderPassDef ano_frame_passes[];
-extern const uint32_t ano_frame_pass_count;
-
 /* frame/hiz.c */
 
 // Async Hi-Z build + light-cull compute CBs (drawFrame records them for the compute queue).

@@ -52,6 +52,25 @@ static inline void ano_dsp_svf_flush(AnoDspSvfState *s)
     if (s->ic2 < 1.0e-20f && s->ic2 > -1.0e-20f) s->ic2 = 0.0f;
 }
 
+template<uint32_t Mode>
+static inline float ano_dsp_svf_step(const AnoDspSvfCoef *c, AnoDspSvfState *s,
+                                     float in)
+{
+    static_assert(Mode == ANO_DSP_SVF_LOWPASS
+                  || Mode == ANO_DSP_SVF_HIGHPASS
+                  || Mode == ANO_DSP_SVF_BANDPASS);
+    float v3 = in - s->ic2;
+    float v1 = c->a1 * s->ic1 + c->a2 * v3;
+    float v2 = s->ic2 + c->a2 * s->ic1 + c->a3 * v3;
+    s->ic1 = 2.0f * v1 - s->ic1;
+    s->ic2 = 2.0f * v2 - s->ic2;
+    if constexpr (Mode == ANO_DSP_SVF_LOWPASS)
+        return v2;
+    if constexpr (Mode == ANO_DSP_SVF_BANDPASS)
+        return v1;
+    return in - c->k * v1 - v2;
+}
+
 static inline float ano_dsp_svf_step(const AnoDspSvfCoef *c, AnoDspSvfState *s,
                                      float in, uint32_t mode)
 {

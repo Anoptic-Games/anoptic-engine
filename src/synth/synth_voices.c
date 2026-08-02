@@ -442,10 +442,10 @@ static inline void voice_step(AnoSynth *s, AnoSynthVoice *v, const float *staged
         *l += ano_dsp_svf_step(&v->fc, &v->f0, sl, ANO_DSP_SVF_LOWPASS) * e;
         *r += ano_dsp_svf_step(&v->fc, &v->f1, sr, ANO_DSP_SVF_LOWPASS) * e;
     } else if constexpr (Recipe == ANO_SYNTH_RECIPE_WTPAD) {
-        AnoDspWavetable wt = { s->wtBank, ANO_SYNTH_WT_LEN, ANO_SYNTH_WT_FRAMES };
         float morph = ano_dsp_asr_step<aux0_curve<Recipe>>(&v->u.wt.morph)
                     * v->u.wt.morphAmp;
-        float smp = ano_dsp_wavetable_read(&wt, v->u.wt.ph, morph);
+        float smp = ano_dsp_wavetable_read<ANO_SYNTH_WT_LEN, ANO_SYNTH_WT_FRAMES>(
+            s->wtBank, v->u.wt.ph, morph);
         ano_dsp_phase_step(&v->u.wt.ph, v->u.wt.dt);
         float e = ano_dsp_asr_step<main_curve<Recipe>>(&v->env) * v->amp;
         float o = ano_dsp_svf_step(&v->fc, &v->f0, smp, ANO_DSP_SVF_LOWPASS) * e;

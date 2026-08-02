@@ -11,6 +11,244 @@
 #include "vulkan_backend/backend.h"
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/frame/frame.h"
+#include "vulkan_backend/frame/pass_schema.h"
+#include "vulkan_backend/pipeline_registry.h"
+
+static constexpr auto view_pass_enumerators =
+    std::define_static_array(std::meta::enumerators_of(^^AnoFramePass));
+
+static constexpr auto frame_attachment_enumerators =
+    std::define_static_array(std::meta::enumerators_of(^^AnoFrameAttachment));
+
+template<AnoFramePass Pass>
+static inline void record_view_compute_pass(VkCommandBuffer cmd, uint32_t entityCount,
+                                            ViewResources* vr)
+{
+    constexpr RenderPassDef pass = ano_frame_pass<Pass>();
+    constexpr PipelineType Prototype = pass.prototype;
+    static_assert(pass.type == PASS_COMPUTE && pass.perView);
+    static_assert(Prototype == PIPELINE_COMPUTE_LIGHTCULL);
+    if (entityCount == 0 || rendererState.asyncLc)
+        return;
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        rendererState.prototypes[Prototype].implementations[pass.implementationIndex].pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        rendererState.prototypes[Prototype].layout, 0, 1, &vr->lightcullSet, 0, NULL);
+    vkCmdDispatch(cmd, (ANO_CLUSTER_COUNT + 63u) / 64u, 1, 1);
+
+    VkMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+    };
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+}
+
+template<AnoFramePass Pass>
+static inline void record_frame_attachment_barriers(
+    VkCommandBuffer cmd, uint32_t v, ViewResources* vr)
+{
+    constexpr AnoFrameAttachmentBarrierPlan plan =
+        ano_frame_attachment_barriers<Pass>();
+    if constexpr (plan.count > 0) {
+        VkImageMemoryBarrier barriers[plan.count] = {};
+        uint32_t barrierCount = 0;
+        template for (constexpr auto reflectedAttachment :
+                      frame_attachment_enumerators) {
+            constexpr AnoFrameAttachment attachment = [:reflectedAttachment:];
+            if constexpr (attachment != AnoFrameAttachment::count) {
+                constexpr AnoFrameAttachmentBarrier contract =
+                    plan.barriers[static_cast<size_t>(attachment)];
+                if constexpr (contract.required) {
+                    VkImageMemoryBarrier& barrier = barriers[barrierCount++];
+                    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                    barrier.srcAccessMask = contract.srcAccess;
+                    barrier.dstAccessMask = contract.dstAccess;
+                    barrier.oldLayout = contract.oldLayout;
+                    barrier.newLayout = contract.newLayout;
+                    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.subresourceRange.baseMipLevel = 0;
+                    barrier.subresourceRange.levelCount = 1;
+                    barrier.subresourceRange.baseArrayLayer = 0;
+                    barrier.subresourceRange.layerCount = 1;
+                    if constexpr (attachment == AnoFrameAttachment::depth) {
+                        barrier.image = vr->depthImage;
+                        barrier.subresourceRange.aspectMask =
+                            VK_IMAGE_ASPECT_DEPTH_BIT;
+                    } else if constexpr (attachment
+                                         == AnoFrameAttachment::color) {
+                        barrier.image = rendererState.colorImage[v];
+                        barrier.subresourceRange.aspectMask =
+                            VK_IMAGE_ASPECT_COLOR_BIT;
+                    } else {
+                        static_assert(attachment == AnoFrameAttachment::pick);
+                        barrier.image = rendererState.pickIdImage[v];
+                        barrier.subresourceRange.aspectMask =
+                            VK_IMAGE_ASPECT_COLOR_BIT;
+                    }
+                }
+            }
+        }
+        vkCmdPipelineBarrier(cmd, plan.srcStages, plan.dstStages,
+            VK_DEPENDENCY_BY_REGION_BIT, 0, NULL, 0, NULL,
+            plan.count, barriers);
+    }
+}
+
+template<AnoFramePass Pass>
+static inline void begin_graphics_batch(
+    VkCommandBuffer cmd, uint32_t v, ViewResources* vr)
+{
+    constexpr RenderPassDef pass = ano_frame_pass<Pass>();
+    constexpr AnoFrameAttachmentBarrierPlan plan =
+        ano_frame_attachment_barriers<Pass>();
+    constexpr RenderPassDef lastPass = ano_frame_pass<plan.lastPass>();
+    static_assert(pass.type == PASS_GRAPHICS && pass.perView);
+    static_assert(pass.colorAttachmentCount <= 2);
+    static_assert(plan.beginsRendering);
+    static_assert(lastPass.type == PASS_GRAPHICS);
+
+    record_frame_attachment_barriers<Pass>(cmd, v, vr);
+
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
+    VkClearValue clearDepth = {};
+    clearDepth.depthStencil.depth = 1.0f;
+
+    VkRenderingAttachmentInfo color[2] = {};
+    if constexpr (pass.colorAttachmentCount > 0) {
+        color[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color[0].imageView = rendererState.colorView[v];
+        color[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color[0].resolveMode = lastPass.resolveMode;
+        if constexpr (lastPass.resolveMode != VK_RESOLVE_MODE_NONE) {
+            color[0].resolveImageView = vr->hdrColorView;
+            color[0].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
+        color[0].loadOp = pass.colorLoadOp;
+        color[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color[0].clearValue = clearColor;
+    }
+
+    if constexpr (pass.colorAttachmentCount == 2) {
+        color[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color[1].imageView = rendererState.pickIdView[v];
+        color[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color[1].loadOp = pass.colorLoadOp;
+        color[1].clearValue.color.uint32[0] = 0xFFFFFFFFu;
+        if (v == 0) {
+            color[1].resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+            color[1].resolveImageView = vr->pickIdResolveView;
+            color[1].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            color[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        } else {
+            color[1].resolveMode = VK_RESOLVE_MODE_NONE;
+            color[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        }
+    }
+
+    VkRenderingAttachmentInfo depthAttachment = {};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = vr->depthView;
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
+    depthAttachment.loadOp = pass.depthLoadOp;
+    depthAttachment.storeOp = lastPass.depthStoreOp;
+    depthAttachment.clearValue = clearDepth;
+
+    VkRenderingInfo renderingInfo = {};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea.offset = (VkOffset2D){0, 0};
+    renderingInfo.renderArea.extent = rendererState.viewExtent[v];
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = pass.colorAttachmentCount;
+    renderingInfo.pColorAttachments = pass.colorAttachmentCount == 0 ? NULL : color;
+    renderingInfo.pDepthAttachment = &depthAttachment;
+    renderingInfo.pStencilAttachment = NULL;
+
+    vkCmdBeginRendering(cmd, &renderingInfo);
+}
+
+template<AnoFramePass Pass>
+static inline void record_graphics_pass(VkCommandBuffer cmd, uint32_t v,
+                                        uint32_t entityCount, uint32_t drawSlotCount,
+                                        ViewResources* vr)
+{
+    constexpr RenderPassDef pass = ano_frame_pass<Pass>();
+    constexpr PipelineType Prototype = pass.prototype;
+    constexpr AnoPipelineSpec pipeline = ano_pipeline_spec<Prototype>();
+    static_assert(pass.type == PASS_GRAPHICS && pass.perView);
+    static_assert(pipeline.kind == AnoPipelineKind::graphics);
+    static_assert(pipeline.drawSlot != ANO_NO_DRAW_SLOT);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        rendererState.prototypes[Prototype].implementations[pass.implementationIndex].pipeline);
+
+    VkViewport viewport = {};
+    viewport.width = (float)rendererState.viewExtent[v].width;
+    viewport.height = (float)rendererState.viewExtent[v].height;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+    VkRect2D scissor = {};
+    scissor.extent = rendererState.viewExtent[v];
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        rendererState.prototypes[Prototype].layout, 0, 1, &vr->globalSet, 0, NULL);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        rendererState.prototypes[Prototype].layout, 2, 1,
+        &rendererState.frames[rendererState.frameIndex].shadow.geomSet, 0, NULL);
+
+    if (entityCount > 0) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            rendererState.prototypes[Prototype].layout, 1, 1,
+            &rendererState.bindlessTextures.set, 0, NULL);
+
+        constexpr uint32_t slot = pipeline.drawSlot;
+        uint32_t partition = v * drawSlotCount + slot;
+        uint32_t baseOffset = partition * rendererState.culling.maxEntities;
+        bool useMesh = ctx.deviceCapabilities.meshShader;
+        VkShaderStageFlags pcStage =
+            (useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
+            | VK_SHADER_STAGE_FRAGMENT_BIT
+            | (rendererState.taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
+        vkCmdPushConstants(cmd, rendererState.prototypes[Prototype].layout,
+            pcStage, 0, sizeof(uint32_t), &baseOffset);
+
+        VkBuffer indirectBuf = rendererState.indirectBuffer.buffer[rendererState.frameIndex];
+        VkBuffer drawCountBuf = rendererState.culling.drawCountBuffer[rendererState.frameIndex];
+        VkDeviceSize countOffset = (VkDeviceSize)partition * sizeof(uint32_t);
+        uint32_t maxDraws = rendererState.indirectBuffer.capacity;
+
+        if (useMesh) {
+            VkDeviceSize indirectOffset =
+                (VkDeviceSize)partition * maxDraws * sizeof(VkDrawMeshTasksIndirectCommandEXT);
+            if (ctx.deviceCapabilities.drawIndirectCount)
+                pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuf, indirectOffset,
+                    drawCountBuf, countOffset, maxDraws, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+            else
+                pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBuf, indirectOffset,
+                    entityCount, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+        } else {
+            vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer,
+                0, VK_INDEX_TYPE_UINT32);
+            VkDeviceSize indirectOffset =
+                (VkDeviceSize)partition * maxDraws * sizeof(VkDrawIndexedIndirectCommand);
+            if (ctx.deviceCapabilities.drawIndirectCount)
+                vkCmdDrawIndexedIndirectCount(cmd, indirectBuf, indirectOffset,
+                    drawCountBuf, countOffset, maxDraws, sizeof(VkDrawIndexedIndirectCommand));
+            else
+                vkCmdDrawIndexedIndirect(cmd, indirectBuf, indirectOffset,
+                    entityCount, sizeof(VkDrawIndexedIndirectCommand));
+        }
+    }
+
+    if constexpr (Prototype == PIPELINE_ADDITIVE)
+        ano_vk_text_record_world(&rendererState, cmd, rendererState.frameIndex, v);
+}
 
 // Per view light-cull then geometry into this view's HDR target + depth, reading its cull partition. Picking readback on view 0.
 void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSlotCount)
@@ -38,173 +276,24 @@ void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSl
                 0, 0, NULL, 0, NULL, 1, &hdrToColor);
         }
 
-        // Light-cull bins lights into this view's froxel grid. Async mode records dispatches into the compute-queue CB instead.
-        if (entityCount > 0 && !rendererState.asyncLc) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                rendererState.prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].pipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                rendererState.prototypes[PIPELINE_COMPUTE_LIGHTCULL].layout, 0, 1, &vr->lightcullSet, 0, NULL);
-            uint32_t lightcullDispatch = (ANO_CLUSTER_COUNT + 63u) / 64u;
-            vkCmdDispatch(cmd, lightcullDispatch, 1, 1);
-
-            VkMemoryBarrier lcBarrier = {};
-            lcBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            lcBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            lcBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 1, &lcBarrier, 0, NULL, 0, NULL);
-        }
-
-        // MSAA color + id targets are per view. No inter-view reuse barrier.
-        for (int p = 0; p < (int)ano_frame_pass_count; p++) {
-            const RenderPassDef* pass = &ano_frame_passes[p];
-            if (pass->type != PASS_GRAPHICS) continue;
-
-            // Depth write->read hazard.
-            if (pass->depthBarrierBefore) {
-                VkImageMemoryBarrier depthWaw = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-                depthWaw.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                depthWaw.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                depthWaw.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                depthWaw.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                depthWaw.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                depthWaw.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                depthWaw.image = vr->depthImage;
-                depthWaw.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                    0, 0, NULL, 0, NULL, 1, &depthWaw);
-            }
-
-            VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
-            VkClearValue clearDepth = {};
-            clearDepth.depthStencil.depth = 1.0f;
-            clearDepth.depthStencil.stencil = 0;
-
-            // color[0] = HDR, color[1] = R32_UINT picking id (only the opaque pass declares 2).
-            VkRenderingAttachmentInfo color[2] = {};
-            color[0].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            color[0].imageView = rendererState.colorView[v]; // this view's MSAA color
-            color[0].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            color[0].resolveMode = pass->resolveMode;
-            if (pass->resolveMode != VK_RESOLVE_MODE_NONE) {
-                color[0].resolveImageView = vr->hdrColorView; // resolve into this view's HDR target
-                color[0].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            }
-            color[0].loadOp = pass->colorLoadOp;
-            color[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            color[0].clearValue = clearColor;
-
-            if (pass->colorAttachmentCount == 2) {
-                // Picking id MSAA image (no-hit sentinel). Integer resolve SAMPLE_ZERO. View 0 only.
-                color[1].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-                color[1].imageView = rendererState.pickIdView[v];
-                color[1].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                // CLEAR only with the first opaque pass. The two-sided lane LOADs its ids.
-                color[1].loadOp = pass->colorLoadOp;
-                color[1].clearValue.color.uint32[0] = 0xFFFFFFFFu;
-                if (v == 0) {
-                    color[1].resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
-                    color[1].resolveImageView = vr->pickIdResolveView;
-                    color[1].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                    color[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                } else {
-                    color[1].resolveMode = VK_RESOLVE_MODE_NONE;
-                    color[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        // The reflected declaration order is light-cull followed by the geometry lanes.
+        template for (constexpr auto reflectedPass : view_pass_enumerators) {
+            constexpr AnoFramePass passId = [:reflectedPass:];
+            if constexpr (passId != ANO_FRAME_PASS_COUNT) {
+                constexpr RenderPassDef pass = ano_frame_pass<passId>();
+                if constexpr (pass.perView && pass.type == PASS_COMPUTE)
+                    record_view_compute_pass<passId>(cmd, entityCount, vr);
+                else if constexpr (pass.perView && pass.type == PASS_GRAPHICS) {
+                    constexpr AnoFrameAttachmentBarrierPlan plan =
+                        ano_frame_attachment_barriers<passId>();
+                    if constexpr (plan.beginsRendering)
+                        begin_graphics_batch<passId>(cmd, v, vr);
+                    record_graphics_pass<passId>(
+                        cmd, v, entityCount, drawSlotCount, vr);
+                    if constexpr (plan.endsRendering)
+                        vkCmdEndRendering(cmd);
                 }
             }
-
-            VkRenderingAttachmentInfo depthAttachment = {};
-            depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAttachment.imageView = vr->depthView;
-            depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depthAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
-            depthAttachment.loadOp = pass->depthLoadOp;
-            depthAttachment.storeOp = pass->depthStoreOp;
-            depthAttachment.clearValue = clearDepth;
-
-            VkRenderingInfo renderingInfo = {};
-            renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-            renderingInfo.renderArea.offset = (VkOffset2D){0, 0};
-            renderingInfo.renderArea.extent = rendererState.viewExtent[v];
-            renderingInfo.layerCount = 1;
-            renderingInfo.colorAttachmentCount = pass->colorAttachmentCount;
-            renderingInfo.pColorAttachments = color;
-            renderingInfo.pDepthAttachment = &depthAttachment;
-            renderingInfo.pStencilAttachment = NULL;
-
-            vkCmdBeginRendering(cmd, &renderingInfo);
-
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rendererState.prototypes[pass->prototype].implementations[pass->implementationIndex].pipeline);
-
-            VkViewport viewport = {};
-            viewport.x = 0.0f;
-            viewport.y = 0.0f;
-            viewport.width = (float)(rendererState.viewExtent[v].width);
-            viewport.height = (float)(rendererState.viewExtent[v].height);
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            vkCmdSetViewport(cmd, 0, 1, &viewport);
-
-            VkRect2D scissor = {};
-            scissor.offset = (VkOffset2D){0, 0};
-            scissor.extent = rendererState.viewExtent[v];
-            vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-            // This view's global set selects its camera UBO + froxel light lists.
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                rendererState.prototypes[pass->prototype].layout, 0, 1, &vr->globalSet, 0, NULL);
-            // Set 2: shadow frustums + atlas + per-light info (fragment PCF-samples shadows).
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                rendererState.prototypes[pass->prototype].layout, 2, 1,
-                &rendererState.frames[rendererState.frameIndex].shadow.geomSet, 0, NULL);
-
-            if (entityCount > 0) {
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    rendererState.prototypes[pass->prototype].layout, 1, 1, &rendererState.bindlessTextures.set, 0, NULL);
-
-                // Compacted draws in this (view, draw slot) partition = view*drawSlotCount + slot.
-                uint32_t slot = ano_draw_slot_of(pass->prototype);
-                uint32_t partition = v * drawSlotCount + slot;
-                uint32_t baseOffset = partition * rendererState.culling.maxEntities;
-                bool useMesh = ctx.deviceCapabilities.meshShader;
-                // Must equal the layout's push range flags exactly.
-                VkShaderStageFlags pcStage = (useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
-                    | VK_SHADER_STAGE_FRAGMENT_BIT // widened push range
-                    | (rendererState.taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
-                vkCmdPushConstants(cmd, rendererState.prototypes[pass->prototype].layout, pcStage, 0, sizeof(uint32_t), &baseOffset);
-
-                VkBuffer indirectBuf = rendererState.indirectBuffer.buffer[rendererState.frameIndex];
-                VkBuffer drawCountBuf = rendererState.culling.drawCountBuffer[rendererState.frameIndex];
-                VkDeviceSize countOffset = (VkDeviceSize)partition * sizeof(uint32_t);
-                uint32_t maxDraws = rendererState.indirectBuffer.capacity;
-
-                if (useMesh) {
-                    VkDeviceSize indirectOffset = (VkDeviceSize)partition * maxDraws * sizeof(VkDrawMeshTasksIndirectCommandEXT);
-                    if (ctx.deviceCapabilities.drawIndirectCount) {
-                        pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuf, indirectOffset,
-                            drawCountBuf, countOffset, maxDraws, sizeof(VkDrawMeshTasksIndirectCommandEXT));
-                    } else {
-                        pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBuf, indirectOffset,
-                            entityCount, sizeof(VkDrawMeshTasksIndirectCommandEXT));
-                    }
-                } else {
-                    vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                    VkDeviceSize indirectOffset = (VkDeviceSize)partition * maxDraws * sizeof(VkDrawIndexedIndirectCommand);
-                    if (ctx.deviceCapabilities.drawIndirectCount) {
-                        vkCmdDrawIndexedIndirectCount(cmd, indirectBuf, indirectOffset,
-                            drawCountBuf, countOffset, maxDraws, sizeof(VkDrawIndexedIndirectCommand));
-                    } else {
-                        vkCmdDrawIndexedIndirect(cmd, indirectBuf, indirectOffset,
-                            entityCount, sizeof(VkDrawIndexedIndirectCommand));
-                    }
-                }
-            }
-
-            // World-space text panel drawn in the additive pass, resolves with the scene.
-            if (pass->prototype == PIPELINE_ADDITIVE)
-                ano_vk_text_record_world(&rendererState, cmd, rendererState.frameIndex, v);
-
-            vkCmdEndRendering(cmd);
         }
 
         // Copy the cursor texel from view 0's resolved id image into this frame's readback buffer. Skip on a degenerate extent.

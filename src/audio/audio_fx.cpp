@@ -6,6 +6,7 @@
 // Insert-effect set. Mixer thread (or offline caller). No alloc/locks after init.
 
 #include "audio_fx.h"
+#include "cpp/ano_reflect.h"
 #include "cpp/ano_types.h"
 
 #include <math.h>
@@ -320,21 +321,32 @@ void ano_audio_fx_set(AnoAudioFx *fx, uint32_t paramId, float value)
 
 /* processing */
 
-[[gnu::always_inline]] static inline void
-fx_filter(AnoAudioFxFilter *f, float *m, uint32_t frames, float fs, FilterMode mode)
+template<AnoAudioFilterMode Mode>
+static void fx_filter(AnoAudioFxFilter *f, float *m, uint32_t frames, float fs)
 {
+    static_assert(Mode > ANO_AUDIO_FILTER_OFF && Mode < ANO_AUDIO_FILTER_COUNT);
     float fc = ano_audio_smooth_step(&f->cutoff);
     float q  = ano_audio_smooth_step(&f->q);
-    const uint32_t rawMode = static_cast<uint32_t>(ano::underlying(mode.get()));
     ano_dsp_svf_coef(&f->c, fc, q, fs);
     ano_dsp_svf_flush(&f->s[0]);
     ano_dsp_svf_flush(&f->s[1]);
     for (uint32_t i = 0; i < frames; ++i) {
-        m[2u * i] = ano_dsp_svf_step(&f->c, &f->s[0], m[2u * i], rawMode);
-        m[2u * i + 1u] = ano_dsp_svf_step(
-            &f->c, &f->s[1], m[2u * i + 1u], rawMode);
+        m[2u * i] = ano_dsp_svf_step<static_cast<uint32_t>(Mode)>(
+            &f->c, &f->s[0], m[2u * i]);
+        m[2u * i + 1u] = ano_dsp_svf_step<static_cast<uint32_t>(Mode)>(
+            &f->c, &f->s[1], m[2u * i + 1u]);
     }
 }
+
+using FilterKernel = void (*)(AnoAudioFxFilter *, float *, uint32_t, float);
+
+static_assert(ano::reflected_enum_domain<AnoAudioFilterMode>.valid);
+static constexpr auto filter_kernels =
+    ano::reflect_enum_values<AnoAudioFilterMode, FilterKernel,
+                             ANO_AUDIO_FILTER_COUNT - 1u, 1u>(
+        []<auto enumerator>() consteval {
+            return &fx_filter<([:enumerator:])>;
+        });
 
 static void fx_eq3(AnoAudioFxEq3 *e, float *m, uint32_t frames, float fs)
 {
@@ -531,7 +543,8 @@ void ano_audio_fx_process(AnoAudioFx *fx, float *stereo, uint32_t frames, uint32
         const FilterMode mode = filter_mode(fx->u.filter.mode);
         if (mode.get() == ANO_AUDIO_FILTER_OFF)
             return;
-        fx_filter(&fx->u.filter, stereo, frames, fs, mode);
+        const size_t index = static_cast<size_t>(ano::underlying(mode.get())) - 1u;
+        filter_kernels.values[index](&fx->u.filter, stereo, frames, fs);
         return;
     }
 

@@ -19,6 +19,35 @@ typedef struct AnoDspWavetable
     uint32_t     frameCount;
 } AnoDspWavetable;
 
+template<uint32_t FrameLen, uint32_t FrameCount>
+static inline float ano_dsp_wavetable_read(const float *bank, float phase, float morph)
+{
+    static_assert(FrameLen >= 2u);
+    static_assert(FrameCount >= 1u);
+    if (morph < 0.0f) morph = 0.0f;
+    if (morph > 0.999f) morph = 0.999f;
+    float fpos = morph * (float)(FrameCount - 1u);
+    uint32_t f0 = (uint32_t)fpos;
+    float ff = fpos - (float)f0;
+    uint32_t f1 = f0 + 1u >= FrameCount ? f0 : f0 + 1u;
+
+    float spos = phase * (float)FrameLen;
+    uint32_t s0 = (uint32_t)spos;
+    float sf = spos - (float)s0;
+    if (s0 >= FrameLen) s0 = FrameLen - 1u;
+    uint32_t s1;
+    if constexpr ((FrameLen & (FrameLen - 1u)) == 0u)
+        s1 = (s0 + 1u) & (FrameLen - 1u);
+    else
+        s1 = s0 + 1u >= FrameLen ? 0u : s0 + 1u;
+
+    const float *a = bank + (size_t)f0 * FrameLen;
+    const float *b = bank + (size_t)f1 * FrameLen;
+    float va = a[s0] + (a[s1] - a[s0]) * sf;
+    float vb = b[s0] + (b[s1] - b[s0]) * sf;
+    return va + (vb - va) * ff;
+}
+
 // phase [0,1). morph [0,1) clamped here.
 static inline float ano_dsp_wavetable_read(const AnoDspWavetable *w, float phase, float morph)
 {
