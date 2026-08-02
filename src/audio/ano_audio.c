@@ -62,9 +62,9 @@ static AnoAudioBackend backend_env_override(AnoAudioBackend want)
     const char *env = getenv("ANO_AUDIO_BACKEND");
     if (!env || !env[0])
         return want;
-    for (const AnoAudioBackendSpec& spec : ANO_AUDIO_BACKEND_REGISTRY.values)
-        if (strcmp(env, spec.name) == 0)
-            return spec.backend;
+    for (size_t i = 0; i < ANO_AUDIO_BACKEND_COUNT; ++i)
+        if (strcmp(env, ANO_AUDIO_BACKEND_REGISTRY.names[i]) == 0)
+            return static_cast<AnoAudioBackend>(i + 1u);
     ano_log(ANO_WARN, "audio: unknown ANO_AUDIO_BACKEND '%s'; ignored.", env);
     return want;
 }
