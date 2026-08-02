@@ -1,0 +1,4 @@
+interface:
+  display_name: "Anoptic C+Ultra"
+  short_description: "Safe, modern C++26 in a C-like engine style"
+  default_prompt: "Use $anoptic-c-ultra to implement this in Anoptic's safe, C-like C++26 subset."

@@ -1,7 +1,6 @@
 ---
 name: tersify
 description: Simplify comments and local names in requested files without changing behavior or deleting operational knowledge.
-argument-hint: "[files or module]"
 ---
 
 # Pass

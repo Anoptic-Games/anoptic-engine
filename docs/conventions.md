@@ -1,43 +1,20 @@
-# Conventions of the Anoptic Engine
+# Anoptic Engine conventions
 
-Formally confirmed conventions and stylistic guidelines for Anoptic Engine.
+## C+Ultra
 
+In-tree `.c` files compile as C++26 while retaining C-shaped source, data layout, and filenames. Use lambdas, namespaces, strong types, concepts, templates, `constexpr`, `consteval`, and reflection where they remove runtime work or duplicated declarations. Prefer plain data and value semantics. Do not introduce inheritance, virtual polymorphism, RTTI, exceptions, or unnecessary ownership frameworks. Preserve measured hot-path behavior and the `-nostdlib++` build.
 
-## Include Policy
+## Modules
 
-C has no namespaces or packages. Module discipline keeps the architecture working.
+- Public interfaces live in `include/anoptic_<module>.h`; implementations live in `src/<module>/`.
+- Cross-module calls use public headers and C ABI surfaces where practical. Public engine functions begin with `ano_`.
+- Private helpers stay inside `src/<module>/`; use namespaces for private C++ names.
+- Each source module owns its `CMakeLists.txt`.
 
-### Interfaces
+Wrap a foreign library behind an Anoptic interface when it is broadly used or platform-dependent. Otherwise follow that library's native calling convention.
 
-A module has a surface (interface) and internals (implementation). Anoptic uses modules for platformatization (x64 Windows, x64 Linux, aarch64 MacOS on Apple Silicon), dependency updates, and parallel work on separate parts.
+## Safety and builds
 
-Module boundaries are arbitrary. Group by common sense.
+Express invariants structurally, in types, or at compile time before adding runtime guards. Keep checks at untrusted and foreign boundaries.
 
-C's `.h` / `.c` split matches that surface / internals split.
-
-> CONVENTION: It might be more helpful to think of `.h` as Interface Files, and of `.c` as Implementation Files.
-
-Fun Fact for 2026: This modularization also makes it easier for Large Language Models to know what exactly they're working on, and to avoid overstepping into code you don't want them touching. It even helps you save on input tokens!
-
-### anoptic_[Module].h
-
-Module interfaces live in `include/anoptic_<modulename>.h`. Includeable anywhere. Cross-module use always goes through these headers. Implementations live in `src/<modulename>/`.
-
-> CONVENTION: a function defined in an anoptic module interface always begins with `ano_` !
-
-### Intramodular helper includes
-
-A module may keep private `.h` helpers inside `src/<module>/` that other modules never include. Each `src/` subdirectory has its own CMakeLists.txt.
-
-### External libraries
-
-External libraries follow their own calling conventions. Read their docs. Includes OS handles, stdlib, pthread, glibc, Vulkan, etc.
-
-> CONVENTION: When an external library is used all over different modules, it might be a good idea to wrap it inside of an `include/anoptic_module.h` !
-> CONVENTION: When a library is platform-dependant and broadly used inside of many modules, it should always be wrapped inside of an `include/anoptic_module.h` (SEE: anoptic_threads.h and its implementation).
-
-## Debugging
-
-DEBUG BUILD separate from RELEASE BUILD. Debug may add extra code (e.g. verbose errors) behind ifdef; never compiled into Release.
-
-> CONVENTION: an interface function beginning with `ano_debug_` is only included in Debug builds, and expands to ` ((void)0)` otherwise!
+Debug-only diagnostics must not enter Release. Public `ano_debug_*` operations compile to `((void)0)` outside Debug.

@@ -1,7 +1,6 @@
 ---
 name: bench-fps
 description: Run Anoptic's complete cross-resolution FPS/GPU-pass sweep and record its benchmark report. Use only for an explicitly requested full sweep, publication baseline, or resolution-dependence study. Never use for a quick single-resolution A/B.
-argument-hint: "[report label/config; optional --dur, --env, --no-menu, or --exe flags]"
 ---
 
 # Full sweep

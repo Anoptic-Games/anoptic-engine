@@ -1,0 +1,4 @@
+interface:
+  display_name: "Place Invariants"
+  short_description: "Move correctness into structure and types"
+  default_prompt: "Use $invariants to place this correctness obligation at its strongest enforceable layer."

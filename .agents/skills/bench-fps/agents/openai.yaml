@@ -1,0 +1,4 @@
+interface:
+  display_name: "Full FPS Sweep"
+  short_description: "Run the complete Anoptic resolution sweep"
+  default_prompt: "Use $bench-fps to run and document the complete FPS resolution sweep."

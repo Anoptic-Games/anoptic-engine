@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tersify Code"
+  short_description: "Trim comments without losing constraints"
+  default_prompt: "Use $tersify to simplify these comments and names without changing behavior."

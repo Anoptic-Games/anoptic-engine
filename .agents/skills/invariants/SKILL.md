@@ -1,7 +1,6 @@
 ---
 name: invariants
 description: Place a verified correctness obligation at its strongest enforceable layer. Use when fixing bugs, reviewing guards, or designing safe Anoptic C+Ultra interfaces.
-argument-hint: "[bug, guard site, or finding]"
 ---
 
 # Placement order
