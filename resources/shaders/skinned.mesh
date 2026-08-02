@@ -1,5 +1,8 @@
 #version 460
 #extension GL_EXT_mesh_shader : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // SKELETON: not in shader manifest / any pipeline.
 // PIPELINE_SKINNED draw: flat.mesh + bone palette. Frag: flat.frag.
@@ -10,19 +13,10 @@
 layout(local_size_x = 64) in;
 layout(triangles, max_vertices = 64, max_primitives = 126) out;
 
-layout(set = 0, binding = 0) uniform GlobalUBO {
-    mat4  view;
-    mat4  proj;
-    float time;
-    float deltaTime;
-    uint  frameCount;
-    uint  lightCount;
-    vec4  cameraPos;
-} global;
+layout(set = 0, binding = 0) uniform GlobalUBO { GlobalData global; };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO { mat4 transforms[]; } transformBuf;
 
-struct PackedVertex { float px, py, pz; float nx, ny, nz; float u, v; };
 layout(set = 0, binding = 4, std430) readonly buffer VertexBuffer { PackedVertex vertices[]; } vertexBuf;
 
 // Parallel skin-attribute stream: 4 joint indices + 4 weights per vertex.

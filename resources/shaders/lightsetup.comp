@@ -1,4 +1,7 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // Per-light fragment runtime precompute (one inv/light).
 // World pos/dir from entity transform; pack radiance/range/cone/type into one 64B LightRuntime.
@@ -10,35 +13,10 @@ layout(set = 0, binding = 0) readonly buffer TransformSSBO {
     mat4 transforms[];
 };
 
-// Must match the std430 LightData mirror in flat.frag / transmission.frag / lightcull.comp (80 bytes).
-struct LightData {
-    vec3  color;
-    float intensity;
-    float range;
-    float innerConeCos;
-    float outerConeCos;
-    uint  type;
-    uint  transformIndex;
-    uint  enabled;
-    uint  pad0;
-    uint  pad1;
-    vec3  localOffset; // model-space offset; world pos = transforms[transformIndex] * vec4(offset,1)
-    uint  pad2;
-    vec3  localDir;    // model-space aim; world fwd = normalize(mat3(transforms[transformIndex]) * localDir)
-    uint  pad3;
-};
-
 layout(set = 0, binding = 1) readonly buffer LightSSBO {
     LightData lights[];
 };
 
-// Consumed by flat.frag / transmission.frag (set 0 binding 12). Layout MUST match their LightRuntime.
-struct LightRuntime {
-    vec4 posRange;   // xyz = world position,  w = range
-    vec4 dirType;    // xyz = world forward,    w = float(type)
-    vec4 radInner;   // xyz = color*intensity,  w = innerConeCos
-    vec4 outer;      // x   = outerConeCos,     yzw reserved
-};
 layout(set = 0, binding = 2) writeonly buffer LightRuntimeSSBO {
     LightRuntime entries[];
 };

@@ -196,7 +196,7 @@ bool createLightRuntimeBuffer(VulkanContext* ctx, TransformBuffer* buf, uint32_t
     buf->capacity = maxLights;
     buf->count = 0;
 
-    VkDeviceSize bufferSize = (VkDeviceSize)(sizeof(float) * 16u) * maxLights; // 4x vec4 LightRuntime = 64B
+    VkDeviceSize bufferSize = (VkDeviceSize)sizeof(GpuLightRuntime) * maxLights;
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         VkBufferCreateInfo bufferInfo = {};
@@ -294,7 +294,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     if (getenv("ANO_HIZ_ON")) state->hizEnable[0] = 1u;
     state->shadowLodBias = ANO_SHADOW_LOD_BIAS_DEFAULT; // shadow LOD offset relative to view-0
     
-    VkDeviceSize meshDataSize = sizeof(uint32_t) * 9 * maxMeshes; // MeshData 9 u32 (8 + lodCount)
+    VkDeviceSize meshDataSize = sizeof(GpuMeshData) * maxMeshes;
     VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
     VkDeviceSize drawCountSize = sizeof(uint32_t) * ano_draw_partition_count();
     VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * ano_draw_partition_count();
@@ -303,7 +303,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     VkDeviceSize uboSize = sizeof(CullUBO);
     
     // Per-slot mesh/material, ×1 device-local + delta staging.
-    if (!slot_upload_create(&state->culling.entity, maxEntities, sizeof(uint32_t) * 2u, SLOT_STAGING_INIT, false))
+    if (!slot_upload_create(&state->culling.entity, maxEntities, sizeof(GpuEntityInfo), SLOT_STAGING_INIT, false))
         return false;
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -318,7 +318,8 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
             ano_log(ANO_FATAL, "Failed to create mesh data buffer!");
             return false;
         }
-        state->culling.meshDataMapped[i] = state->culling.meshDataAllocs[i].mapped;
+        state->culling.meshDataMapped[i] =
+            static_cast<GpuMeshData*>(state->culling.meshDataAllocs[i].mapped);
 
         // Mesh Bounds Buffer
         VkBufferCreateInfo boundsInfo = {};

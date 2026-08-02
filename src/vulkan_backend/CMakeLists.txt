@@ -42,4 +42,5 @@ target_sources(anoptic_render PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/render_slots.c
 	${CMAKE_CURRENT_SOURCE_DIR}/text_raster.c
 	${CMAKE_CURRENT_SOURCE_DIR}/ui_raster.c
+	${CMAKE_CURRENT_SOURCE_DIR}/gpu_abi_schema.c
 )

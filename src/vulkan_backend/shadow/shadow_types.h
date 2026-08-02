@@ -45,7 +45,7 @@ typedef struct ShadowFrustumConfig {
     uint32_t lightIndex;   // index into the light buffer
     uint32_t lightType;    // LightType
     uint32_t faceIndex;    // cube face [0,6) for point lights; 0 otherwise
-    uint32_t active;       // 0 = inactive, 1 = live
+    uint32_t live;         // 0 = inactive, 1 = live
 } ShadowFrustumConfig;
 
 // CPU-authored, indexed by light index: where this light's shadow frustums live. std430: 4 x u32 = 16 B.

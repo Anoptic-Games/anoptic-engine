@@ -1,17 +1,12 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // SKELETON: not in CMakeLists shader manifest, not loaded by any pipeline.
 // PIPELINE_DECAL frag: reconstruct surface (depth or UV), sample decal layer, blend fade.
 // Pair: decal.vert.
-
-struct DecalRecord {
-    mat4 localTransform;
-    uint anchorSlot;
-    uint textureLayer;
-    float fade;
-    uint flags;
-};
 
 // NOTE: set 0 binding 12 is now LightRuntimeSSBO in the live globalSetLayout (flat.frag/transmission.frag).
 // This decal skeleton is inert (no compiled pipeline); renumber to a free binding (>= 13) when

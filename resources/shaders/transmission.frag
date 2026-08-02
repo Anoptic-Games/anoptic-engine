@@ -2,87 +2,8 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_GOOGLE_include_directive : require
 
-struct MaterialData {
-    uint      features;
-    uint      baseColorTexture;
-    uint      pad0[2];            // Align baseColorFactor to 16 bytes
-    vec4      baseColorFactor;
-    uint      metallicRoughnessTexture;
-    float     metallicFactor;
-    float     roughnessFactor;
-    uint      normalTexture;
-    float     normalScale;
-    uint      occlusionTexture;
-    float     occlusionStrength;
-    uint      emissiveTexture;
-    vec4      emissiveFactor;
-    uint      alphaMode;
-    float     alphaCutoff;
-    uint      doubleSided;
-    uint      clearcoatTexture;
-    uint      clearcoatRoughnessTexture;
-    uint      clearcoatNormalTexture;
-    float     clearcoatFactor;
-    float     clearcoatRoughnessFactor;
-    uint      transmissionTexture;
-    float     transmissionFactor;
-    uint      thicknessTexture;
-    float     thicknessFactor;
-    float     attenuationDistance;
-    uint      pad1[3];            // Align attenuationColor to 16 bytes
-    vec4      attenuationColor;
-    float     ior;
-    uint      specularTexture;
-    uint      specularColorTexture;
-    float     specularFactor;
-    vec4      specularColorFactor;
-    uint      sheenColorTexture;
-    uint      sheenRoughnessTexture;
-    uint      pad2[2];            // Align sheenColorFactor to 16 bytes
-    vec4      sheenColorFactor;
-    float     sheenRoughnessFactor;
-    uint      iridescenceTexture;
-    uint      iridescenceThicknessTexture;
-    float     iridescenceFactor;
-    float     iridescenceIor;
-    float     iridescenceThicknessMinimum;
-    float     iridescenceThicknessMaximum;
-    uint      anisotropyTexture;
-    float     anisotropyStrength;
-    float     anisotropyRotation;
-    float     dispersion;
-    uint      diffuseTransmissionTexture;
-    uint      diffuseTransmissionColorTexture;
-    float     diffuseTransmissionFactor;
-    uint      pad3[2];            // Align diffuseTransmissionColorFactor to 16 bytes
-    vec4      diffuseTransmissionColorFactor;
-    float     emissiveStrength;
-    uint      pipelineType;
-    uint      padding[2];
-};
-layout(set = 0, binding = 0) uniform GlobalUBO {
-    mat4 view;
-    mat4 proj;
-    float time;
-    float deltaTime;
-    uint frameCount;
-    uint lightCount;
-    vec4 cameraPos;
-    float cameraNear;
-    float cameraFar;
-    float screenWidth;
-    float screenHeight;
-    uint clusterDimX;
-    uint clusterDimY;
-    uint clusterDimZ;
-    uint maxLightsPerCluster;
-    uint lightingMode;   // AnoLightingMode
-    uint debugView;      // RC debug visualization selector, 0 = off
-    uint pad0;
-    uint pad1;
-    mat4 viewProj;    // premultiplied camera clip transform
-    mat4 invVPPixel;  // world position from gl_FragCoord
-} global;
+#include "gpu_abi.glsl"
+layout(set = 0, binding = 0) uniform GlobalUBO { GlobalData global; };
 
 // Clustered-forward froxel light lists (see flat.frag).
 layout(set = 0, binding = 10) readonly buffer ClusterCountSSBO {
@@ -93,7 +14,6 @@ layout(set = 0, binding = 11) readonly buffer ClusterIndexSSBO {
 } clusterIndexBuf;
 
 // Dynamic shadows (set 2), mirrors flat.frag.
-struct ShadowLightInfo { uint castsShadow; uint baseFrustum; uint frustumCount; uint pad; };
 layout(set = 2, binding = 1) uniform sampler2DArray shadowAtlas;
 layout(set = 2, binding = 2) readonly buffer ShadowLightInfoSSBO { ShadowLightInfo info[]; } shadowInfoBuf;
 
@@ -121,24 +41,12 @@ bool lightUsesShadowMap(uint lightType, uint mode) {
     return lightType != LIGHT_TYPE_POINT; // ANO_LIGHTING_HYBRID
 }
 
-// Per-light runtime from lightsetup.comp, world pose + radiance + range/cone/type in 64B.
-// Layout must match LightRuntime in lightsetup.comp / flat.frag.
-struct LightRuntime {
-    vec4 posRange;   // xyz world position, w range
-    vec4 dirType;    // xyz world forward,  w float(type)
-    vec4 radInner;   // xyz color*intensity, w innerConeCos
-    vec4 outer;      // x outerConeCos, yzw reserved
-};
 layout(set = 0, binding = 12) readonly buffer LightRuntimeSSBO {
     LightRuntime entries[];
 } lightRuntimeBuf;
 
 // Per-entity instance channel (matches flat.frag).
 const uint INST_FLAG_TINT = 1u;
-struct InstanceData {
-    uvec4 packed;
-    vec4  params;
-};
 layout(set = 0, binding = 9) readonly buffer InstanceSSBO {
     InstanceData instances[];
 } instanceBuf;

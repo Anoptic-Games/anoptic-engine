@@ -57,7 +57,7 @@ void ano_shadow_record(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawS
         bool candidate[ANO_SHADOW_FRUSTUM_COUNT];
         uint32_t renderCount = 0u, maxSub = 0u, candCount = 0u;
         for (uint32_t s = 0; s < ANO_SHADOW_FRUSTUM_COUNT; s++) {
-            bool active = shadowCfgs[s].active && lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode);
+            bool active = shadowCfgs[s].live && lightTypeShadowMapped(shadowCfgs[s].lightType, rendererState.lightingMode);
             renderS[s] = false; candidate[s] = false;
             if (!active) continue;
             if (rendererState.shadowCacheMode != 0u) { renderS[s] = !rendererState.shadowLayerValid[s]; continue; }

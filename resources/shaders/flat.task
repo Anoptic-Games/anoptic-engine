@@ -1,5 +1,8 @@
 #version 460
 #extension GL_EXT_mesh_shader : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // Task-shader meshlet culling. One task workgroup tests 32 meshlets of one draw, launches mesh
 // workgroups only for survivors. Three conservative tests.
@@ -11,43 +14,11 @@
 
 layout(local_size_x = 32) in;
 
-layout(set = 0, binding = 0) uniform GlobalUBO {
-    mat4  view;
-    mat4  proj;
-    float time;
-    float deltaTime;
-    uint  frameCount;
-    uint  lightCount;
-    vec4  cameraPos;
-    float cameraNear;
-    float cameraFar;
-    float screenWidth;
-    float screenHeight;
-    uint  clusterDimX;
-    uint  clusterDimY;
-    uint  clusterDimZ;
-    uint  maxLightsPerCluster;
-    uint  lightingMode;
-    uint  debugView;
-    uint  pad0;
-    uint  pad1;
-    mat4  viewProj;    // camera clip transform
-    mat4  invVPPixel;  // pixel -> world unprojector
-    // Task-cull tail (mirrors vertex.h GlobalUBO).
-    vec4  frustumPlanes[6];
-    mat4  prevViewProj;
-    vec4  hizParams;   // {pyramid baseW, baseH, mipCount (0 = test off), 0}
-    vec4  hizProj;     // {proj00, proj11, proj22, proj32}
-} g;
+layout(set = 0, binding = 0) uniform GlobalUBO { GlobalData g; };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
     mat4 transforms[];
 } transformBuf;
-
-struct EntityInfo {
-    uint meshIndex;
-    uint materialIndex;
-};
 
 layout(set = 0, binding = 3) readonly buffer EntitySSBO {
     EntityInfo entities[];
@@ -56,18 +27,6 @@ layout(set = 0, binding = 3) readonly buffer EntitySSBO {
 layout(set = 0, binding = 5, std430) readonly buffer IndexBuffer {
     uint data[];
 } indexBuf;
-
-struct MeshData {
-    uint meshletCount;
-    uint meshletOffset;
-    uint uniqueVerticesOffset;
-    uint trianglesOffset;
-    uint vertexOffset;
-    uint classicIndexCount;
-    uint classicFirstIndex;
-    uint boundsOffset;       // byte offset of the 48B/meshlet bounds block
-    uint lodCount;
-};
 
 layout(set = 0, binding = 6, std430) readonly buffer MeshSSBO {
     MeshData meshDrawData[];
@@ -88,7 +47,6 @@ layout(push_constant) uniform PushConstants {
 layout(constant_id = 0) const bool shadowPass = false;
 layout(constant_id = 1) const bool coneCull  = false;
 
-struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
 layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; } shadowBuf;
 
 #define ANO_LOD_LEVEL_SHIFT   29u

@@ -48,10 +48,10 @@ static void ui_pending_bounds(RendererState* state)
     {
         const AnoUiPrim* p = &state->uiPendingPrims[i];
         float pad = p->kind == ANO_UI_SHADOW ? 3.0f * p->param[0] + 1.0f : 1.0f;
-        b0 = fminf(b0, p->origin[0] - p->half[0] - pad);
-        b1 = fminf(b1, p->origin[1] - p->half[1] - pad);
-        b2 = fmaxf(b2, p->origin[0] + p->half[0] + pad);
-        b3 = fmaxf(b3, p->origin[1] + p->half[1] + pad);
+        b0 = fminf(b0, p->origin[0] - p->halfExt[0] - pad);
+        b1 = fminf(b1, p->origin[1] - p->halfExt[1] - pad);
+        b2 = fmaxf(b2, p->origin[0] + p->halfExt[0] + pad);
+        b3 = fmaxf(b3, p->origin[1] + p->halfExt[1] + pad);
     }
     state->uiPendingBounds[0] = b0; state->uiPendingBounds[1] = b1;
     state->uiPendingBounds[2] = b2; state->uiPendingBounds[3] = b3;

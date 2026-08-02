@@ -111,10 +111,24 @@ typedef struct CullView
     Vector4 frustumPlanes[6];
 } CullView;
 
-// std140 size/align pin.
-static_assert(sizeof(CullView) == 160 && alignof(CullView) == 16, "CullView is not std140");
-static_assert(offsetof(CullView, viewProj) == 0 && offsetof(CullView, frustumPlanes) == 64,
-              "CullView member offsets drifted from the shader's uniform block");
+typedef struct GpuEntityInfo
+{
+    uint32_t meshIndex;
+    uint32_t materialIndex;
+} GpuEntityInfo;
+
+typedef struct GpuMeshData
+{
+    uint32_t meshletCount;
+    uint32_t meshletOffset;
+    uint32_t uniqueVerticesOffset;
+    uint32_t trianglesOffset;
+    uint32_t vertexOffset;
+    uint32_t classicIndexCount;
+    uint32_t classicFirstIndex;
+    uint32_t boundsOffset;
+    uint32_t lodCount;
+} GpuMeshData;
 
 typedef struct CullUBO
 {
@@ -136,7 +150,9 @@ typedef struct CullUBO
     float    viewCullParams[ANO_VIEW_COUNT][4];
     // Shadow LOD relative bias vs view 0 (+ = coarser).
     int32_t  shadowLodBias;
-    int32_t  _hizPad[3];   // std140 pad to offset 464
+    int32_t  _hizPad0;
+    int32_t  _hizPad1;
+    int32_t  _hizPad2;
     // Hi-Z (single-phase). prevViewProj reprojects bounds into last frame's screen.
     // hizParams={baseW,baseH,mipCount,pad} (0=off); hizProj={p00,p11,p22,p32}.
     mat4     prevViewProj[ANO_VIEW_COUNT];
@@ -190,10 +206,10 @@ typedef struct CullingBuffers {
     // Per-slot mesh/material; ×1 device-local + delta staging.
     SlotUpload              entity;
 
-    // MeshSSBO: 9 u32/mesh (meshlets + classic fallback + lodCount); host-visible, rewritten each frame
+    // MeshSSBO: host-visible, rewritten each frame.
     VkBuffer                meshDataBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           meshDataAllocs[MAX_FRAMES_IN_FLIGHT];
-    void*                   meshDataMapped[MAX_FRAMES_IN_FLIGHT];
+    GpuMeshData*            meshDataMapped[MAX_FRAMES_IN_FLIGHT];
 
     // MeshBoundsSSBO: vec4 sphere (xyz + radius) per mesh; host-visible, rewritten each frame
     VkBuffer                meshBoundsBuffer[MAX_FRAMES_IN_FLIGHT];

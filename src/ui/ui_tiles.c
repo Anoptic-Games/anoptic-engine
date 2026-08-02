@@ -24,10 +24,10 @@
 void ano_ui_prim_aabb(const AnoUiPrim *p, float outMin[2], float outMax[2])
 {
     float pad = p->kind == ANO_UI_SHADOW ? 3.0f * p->param[0] + 1.0f : 1.0f;
-    outMin[0] = p->origin[0] - p->half[0] - pad;
-    outMin[1] = p->origin[1] - p->half[1] - pad;
-    outMax[0] = p->origin[0] + p->half[0] + pad;
-    outMax[1] = p->origin[1] + p->half[1] + pad;
+    outMin[0] = p->origin[0] - p->halfExt[0] - pad;
+    outMin[1] = p->origin[1] - p->halfExt[1] - pad;
+    outMax[0] = p->origin[0] + p->halfExt[0] + pad;
+    outMax[1] = p->origin[1] + p->halfExt[1] + pad;
 }
 
 // Opaque RRECT fill fully covering tile [tx0,ty0)-(tx1,ty1)?
@@ -40,8 +40,8 @@ static bool prim_solid_over(const AnoUiPrim *p, float tx0, float ty0, float tx1,
     for (int i = 1; i < 4; i++)
         if (p->radii[i] > maxR)
             maxR = p->radii[i];
-    float insetX = p->half[0] - maxR - 0.5f;
-    float insetY = p->half[1] - maxR - 0.5f;
+    float insetX = p->halfExt[0] - maxR - 0.5f;
+    float insetY = p->halfExt[1] - maxR - 0.5f;
     if (insetX <= 0.0f || insetY <= 0.0f)
         return false;
     return tx0 >= p->origin[0] - insetX && tx1 <= p->origin[0] + insetX

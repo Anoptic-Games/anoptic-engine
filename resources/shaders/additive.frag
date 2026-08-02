@@ -1,66 +1,10 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // Additive lane. Stripped flat.frag: no light loop, no shadows. Premultiplied emissive/base, ONE/ONE blend.
-
-struct MaterialData {
-    uint      features;
-    uint      baseColorTexture;
-    uint      pad0[2];
-    vec4      baseColorFactor;
-    uint      metallicRoughnessTexture;
-    float     metallicFactor;
-    float     roughnessFactor;
-    uint      normalTexture;
-    float     normalScale;
-    uint      occlusionTexture;
-    float     occlusionStrength;
-    uint      emissiveTexture;
-    vec4      emissiveFactor;
-    uint      alphaMode;
-    float     alphaCutoff;
-    uint      doubleSided;
-    uint      clearcoatTexture;
-    uint      clearcoatRoughnessTexture;
-    uint      clearcoatNormalTexture;
-    float     clearcoatFactor;
-    float     clearcoatRoughnessFactor;
-    uint      transmissionTexture;
-    float     transmissionFactor;
-    uint      thicknessTexture;
-    float     thicknessFactor;
-    float     attenuationDistance;
-    uint      pad1[3];
-    vec4      attenuationColor;
-    float     ior;
-    uint      specularTexture;
-    uint      specularColorTexture;
-    float     specularFactor;
-    vec4      specularColorFactor;
-    uint      sheenColorTexture;
-    uint      sheenRoughnessTexture;
-    uint      pad2[2];
-    vec4      sheenColorFactor;
-    float     sheenRoughnessFactor;
-    uint      iridescenceTexture;
-    uint      iridescenceThicknessTexture;
-    float     iridescenceFactor;
-    float     iridescenceIor;
-    float     iridescenceThicknessMinimum;
-    float     iridescenceThicknessMaximum;
-    uint      anisotropyTexture;
-    float     anisotropyStrength;
-    float     anisotropyRotation;
-    float     dispersion;
-    uint      diffuseTransmissionTexture;
-    uint      diffuseTransmissionColorTexture;
-    float     diffuseTransmissionFactor;
-    uint      pad3[2];
-    vec4      diffuseTransmissionColorFactor;
-    float     emissiveStrength;
-    uint      pipelineType;
-    uint      padding[2];
-};
 
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
@@ -68,10 +12,6 @@ layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
 
 // Per-entity instance channel. packed[0] = RGBA8 tint, packed[1] bit0 enables it.
 const uint INST_FLAG_TINT = 1u;
-struct InstanceData {
-    uvec4 packed;
-    vec4  params;
-};
 layout(set = 0, binding = 9) readonly buffer InstanceSSBO {
     InstanceData instances[];
 } instanceBuf;

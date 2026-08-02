@@ -1,4 +1,7 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // GPU animation pass. Evaluate each slot's motion at t = global.time - epoch;
 // write transforms[idx] for the cull pass. Trajectory change = restamp epoch + base.
@@ -6,29 +9,10 @@
 
 layout(local_size_x = 256) in;
 
-layout(set = 0, binding = 0) uniform GlobalUBO {
-    mat4 view;
-    mat4 proj;
-    float time;
-    float deltaTime;
-    uint frameCount;
-    uint lightCount;
-    vec4 cameraPos;
-} global;
+layout(set = 0, binding = 0) uniform GlobalUBO { GlobalData global; };
 
 layout(set = 0, binding = 1) buffer TransformSSBO {
     mat4 transforms[];
-};
-
-// Matches AnoMotionDescriptor (anoptic_render.h): std430
-// { uint type; uint flags; float epoch; float pad; vec4 p0; vec4 p1; }, 48 bytes.
-struct MotionDescriptor {
-    uint  type;
-    uint  flags;
-    float epoch;
-    float pad;
-    vec4  p0;
-    vec4  p1;
 };
 
 layout(set = 0, binding = 2) readonly buffer MotionSSBO {

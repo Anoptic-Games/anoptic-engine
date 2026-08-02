@@ -1,5 +1,8 @@
 #version 460
 #extension GL_EXT_mesh_shader : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // Compile modes: default = full shading, ANO_DEPTH_ONLY = position-only, ANO_DEPTH_MASKED = position + uv + packed indices.
 #if !defined(ANO_DEPTH_ONLY) && !defined(ANO_DEPTH_MASKED)
@@ -16,47 +19,15 @@ layout(triangles, max_vertices = 64, max_primitives = 126) out;
 // Resources & bindings
 // ---------------------------------------------------------------------------
 
-layout(set = 0, binding = 0) uniform GlobalUBO {
-    mat4 view;
-    mat4 proj;
-    float time;
-    float deltaTime;
-    uint frameCount;
-    uint lightCount;
-    vec4 cameraPos;
-    float cameraNear;
-    float cameraFar;
-    float screenWidth;
-    float screenHeight;
-    uint clusterDimX;
-    uint clusterDimY;
-    uint clusterDimZ;
-    uint maxLightsPerCluster;
-    uint lightingMode;
-    uint debugView;
-    uint pad0;
-    uint pad1;
-    mat4 viewProj; // proj * view premultiplied on CPU
-} global;
+layout(set = 0, binding = 0) uniform GlobalUBO { GlobalData global; };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO {
     mat4 transforms[];
 } transformBuf;
 
-struct EntityInfo {
-    uint meshIndex;
-    uint materialIndex;
-};
-
 layout(set = 0, binding = 3) readonly buffer EntitySSBO {
     EntityInfo entities[];
 } entityBuf;
-
-struct PackedVertex {
-    float px, py, pz;
-    float nx, ny, nz;
-    float u, v;
-};
 
 layout(set = 0, binding = 4, std430) readonly buffer VertexBuffer {
     PackedVertex vertices[];
@@ -66,18 +37,6 @@ layout(set = 0, binding = 5, std430) readonly buffer IndexBuffer {
     uint data[];
 } indexBuf;
 
-struct MeshData {
-    uint meshletCount;
-    uint meshletOffset;
-    uint uniqueVerticesOffset;
-    uint trianglesOffset;
-    uint vertexOffset;
-    uint classicIndexCount;  // fallback path only
-    uint classicFirstIndex;  // fallback path only
-    uint boundsOffset;       // byte offset of per-meshlet bounds block
-    uint lodCount;           // contiguous LOD mesh count
-};
-
 // cull.comp packs LOD level in top 3 bits, entity index in low 29.
 #define ANO_LOD_LEVEL_SHIFT  29u
 #define ANO_ENTITY_INDEX_MASK 0x1FFFFFFFu
@@ -85,66 +44,6 @@ struct MeshData {
 layout(set = 0, binding = 6, std430) readonly buffer MeshSSBO {
     MeshData meshDrawData[];
 } meshBuf;
-
-// Per-material data. Only doubleSided is read. Full struct for std430 stride.
-struct MaterialData {
-    uint      features;
-    uint      baseColorTexture;
-    uint      pad0[2];
-    vec4      baseColorFactor;
-    uint      metallicRoughnessTexture;
-    float     metallicFactor;
-    float     roughnessFactor;
-    uint      normalTexture;
-    float     normalScale;
-    uint      occlusionTexture;
-    float     occlusionStrength;
-    uint      emissiveTexture;
-    vec4      emissiveFactor;
-    uint      alphaMode;
-    float     alphaCutoff;
-    uint      doubleSided;
-    uint      clearcoatTexture;
-    uint      clearcoatRoughnessTexture;
-    uint      clearcoatNormalTexture;
-    float     clearcoatFactor;
-    float     clearcoatRoughnessFactor;
-    uint      transmissionTexture;
-    float     transmissionFactor;
-    uint      thicknessTexture;
-    float     thicknessFactor;
-    float     attenuationDistance;
-    uint      pad1[3];
-    vec4      attenuationColor;
-    float     ior;
-    uint      specularTexture;
-    uint      specularColorTexture;
-    float     specularFactor;
-    vec4      specularColorFactor;
-    uint      sheenColorTexture;
-    uint      sheenRoughnessTexture;
-    uint      pad2[2];
-    vec4      sheenColorFactor;
-    float     sheenRoughnessFactor;
-    uint      iridescenceTexture;
-    uint      iridescenceThicknessTexture;
-    float     iridescenceFactor;
-    float     iridescenceIor;
-    float     iridescenceThicknessMinimum;
-    float     iridescenceThicknessMaximum;
-    uint      anisotropyTexture;
-    float     anisotropyStrength;
-    float     anisotropyRotation;
-    float     dispersion;
-    uint      diffuseTransmissionTexture;
-    uint      diffuseTransmissionColorTexture;
-    float     diffuseTransmissionFactor;
-    uint      pad3[2];
-    vec4      diffuseTransmissionColorFactor;
-    float     emissiveStrength;
-    uint      pipelineType;
-    uint      padding[2];
-};
 
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
@@ -170,7 +69,6 @@ layout(push_constant) uniform PushConstants {
 // Shadow pass: project by a light's shadow frustum (set 2).
 layout(constant_id = 0) const bool shadowPass = false;
 
-struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
 layout(set = 2, binding = 0) readonly buffer ShadowFrustumSSBO { CullView shadowFrustums[]; } shadowBuf;
 
 // EQUAL-test contract: invariant gl_Position pins bit-identical clip positions across compiles.
@@ -252,7 +150,7 @@ void main() {
         uint globalVertexIdx = globalVertexBase + vertexIdx;
 
         PackedVertex v = vertexBuf.vertices[globalVertexIdx];
-        vec3 position = vec3(v.px, v.py, v.pz);
+        vec3 position = vec3(v.position[0], v.position[1], v.position[2]);
 
         vec3 worldPos = mat3(model) * position + model[3].xyz;
         gl_MeshVerticesEXT[i].gl_Position = shadowPass
@@ -260,11 +158,11 @@ void main() {
             : (global.viewProj * vec4(worldPos, 1.0));
 
 #ifdef ANO_WANT_SHADE
-        vec3 normal   = vec3(v.nx, v.ny, v.nz);
+        vec3 normal   = vec3(v.normal[0], v.normal[1], v.normal[2]);
         fragNormal[i] = normalMatrix * normal;
 #endif
 #ifdef ANO_WANT_UV
-        fragTexCoord[i] = vec2(v.u, v.v);
+        fragTexCoord[i] = vec2(v.texCoord[0], v.texCoord[1]);
         outPackedIndices[i] = packedIndices;
 #endif
     }

@@ -88,7 +88,7 @@ static void test_abi(void)
               && sizeof(AnoUiPaint) == 48 && sizeof(AnoUiStop) == 32,
           "ABI sizes");
     CHECK(offsetof(AnoUiPrim, origin) == 16 && offsetof(AnoUiPrim, kind) == 24
-              && offsetof(AnoUiPrim, flags) == 28 && offsetof(AnoUiPrim, half) == 32
+              && offsetof(AnoUiPrim, flags) == 28 && offsetof(AnoUiPrim, halfExt) == 32
               && offsetof(AnoUiPrim, param) == 40 && offsetof(AnoUiPrim, radii) == 48
               && offsetof(AnoUiPrim, color) == 64 && offsetof(AnoUiPrim, paintRef) == 80
               && offsetof(AnoUiPrim, aux1) == 92,
@@ -115,7 +115,7 @@ static void test_builder(void)
                                -2.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
     CHECK(i0 == 0 && b.primCount == 1, "rrect claims slot 0");
     CHECK(prims[0].origin[0] == 30.0f && prims[0].origin[1] == 40.0f
-              && prims[0].half[0] == 20.0f && prims[0].half[1] == 20.0f,
+              && prims[0].halfExt[0] == 20.0f && prims[0].halfExt[1] == 20.0f,
           "rrect center/half from min/max");
     CHECK(prims[0].inv[0] == 1.0f && prims[0].inv[1] == 0.0f && prims[0].inv[3] == 1.0f,
           "identity inv");
@@ -314,7 +314,7 @@ static void test_coverage(void)
                      ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
         AnoUiScene s = ano_ui_scene(&b);
         double cx = prims[0].origin[0], cy = prims[0].origin[1];
-        double half[2] = { prims[0].half[0], prims[0].half[1] };
+        double half[2] = { prims[0].halfExt[0], prims[0].halfExt[1] };
         double radii[4] = { prims[0].radii[0], prims[0].radii[1], prims[0].radii[2],
                             prims[0].radii[3] };
         RrShape shape = { half[0], half[1], { radii[0], radii[1], radii[2], radii[3] },
@@ -394,7 +394,7 @@ static void test_scale(void)
     AnoUiPrim p = prims[pi];
     ano_ui_prim_scale(&p, s);
     CHECK(p.origin[0] == 30.0f * s && p.origin[1] == 30.0f * s, "prim fold: origin");
-    CHECK(p.half[0] == 20.0f * s && p.half[1] == 10.0f * s, "prim fold: half");
+    CHECK(p.halfExt[0] == 20.0f * s && p.halfExt[1] == 10.0f * s, "prim fold: half");
     CHECK(p.radii[0] == 4.0f * s && p.radii[3] == 4.0f * s, "prim fold: radii");
     CHECK(p.param[0] == 3.0f * s, "prim fold: border width");
 

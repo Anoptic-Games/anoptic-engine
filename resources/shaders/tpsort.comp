@@ -1,4 +1,7 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // Transparency B2F sort (audit 4.7). One WG/view; descending bitonic on transmission draws.
 // Reorders indirect cmds + entity indices; fallback also rewrites firstInstance (mesh: gl_DrawID).
@@ -15,16 +18,7 @@ const float NEG_SENTINEL = -3.4e38; // sorts pad entries last (real keys = clip.
 // constant_id 1: useMeshShader -> indirect command stride (matches cull.comp).
 layout(constant_id = 1) const bool useMeshShader = true;
 
-struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
-layout(set = 0, binding = 0) uniform CullUBO {
-    CullView views[ANO_VIEW_COUNT];
-    uint  viewCount;
-    uint  entityCount;
-    uint  maxEntities;
-    uint  drawSlotCount;
-    uvec4 drawSlotOf[4];
-    uvec4 specialSlots; // .y = transmission (sorted) draw slot
-};
+layout(set = 0, binding = 0) uniform CullUBO { CullData cull; };
 
 layout(set = 0, binding = 5) buffer IndirectBuffer { uint indirectData[]; };
 layout(set = 0, binding = 6) buffer DrawCount { uint drawCounts[]; };
@@ -38,18 +32,18 @@ shared uint  scmd[SORT_CAP * MAX_CMD_WORDS]; // command words at original positi
 
 void main() {
     uint view = gl_WorkGroupID.x;
-    if (view >= viewCount) return;
+    if (view >= cull.viewCount) return;
 
-    uint transSlot = specialSlots.y;
+    uint transSlot = cull.specialSlots.y;
     if (transSlot == 0xFFFFFFFFu) return; // no transmission lane present
 
-    uint partIdx = view * drawSlotCount + transSlot;
+    uint partIdx = view * cull.drawSlotCount + transSlot;
     uint n = drawCounts[partIdx];
     if (n <= 1u) return; // nothing to reorder
 
     uint capN = min(n, SORT_CAP);
-    uint base = partIdx * maxEntities;
-    uint keyBase = view * maxEntities;
+    uint base = partIdx * cull.maxEntities;
+    uint keyBase = view * cull.maxEntities;
     uint stride = useMeshShader ? 3u : 5u;
     uint lid = gl_LocalInvocationID.x;
 

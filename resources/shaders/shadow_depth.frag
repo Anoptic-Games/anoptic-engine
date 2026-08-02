@@ -6,6 +6,7 @@
 
 // Layered Power CDF shadow pass fragment stage. Writes the nearest occluder's one-hot into the depth band containing z, across two MRT color targets.
 #include "shadow_cdf.glsl"
+#include "gpu_abi.glsl"
 
 // Per-frustum depth linearization (mirrors shadow_sample.glsl).
 layout(set = 2, binding = 3) uniform ShadowSampleVPUBO {
@@ -19,65 +20,6 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 #if ANO_ALPHA_MASK
-// Alpha-tested caster variant (glTF alphaMode MASK). MaterialData mirrors flat.frag.
-struct MaterialData {
-    uint      features;
-    uint      baseColorTexture;
-    uint      pad0[2];
-    vec4      baseColorFactor;
-    uint      metallicRoughnessTexture;
-    float     metallicFactor;
-    float     roughnessFactor;
-    uint      normalTexture;
-    float     normalScale;
-    uint      occlusionTexture;
-    float     occlusionStrength;
-    uint      emissiveTexture;
-    vec4      emissiveFactor;
-    uint      alphaMode;
-    float     alphaCutoff;
-    uint      doubleSided;
-    uint      clearcoatTexture;
-    uint      clearcoatRoughnessTexture;
-    uint      clearcoatNormalTexture;
-    float     clearcoatFactor;
-    float     clearcoatRoughnessFactor;
-    uint      transmissionTexture;
-    float     transmissionFactor;
-    uint      thicknessTexture;
-    float     thicknessFactor;
-    float     attenuationDistance;
-    uint      pad1[3];
-    vec4      attenuationColor;
-    float     ior;
-    uint      specularTexture;
-    uint      specularColorTexture;
-    float     specularFactor;
-    vec4      specularColorFactor;
-    uint      sheenColorTexture;
-    uint      sheenRoughnessTexture;
-    uint      pad2[2];
-    vec4      sheenColorFactor;
-    float     sheenRoughnessFactor;
-    uint      iridescenceTexture;
-    uint      iridescenceThicknessTexture;
-    float     iridescenceFactor;
-    float     iridescenceIor;
-    float     iridescenceThicknessMinimum;
-    float     iridescenceThicknessMaximum;
-    uint      anisotropyTexture;
-    float     anisotropyStrength;
-    float     anisotropyRotation;
-    float     dispersion;
-    uint      diffuseTransmissionTexture;
-    uint      diffuseTransmissionColorTexture;
-    float     diffuseTransmissionFactor;
-    uint      pad3[2];
-    vec4      diffuseTransmissionColorFactor;
-    float     emissiveStrength;
-    uint      pipelineType;
-    uint      padding[2];
-};
 layout(set = 0, binding = 2) readonly buffer MaterialSSBO {
     MaterialData materials[];
 } materialBuf;

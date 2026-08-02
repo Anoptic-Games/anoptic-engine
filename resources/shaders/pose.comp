@@ -1,4 +1,7 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // SKELETON. Not in CMakeLists shader manifest. Not loaded by any pipeline.
 // Pose pre-pass: bone palette for every visible skinned instance.
@@ -20,26 +23,7 @@ layout(push_constant) uniform PushConstants {
     uint visibleSkinnedCount;
 } pc;
 
-// {rigId, clipA, clipB, blendStart, blendDuration, clipStartPhase}
-// mirrors SkinInstanceState (structs.h). Sparse skinned slots, compacted for the pass.
-struct SkinInstanceState {
-    uint  rigId;
-    uint  clipA;
-    uint  clipB;
-    float blendStart;
-    float blendDuration;
-    float clipStartPhase;
-};
-
-layout(set = 0, binding = 0) uniform GlobalUBO {
-    mat4  view;
-    mat4  proj;
-    float time;
-    float deltaTime;
-    uint  frameCount;
-    uint  lightCount;
-    vec4  cameraPos;
-} global;
+layout(set = 0, binding = 0) uniform GlobalUBO { GlobalData global; };
 
 layout(set = 0, binding = 1) readonly  buffer SkinStateSSBO  { SkinInstanceState instances[]; } skinBuf;
 // Static rig assets (parent table, inverse-bind, clip tracks).

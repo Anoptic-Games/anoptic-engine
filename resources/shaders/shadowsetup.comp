@@ -1,4 +1,7 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // Per-shadow-frustum light-space viewProj + frustum-plane build.
 // One invocation per frustum: reads config + light transform, builds viewProj, extracts 6 planes.
@@ -10,19 +13,6 @@ layout(local_size_x = 64) in;
 #define LIGHT_TYPE_DIRECTIONAL 0u
 #define LIGHT_TYPE_POINT       1u
 #define LIGHT_TYPE_SPOT        2u
-
-struct ShadowFrustumConfig { uint lightIndex; uint lightType; uint faceIndex; uint live; }; // live = C 'active'
-
-struct LightData {
-    vec3  color; float intensity;
-    float range; float innerConeCos; float outerConeCos; uint type;
-    uint  transformIndex; uint enabled; uint pad0; uint pad1;
-    vec3  localOffset; uint pad2; // model-space offset
-    vec3  localDir; uint pad3;    // model-space aim
-};
-
-// viewProj + 6 planes (matches structs.h CullView).
-struct CullView { mat4 viewProj; vec4 frustumPlanes[6]; };
 
 layout(set = 0, binding = 0) readonly buffer ShadowConfigSSBO { ShadowFrustumConfig configs[]; };
 layout(set = 0, binding = 1) readonly buffer TransformSSBO   { mat4 transforms[]; };

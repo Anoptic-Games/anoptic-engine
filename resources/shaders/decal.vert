@@ -1,27 +1,14 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // SKELETON. Not in CMakeLists shader manifest. Not loaded by any pipeline.
 // PIPELINE_DECAL vertex: one instanced unit cube per DecalRecord (structs.h),
 // host * localTransform. DecalPool: global LRU budget.
 // Activate: manifest + PIPELINE_DECAL prototype + g_framePasses DecalPool draw.
 
-struct DecalRecord {
-    mat4 localTransform;
-    uint anchorSlot;
-    uint textureLayer;
-    float fade;
-    uint flags;
-};
-
-layout(set = 0, binding = 0) uniform GlobalUBO {
-    mat4  view;
-    mat4  proj;
-    float time;
-    float deltaTime;
-    uint  frameCount;
-    uint  lightCount;
-    vec4  cameraPos;
-} global;
+layout(set = 0, binding = 0) uniform GlobalUBO { GlobalData global; };
 
 layout(set = 0, binding = 1) readonly buffer TransformSSBO { mat4 transforms[]; } transformBuf;
 // NOTE: set 0 binding 12 is LightRuntimeSSBO in live globalSetLayout (flat.frag/transmission.frag).

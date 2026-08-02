@@ -50,7 +50,7 @@ typedef enum AnoUiPrimKind {
 // stride 96, GLSL twin in resources/shaders/uicoverage.glsl).
 //   inv    : 2x2 pixel->prim inverse as rows, applied to (pixel - origin). Builders emit identity.
 //   origin : prim center, y-down. Logical at build, device pixels after compose fold.
-//   half   : half extents in prim space. SHADOW culls with +3*sigma + 1px AA.
+//   halfExt: half extents in prim space. SHADOW culls with +3*sigma + 1px AA.
 //   param  : kind-specific ([0]: border width | sigma | lod).
 //   radii  : per-corner (tl, tr, br, bl), pre-clamped by builder (CSS adjacent-side rule).
 //   color  : premultiplied linear RGBA. Tint for IMAGE/GLYPHS, fill when paintRef is NONE.
@@ -60,7 +60,7 @@ typedef struct AnoUiPrim {
     float    origin[2];
     uint32_t kind;
     uint32_t flags;
-    float    half[2];
+    float    halfExt[2];
     float    param[2];
     float    radii[4];
     float    color[4];
@@ -72,7 +72,7 @@ typedef struct AnoUiPrim {
 
 static_assert(sizeof(AnoUiPrim) == 96, "GPU ABI: 96-byte std430 element");
 static_assert(offsetof(AnoUiPrim, origin) == 16 && offsetof(AnoUiPrim, kind) == 24
-                  && offsetof(AnoUiPrim, half) == 32 && offsetof(AnoUiPrim, param) == 40
+                  && offsetof(AnoUiPrim, halfExt) == 32 && offsetof(AnoUiPrim, param) == 40
                   && offsetof(AnoUiPrim, radii) == 48 && offsetof(AnoUiPrim, color) == 64
                   && offsetof(AnoUiPrim, paintRef) == 80,
               "GPU ABI: GLSL-compatible offsets");

@@ -234,21 +234,23 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
     // Update MeshSSBO and MeshBoundsSSBO, clamped to ANO_MAX_MESHES.
     uint32_t meshCount = state->globalGeometryPool.meshCount;
     if (meshCount > ANO_MAX_MESHES) meshCount = ANO_MAX_MESHES;
-    uint32_t* meshData = (uint32_t*)state->culling.meshDataMapped[frameIndex];
+    GpuMeshData* meshData = state->culling.meshDataMapped[frameIndex];
     float* meshBounds = (float*)state->culling.meshBoundsMapped[frameIndex];
     
     for(uint32_t i=0; i < meshCount; i++) {
         MeshRegion* mesh = &state->globalGeometryPool.meshes[i];
         
-        meshData[i*9 + 0] = mesh->meshletCount;
-        meshData[i*9 + 1] = mesh->meshletOffset;
-        meshData[i*9 + 2] = mesh->uniqueVerticesOffset;
-        meshData[i*9 + 3] = mesh->trianglesOffset;
-        meshData[i*9 + 4] = mesh->vertexOffset;
-        meshData[i*9 + 5] = mesh->classicIndexCount;       // fallback indexCount
-        meshData[i*9 + 6] = mesh->classicIndexOffset / 4;  // fallback firstIndex (u32 units)
-        meshData[i*9 + 7] = mesh->boundsOffset;            // per-meshlet bounds byte offset
-        meshData[i*9 + 8] = mesh->lodCount;                // contiguous LOD count
+        meshData[i] = {
+            .meshletCount = mesh->meshletCount,
+            .meshletOffset = mesh->meshletOffset,
+            .uniqueVerticesOffset = mesh->uniqueVerticesOffset,
+            .trianglesOffset = mesh->trianglesOffset,
+            .vertexOffset = mesh->vertexOffset,
+            .classicIndexCount = mesh->classicIndexCount,
+            .classicFirstIndex = static_cast<uint32_t>(mesh->classicIndexOffset / sizeof(uint32_t)),
+            .boundsOffset = mesh->boundsOffset,
+            .lodCount = mesh->lodCount,
+        };
 
         meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
         meshBounds[i*4 + 1] = mesh->boundingSphereCenter[1];

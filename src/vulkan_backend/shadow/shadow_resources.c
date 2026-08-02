@@ -164,7 +164,7 @@ bool createShadowResources(VulkanContext* ctx, RendererState* state) {
     // shadowCfgMirror is the render-thread CPU copy the record loop gates on.
     if (!slot_upload_create(&state->shadowConfig, ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig), SLOT_STAGING_INIT, false)) return false;
     if (!slot_upload_create(&state->shadowInfo, state->lightBuffer.capacity, sizeof(ShadowLightInfo), SLOT_STAGING_INIT, false)) return false;
-    state->shadowCfgMirror = (ShadowFrustumConfig*)calloc(ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig)); // active=0
+    state->shadowCfgMirror = (ShadowFrustumConfig*)calloc(ANO_SHADOW_FRUSTUM_COUNT, sizeof(ShadowFrustumConfig)); // live=0
     if (!state->shadowCfgMirror) return false;
 
     // Static rig allocator (monotonic, fills [0, shadowFrustumNext) within the static region).

@@ -60,7 +60,7 @@ static const void* lane_last(const SlotUpload* b, uint32_t index)
 static uint32_t row_block(uint32_t lightIdx, uint32_t* outType)
 {
     for (uint32_t s = 0; s < ANO_SHADOW_STATIC_FRUSTUM_COUNT; s++)
-        if (st.shadowCfgMirror[s].active && st.shadowCfgMirror[s].lightIndex == lightIdx) {
+        if (st.shadowCfgMirror[s].live && st.shadowCfgMirror[s].lightIndex == lightIdx) {
             *outType = st.shadowCfgMirror[s].lightType;
             return s;
         }
@@ -79,7 +79,7 @@ static bool row_casts_as(uint32_t lightIdx, uint32_t lightType)
     if (base + want > ANO_SHADOW_STATIC_FRUSTUM_COUNT) return false;
     for (uint32_t f = 0; f < want; f++) {
         const ShadowFrustumConfig* c = &st.shadowCfgMirror[base + f];
-        if (!c->active || c->lightIndex != lightIdx || c->lightType != lightType) return false;
+        if (!c->live || c->lightIndex != lightIdx || c->lightType != lightType) return false;
         if (c->faceIndex != (lightType == LIGHT_TYPE_POINT ? f : 0u)) return false;
     }
     const ShadowLightInfo* si = (const ShadowLightInfo*)lane_last(&st.shadowInfo, lightIdx);

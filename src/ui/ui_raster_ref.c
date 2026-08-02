@@ -262,7 +262,7 @@ void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, fl
     float cov;
     switch (p->kind) {
     case ANO_UI_RRECT: {
-        float d = ano_ui_ref_sd_rrect(l, p->half, p->radii);
+        float d = ano_ui_ref_sd_rrect(l, p->halfExt, p->radii);
         cov = clamp01(0.5f - d);
         float w = p->param[0];
         if (w > 0.0f)
@@ -270,9 +270,9 @@ void ano_ui_ref_shade(const AnoUiScene *s, uint32_t prim, float px, float py, fl
         break;
     }
     case ANO_UI_SHADOW: {
-        float a = ano_ui_ref_shadow(l, p->half, p->radii[0], p->param[0]);
+        float a = ano_ui_ref_shadow(l, p->halfExt, p->radii[0], p->param[0]);
         if (p->flags & ANO_UI_FLAG_INNER) {
-            float d = ano_ui_ref_sd_rrect(l, p->half, p->radii);
+            float d = ano_ui_ref_sd_rrect(l, p->halfExt, p->radii);
             a = (1.0f - a) * clamp01(0.5f - d); // blur of complement, masked inside
         }
         cov = a;

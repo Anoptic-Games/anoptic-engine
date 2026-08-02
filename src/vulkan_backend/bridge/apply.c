@@ -24,8 +24,8 @@
 static void stage_command_fields(RendererState* s, const RenderCommand* c, uint32_t slot, uint32_t f)
 {
     if (c->kind == RCMD_DESTROY) {
-        uint32_t dead[2] = { NO_MESH_INDEX, 0u }; // dead-mark
-        slot_upload_stage(&s->culling.entity, f, slot, dead);
+        GpuEntityInfo dead = { .meshIndex = NO_MESH_INDEX };
+        slot_upload_stage(&s->culling.entity, f, slot, &dead);
         return;
     }
 
@@ -43,8 +43,11 @@ static void stage_command_fields(RendererState* s, const RenderCommand* c, uint3
     if (fields & RFIELD_USERDATA)
         slot_upload_stage(&s->instanceDataBuffer, f, slot, &c->instance_data);
     if (fields & RFIELD_MESH_MAT) {
-        uint32_t ent[2] = { c->mesh_index, c->material_index };
-        slot_upload_stage(&s->culling.entity, f, slot, ent);
+        GpuEntityInfo entity = {
+            .meshIndex = c->mesh_index,
+            .materialIndex = c->material_index,
+        };
+        slot_upload_stage(&s->culling.entity, f, slot, &entity);
         if (slot < s->slotMotionCap) s->slotMeshIdx[slot] = c->mesh_index;
     }
     // Teleport/mesh swap refreshes bound; ANIM via shadow_track_motion.
@@ -234,8 +237,11 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 shadow_track_motion(state, slot, &b->motion[e]);
                 // No instance data: clear so recycled slot renders inert.
                 slot_upload_stage(&state->instanceDataBuffer, frameIndex, slot, &inert);
-                uint32_t ent[2] = { b->mesh[e], b->material[e] };
-                slot_upload_stage(&state->culling.entity, frameIndex, slot, ent);
+                GpuEntityInfo entity = {
+                    .meshIndex = b->mesh[e],
+                    .materialIndex = b->material[e],
+                };
+                slot_upload_stage(&state->culling.entity, frameIndex, slot, &entity);
             }
             state->shadowGlobalDirty = true; // caster set changed
             ano_render_command_release(&cmd);
@@ -265,8 +271,11 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
                 if (u->fields & RFIELD_USERDATA)
                     slot_upload_stage(&state->instanceDataBuffer, frameIndex, slot, &u->instance_data[e]);
                 if (u->fields & RFIELD_MESH_MAT) {
-                    uint32_t ent[2] = { u->mesh[e], u->material[e] };
-                    slot_upload_stage(&state->culling.entity, frameIndex, slot, ent);
+                    GpuEntityInfo entity = {
+                        .meshIndex = u->mesh[e],
+                        .materialIndex = u->material[e],
+                    };
+                    slot_upload_stage(&state->culling.entity, frameIndex, slot, &entity);
                 }
                 // Teleport / mesh swap upkeep, as in stage_command_fields.
                 if ((u->fields & (RFIELD_TRANSFORM | RFIELD_MESH_MAT)) && !(u->fields & RFIELD_ANIM))
@@ -282,12 +291,12 @@ void render_apply_commands(RendererState* state, uint32_t frameIndex)
         case RCMD_BULK_DESTROY: {
             const RenderDestroyBatch* d = cmd.destroy;
             if (!d) break;
-            uint32_t dead[2] = { NO_MESH_INDEX, 0u };
+            GpuEntityInfo dead = { .meshIndex = NO_MESH_INDEX };
             for (uint32_t e = 0; e < d->count; e++) {
                 uint32_t rid  = d->render_ids[e];
                 uint32_t slot = render_slots_resolve(&state->slots, rid);
                 if (slot == ANO_RENDER_SLOT_UNMAPPED) continue;
-                slot_upload_stage(&state->culling.entity, frameIndex, slot, dead);
+                slot_upload_stage(&state->culling.entity, frameIndex, slot, &dead);
                 shadow_track_motion(state, slot, NULL); // untrack before recycle
                 cascade_detach_lights(state, rid, frameIndex); // disable lights riding this slot
                 render_slots_retire(&state->slots, rid, state->globalFrame);

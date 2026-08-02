@@ -55,7 +55,14 @@ typedef struct LightData
     float       localDir[3];
     uint32_t    pad3;
 } LightData; // 80 bytes
-static_assert(sizeof(LightData) == 80, "LightData must be 80B (5x vec4) to match the GLSL std430 mirrors");
+
+typedef struct GpuLightRuntime
+{
+    Vector4 posRange;
+    Vector4 dirType;
+    Vector4 radInner;
+    Vector4 outer;
+} GpuLightRuntime;
 
 // Runtime light lifecycle over dynamic palette [base, base+capacity). Cull count = base+highWater. Render-thread only.
 enum { LIGHT_ROW_FREE = 0u, LIGHT_ROW_LIVE = 1u, LIGHT_ROW_QUARANTINED = 2u };

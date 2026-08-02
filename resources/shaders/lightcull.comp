@@ -1,60 +1,19 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "gpu_abi.glsl"
 
 // Clustered-forward light assignment. One invocation per froxel: reconstruct the froxel's view-space
 // AABB, test every active light's sphere against it, write the froxel's light index list + count.
 layout(local_size_x = 64) in;
 
-layout(set = 0, binding = 0) uniform GlobalUBO {
-    mat4  view;
-    mat4  proj;
-    float time;
-    float deltaTime;
-    uint  frameCount;
-    uint  lightCount;
-    vec4  cameraPos;
-    float cameraNear;
-    float cameraFar;
-    float screenWidth;
-    float screenHeight;
-    uint  clusterDimX;
-    uint  clusterDimY;
-    uint  clusterDimZ;
-    uint  maxLightsPerCluster;
-    uint  lightingMode;   // AnoLightingMode, unused here, std140 sync
-    uint  debugView;
-    uint  pad0;
-    uint  pad1;
-} g;
+layout(set = 0, binding = 0) uniform GlobalUBO { GlobalData g; };
 
-// Per-light world pose precomputed by lightsetup.comp. Layout MUST match lightsetup.comp / flat.frag / transmission.frag.
-struct LightRuntime {
-    vec4 posRange;   // xyz = world position,  w = range
-    vec4 dirType;    // xyz = world forward,    w = float(type)
-    vec4 radInner;   // xyz = color*intensity,  w = innerConeCos
-    vec4 outer;      // x   = outerConeCos,     yzw reserved
-};
 layout(set = 0, binding = 1) readonly buffer LightRuntimeSSBO {
     LightRuntime runtime[];
 };
 
 const uint LIGHT_TYPE_DIRECTIONAL = 0u;
-
-struct LightData {
-    vec3  color;
-    float intensity;
-    float range;
-    float innerConeCos;
-    float outerConeCos;
-    uint  type;
-    uint  transformIndex;
-    uint  enabled;
-    uint  pad0;
-    uint  pad1;
-    vec3  localOffset; // model-space offset. world pos = transforms[transformIndex] * vec4(offset,1)
-    uint  pad2;
-    vec3  localDir;    // unused here, stride padding
-    uint  pad3;
-};
 
 layout(set = 0, binding = 2) readonly buffer LightSSBO {
     LightData lights[];

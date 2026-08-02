@@ -50,7 +50,7 @@ void ano_ui_builder_init(AnoUiBuilder *b,
 void ano_ui_prim_scale(AnoUiPrim *p, float s)
 {
     p->origin[0] *= s; p->origin[1] *= s;
-    p->half[0] *= s;   p->half[1] *= s;
+    p->halfExt[0] *= s;   p->halfExt[1] *= s;
     for (int i = 0; i < 4; i++)
         p->radii[i] *= s;
     if (p->kind == ANO_UI_RRECT || p->kind == ANO_UI_SHADOW)
@@ -121,8 +121,8 @@ static uint32_t prim_push(AnoUiBuilder *b, const float rectMin[2], const float r
     p->inv[0] = 1.0f; p->inv[1] = 0.0f; p->inv[2] = 0.0f; p->inv[3] = 1.0f;
     p->origin[0] = 0.5f * (rectMin[0] + rectMax[0]);
     p->origin[1] = 0.5f * (rectMin[1] + rectMax[1]);
-    p->half[0] = 0.5f * (rectMax[0] - rectMin[0]);
-    p->half[1] = 0.5f * (rectMax[1] - rectMin[1]);
+    p->halfExt[0] = 0.5f * (rectMax[0] - rectMin[0]);
+    p->halfExt[1] = 0.5f * (rectMax[1] - rectMin[1]);
     p->kind = kind;
     p->flags = flags;
     p->param[0] = 0.0f; p->param[1] = 0.0f;
@@ -150,7 +150,7 @@ uint32_t ano_ui_rrect(AnoUiBuilder *b, const float rectMin[2], const float rectM
         p->radii[i] = radii ? radii[i] : 0.0f;
         p->color[i] = color[i];
     }
-    radii_clamp(p->radii, p->half);
+    radii_clamp(p->radii, p->halfExt);
     p->param[0] = fmaxf(borderWidth, 0.0f);
     return idx;
 }
@@ -166,7 +166,7 @@ uint32_t ano_ui_shadow(AnoUiBuilder *b, const float rectMin[2], const float rect
         return idx;
     AnoUiPrim *p = &b->prims[idx];
     float r[4] = { cornerRadius, cornerRadius, cornerRadius, cornerRadius };
-    radii_clamp(r, p->half);
+    radii_clamp(r, p->halfExt);
     for (int i = 0; i < 4; i++) {
         p->radii[i] = r[0];
         p->color[i] = color[i];
@@ -188,7 +188,7 @@ uint32_t ano_ui_image(AnoUiBuilder *b, const float rectMin[2], const float rectM
         p->radii[i] = radii ? radii[i] : 0.0f;
         p->color[i] = tint[i];
     }
-    radii_clamp(p->radii, p->half);
+    radii_clamp(p->radii, p->halfExt);
     p->param[0] = fmaxf(lod, 0.0f);
     p->aux0 = texIndex;
     return idx;

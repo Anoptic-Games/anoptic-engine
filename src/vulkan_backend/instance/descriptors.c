@@ -544,7 +544,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		VkDescriptorBufferInfo globalMeshInfo = {};
 		globalMeshInfo.buffer = rendererState.culling.meshDataBuffer[i];
 		globalMeshInfo.offset = 0;
-		globalMeshInfo.range = sizeof(uint32_t) * 9 * maxMeshes; // MeshData is 9 u32/slot (== buffer stride)
+		globalMeshInfo.range = sizeof(GpuMeshData) * maxMeshes;
 
 		VkDescriptorBufferInfo compactedEntityIndicesInfo = {};
 		compactedEntityIndicesInfo.buffer = rendererState.culling.compactedEntityIndicesBuffer[i];
@@ -564,7 +564,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		VkDescriptorBufferInfo lightRuntimeInfo = {};
 		lightRuntimeInfo.buffer = rendererState.lightRuntimeBuffer.buffer[i]; // ×3 device-local, lightsetup.comp output
 		lightRuntimeInfo.offset = 0;
-		lightRuntimeInfo.range = (VkDeviceSize)(sizeof(float) * 16u) * rendererState.lightRuntimeBuffer.capacity; // 64B/light (LightRuntime)
+		lightRuntimeInfo.range = (VkDeviceSize)sizeof(GpuLightRuntime) * rendererState.lightRuntimeBuffer.capacity;
 
 		VkWriteDescriptorSet descriptorWrites[11] = {};
 
@@ -595,7 +595,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
 		VkDescriptorBufferInfo entityInfo = {};
 		entityInfo.buffer = rendererState.culling.entity.device;   // ×1 device-local (SlotUpload)
 		entityInfo.offset = 0;
-		entityInfo.range = sizeof(uint32_t) * 2 * rendererState.culling.maxEntities;
+		entityInfo.range = sizeof(GpuEntityInfo) * rendererState.culling.maxEntities;
 
 		descriptorWrites[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[3].dstSet = rendererState.frames[i].views[0].globalSet;
@@ -681,7 +681,7 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         VkDescriptorBufferInfo meshDataInfo = {};
         meshDataInfo.buffer = rendererState.culling.meshDataBuffer[i];
         meshDataInfo.offset = 0;
-        meshDataInfo.range = sizeof(uint32_t) * 9 * maxMeshes; // MeshData is 9 u32/slot (== buffer stride)
+        meshDataInfo.range = sizeof(GpuMeshData) * maxMeshes;
 
         VkDescriptorBufferInfo meshBoundsInfo = {};
         meshBoundsInfo.buffer = rendererState.culling.meshBoundsBuffer[i];
@@ -833,4 +833,3 @@ void updateUboDescriptorSets(VulkanContext* ctx, RendererState* state)
         vkUpdateDescriptorSets(ctx->device, 1, &shadowXformWrite, 0, NULL);
 	}
 }
-

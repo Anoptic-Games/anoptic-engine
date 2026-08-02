@@ -54,13 +54,14 @@ struct UiPaint {
     uint stopFirst;
     uint stopCount;
     uint flags;
-    vec4 xform01;   // 2x3 pixel->gradient space, rows packed
-    vec4 xform2;    // z,w padding
+    float xform[6]; // 2x3 pixel->gradient space
+    float pad[2];
 };
 
 struct UiStop {
     vec4 color;     // premultiplied linear
-    vec4 t;         // x = t, yzw padding
+    float t;
+    float pad[3];
 };
 
 layout(std430, set = 0, binding = 4) readonly buffer UiPrims  { UiPrim  uiPrims[];  };
@@ -147,14 +148,14 @@ float ui_clip_cov(uint ref, uint clipCount, vec2 pxTL)
 // pad). Mirrors ui_stop_color in ui_raster_ref.c.
 vec4 ui_stop_color(uint first, uint count, float t)
 {
-    if (t <= uiStops[first].t.x)
+    if (t <= uiStops[first].t)
         return uiStops[first].color;
     uint last = first + count - 1u;
-    if (t >= uiStops[last].t.x)
+    if (t >= uiStops[last].t)
         return uiStops[last].color;
     for (uint i = 0u; i + 1u < count; i++)
     {
-        float t0 = uiStops[first + i].t.x, t1 = uiStops[first + i + 1u].t.x;
+        float t0 = uiStops[first + i].t, t1 = uiStops[first + i + 1u].t;
         if (t < t1)
         {
             float f = t1 > t0 ? (t - t0) / (t1 - t0) : 0.0;
@@ -175,8 +176,8 @@ vec4 ui_paint_eval(uint paintRef, uint paintCount, vec2 px, vec4 base)
     UiPaint pa = uiPaints[paintRef];
     if (pa.stopCount == 0u)
         return vec4(0.0);
-    vec2 g = vec2(pa.xform01.x * px.x + pa.xform01.y * px.y + pa.xform01.z,
-                  pa.xform01.w * px.x + pa.xform2.x * px.y + pa.xform2.y);
+    vec2 g = vec2(pa.xform[0] * px.x + pa.xform[1] * px.y + pa.xform[2],
+                  pa.xform[3] * px.x + pa.xform[4] * px.y + pa.xform[5]);
     float t = pa.kind == UI_GRAD_RADIAL ? length(g)
             : pa.kind == UI_GRAD_CONIC  ? atan(g.y, g.x) * 0.15915494309189535 + 0.5
                                         : g.x;

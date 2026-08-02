@@ -42,7 +42,7 @@ void shadow_caster_attach(RendererState* st, uint32_t lightPalIdx, uint32_t regR
     uint32_t blockSize = (lightType == LIGHT_TYPE_POINT) ? ANO_SHADOW_CUBE_FACES : 1u;
     for (uint32_t f = 0; f < blockSize; f++) {
         ShadowFrustumConfig c = { .lightIndex = lightPalIdx, .lightType = lightType,
-            .faceIndex = (lightType == LIGHT_TYPE_POINT ? f : 0u), .active = 1u };
+            .faceIndex = (lightType == LIGHT_TYPE_POINT ? f : 0u), .live = 1u };
         st->shadowCfgMirror[base + f] = c;
         slot_upload_stage(&st->shadowConfig, frameIndex, base + f, &c);
     }
@@ -62,7 +62,7 @@ void shadow_caster_detach(RendererState* st, uint32_t regRow, uint32_t frameInde
     uint32_t blockSize = (base >= ANO_SHADOW_RT_POINT_BASE) ? ANO_SHADOW_CUBE_FACES : 1u;
     for (uint32_t f = 0; f < blockSize; f++) {
         ShadowFrustumConfig c = st->shadowCfgMirror[base + f];
-        c.active = 0u;
+        c.live = 0u;
         st->shadowCfgMirror[base + f] = c;
         slot_upload_stage(&st->shadowConfig, frameIndex, base + f, &c);
     }
@@ -103,7 +103,7 @@ static bool next_owned_block(const RendererState* st, uint32_t lightIdx, uint32_
                              uint32_t* outSize, uint32_t* outType) {
     for (; *s < st->shadowFrustumNext; (*s)++) {
         ShadowFrustumConfig owner = st->shadowCfgMirror[*s];
-        if (!owner.active || owner.lightIndex != lightIdx) continue;
+        if (!owner.live || owner.lightIndex != lightIdx) continue;
         *outSize = owner.lightType == LIGHT_TYPE_POINT ? ANO_SHADOW_CUBE_FACES : 1u;
         *outType = owner.lightType;
         return true;
@@ -146,7 +146,7 @@ static uint32_t static_shadow_release_owned(RendererState* st, uint32_t lightIdx
     for (uint32_t s = 0; next_owned_block(st, lightIdx, &s, &blockSize, &blockType); s += blockSize) {
         for (uint32_t f = 0; f < blockSize; f++) {
             ShadowFrustumConfig c = st->shadowCfgMirror[s + f];
-            c.active = 0u;
+            c.live = 0u;
             st->shadowCfgMirror[s + f] = c;
             slot_upload_stage(&st->shadowConfig, frameIndex, s + f, &c);
         }
@@ -192,7 +192,7 @@ void register_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t light
     }
     for (uint32_t f = 0; f < blockSize; f++) {
         ShadowFrustumConfig c = { .lightIndex = lightIdx, .lightType = lightType,
-            .faceIndex = (lightType == LIGHT_TYPE_POINT ? f : 0u), .active = 1u };
+            .faceIndex = (lightType == LIGHT_TYPE_POINT ? f : 0u), .live = 1u };
         st->shadowCfgMirror[base + f] = c;
         slot_upload_stage(&st->shadowConfig, frameIndex, base + f, &c);
     }
@@ -234,4 +234,3 @@ void refresh_static_shadow(RendererState* st, uint32_t lightIdx, uint32_t parent
     *outType = LIGHT_TYPE_COUNT; // block-less: no type to disagree with
     return false;
 }
-
