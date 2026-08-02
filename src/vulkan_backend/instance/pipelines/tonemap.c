@@ -6,6 +6,7 @@
 #include <anoptic_memory.h>
 #include <anoptic_filesystem.h>
 #include <anoptic_log.h>
+#include "vulkan_backend/instance/descriptor_layout_schema.h"
 #include "vulkan_backend/instance/pipeline.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,17 +20,15 @@
 // Cache idiom: refused mint -> VK_NULL_HANDLE, init continues.
 bool ano_vk_init_tonemap(VulkanContext* ctx, RendererState* state)
 {
-	// One combined image sampler, fragment-only.
-	VkDescriptorSetLayoutBinding samplerBinding = {};
-	samplerBinding.binding = 0;
-	samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	samplerBinding.descriptorCount = 1;
-	samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	const auto& specs = ANO_VK_TONEMAP_BINDINGS;
+	VkDescriptorSetLayoutBinding bindings[ANO_VK_TONEMAP_BINDINGS.count] = {};
+	if (!ano_vk_materialize_layout_bindings(specs, bindings))
+		return false;
 
 	VkDescriptorSetLayoutCreateInfo setLayoutInfo = {};
 	setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	setLayoutInfo.bindingCount = 1;
-	setLayoutInfo.pBindings = &samplerBinding;
+	setLayoutInfo.bindingCount = specs.count;
+	setLayoutInfo.pBindings = bindings;
 	if (vkCreateDescriptorSetLayout(ctx->device, &setLayoutInfo, NULL, &state->tonemapSetLayout) != VK_SUCCESS)
 	{
 		ano_log(ANO_FATAL, "Failed to create tonemap descriptor set layout!");

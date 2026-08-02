@@ -5,6 +5,7 @@
 #include <anoptic_memory.h>
 #include <anoptic_log.h>
 #include "vulkan_backend/components.h"
+#include "vulkan_backend/pipeline_registry.h"
 #include "vulkan_backend/structs.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -12,21 +13,12 @@
 #include <meta>
 #include <type_traits>
 
-// Drawing pipeline types in draw-slot order.
-const PipelineType ano_draw_pipelines[] = {
-    PIPELINE_FLAT,          // opaque
-    PIPELINE_TRANSMISSION,  // transmission
-    PIPELINE_ADDITIVE,      // additive
-    PIPELINE_FLAT_TWOSIDED, // doubleSided
-    PIPELINE_FLAT_MASKED,   // MASK cutout
-};
-
 // drawSlotOf map: 16 entries (cull.comp uvec4[4]).
 static_assert(PIPELINE_FLAT_MASKED < 16, "material-carried pipeline types must fit the 16-entry drawSlotOf map (CullUBO/cull.comp)");
 
 // out: draw-pipeline count (== per-view draw-slot stride)
 uint32_t ano_draw_pipeline_count(void) {
-    return (uint32_t)(sizeof(ano_draw_pipelines) / sizeof(ano_draw_pipelines[0]));
+    return ANO_PIPELINE_REGISTRY.drawCount;
 }
 
 // out: compacted-draw partition count
@@ -37,10 +29,8 @@ uint32_t ano_draw_partition_count(void) {
 // in:  type (any PipelineType)
 // out: draw-partition index, or ANO_NO_DRAW_SLOT if never draws
 uint32_t ano_draw_slot_of(PipelineType type) {
-    for (uint32_t i = 0; i < ano_draw_pipeline_count(); ++i) {
-        if (ano_draw_pipelines[i] == type) return i;
-    }
-    return ANO_NO_DRAW_SLOT;
+    const AnoPipelineSpec* spec = ano_pipeline_spec(type);
+    return spec ? spec->drawSlot : ANO_NO_DRAW_SLOT;
 }
 
 void ano_vk_register_mesh(RenderPrimitives* primitives, MeshData data) {
@@ -130,7 +120,7 @@ PbrFeatureFlags ano_vk_get_active_pipelines_supported_features(const struct Rend
     PbrFeatureFlags features = PBR_FEATURE_NONE;
     for (int i = 0; i < PIPELINE_TYPE_COUNT; ++i) {
         if (state->prototypes[i].layout != VK_NULL_HANDLE && state->prototypes[i].implementationCount > 0) {
-            if (state->prototypes[i].implementations[0].bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+            if (ANO_PIPELINE_REGISTRY.values[i].kind == AnoPipelineKind::graphics) {
                 features |= state->prototypes[i].supportedFeatures;
             }
         }

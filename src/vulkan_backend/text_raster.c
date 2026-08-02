@@ -9,8 +9,10 @@
 
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/ui_raster.h"
+#include "vulkan_backend/instance/descriptor_layout_schema.h"
 #include "vulkan_backend/instance/instanceInit.h"
 #include "vulkan_backend/instance/pipeline.h"
+#include "vulkan_backend/pipeline_registry.h"
 #include "vulkan_backend/texture/texture.h"
 #include "vulkan_backend/vertex/vertex.h"
 #include "cpp/ano_alloc.h"
@@ -308,20 +310,13 @@ bool ano_vk_text_create_buffer(VulkanContext* ctx, VkDeviceSize size, VkBufferUs
 // Commit-last: implementationCount published after the array exists.
 static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
 {
-    VkDescriptorSetLayoutBinding bindings[11] = {};
-    for (uint32_t b = 0; b < 11; ++b)
-    {
-        bindings[b].binding = b;
-        bindings[b].descriptorType = (b == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
-                                              : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[b].descriptorCount = 1;
-        // World lane reads the three glyph buffers, overlay image + UI tables compute-only.
-        bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
-                               | ((b < 3) ? VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT : 0u);
-    }
+    const auto& specs = ANO_VK_TEXT_RASTER_BINDINGS;
+    VkDescriptorSetLayoutBinding bindings[ANO_VK_TEXT_RASTER_BINDINGS.count] = {};
+    if (!ano_vk_materialize_layout_bindings(specs, bindings))
+        return false;
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 11;
+    layoutInfo.bindingCount = specs.count;
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->textRasterSetLayout) != VK_SUCCESS)
         return false;
@@ -343,17 +338,13 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
                                &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].layout) != VK_SUCCESS)
         return false;
 
-    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].type = PIPELINE_COMPUTE_TEXTRASTER;
-    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations =
-        ano::allocate_zero<PipelineImplementation>(1);
-    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].supportedFeatures = PBR_FEATURE_NONE;
-    if (state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations == NULL)
+    if (!ano_pipeline_prepare_prototype(
+            &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER], PIPELINE_COMPUTE_TEXTRASTER))
         return false;
-    state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementationCount = 1;
 
     // The build lambda owns no resources; the tail discharges the borrowed blob/module once.
     struct Buffer code = {};
-    if (!loadFile("resources/shaders/textraster.comp.spv", &code))
+    if (!loadFile(ano_pipeline_compute_shader_path<PIPELINE_COMPUTE_TEXTRASTER>(), &code))
         return false;
     VkShaderModule module = createShaderModule(ctx->device, &code);
     bool built = [&]() {
@@ -373,8 +364,6 @@ static bool text_init_raster_pipeline(VulkanContext* ctx, RendererState* state)
             ctx->device, state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].cache,
             1, &pipelineInfo, NULL,
             &state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].pipeline);
-        state->prototypes[PIPELINE_COMPUTE_TEXTRASTER].implementations[0].bindPoint =
-            VK_PIPELINE_BIND_POINT_COMPUTE;
         return result == VK_SUCCESS;
     }();
     ano_aligned_free(code.data);

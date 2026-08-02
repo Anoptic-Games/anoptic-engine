@@ -8,9 +8,10 @@
 
 #include "vulkan_backend/structs.h"
 #include "vulkan_backend/frame/frame.h"
+#include "vulkan_backend/pipeline_registry.h"
 
 // Frame pass table. ORDER encodes the depth/EQUAL contract, do not reorder. Shared via frame.h.
-const RenderPassDef ano_frame_passes[] = {
+extern constexpr RenderPassDef ano_frame_passes[] = {
     // 0. GPU animation update
     {
         .type       = PASS_COMPUTE,
@@ -133,5 +134,8 @@ const RenderPassDef ano_frame_passes[] = {
         .resolveMode            = VK_RESOLVE_MODE_AVERAGE_BIT,
     },
 };
+
+static_assert(ano_pipeline_passes_valid(ano_frame_passes),
+    "frame passes must cover every frame-scheduled pipeline with a valid implementation and bind domain");
 
 const uint32_t ano_frame_pass_count = sizeof(ano_frame_passes) / sizeof(ano_frame_passes[0]);

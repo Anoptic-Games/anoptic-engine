@@ -27,6 +27,10 @@ bool loadFile(const char* filename, struct Buffer* buffer);
 // out: module, or VK_NULL_HANDLE on refuse (sole fail path -> ano_pipeline_stage)
 [[nodiscard]] VkShaderModule createShaderModule(VkDevice device, struct Buffer* code);
 
+// Materialize the reflected count/features/bind point into an otherwise uncommitted prototype.
+// false leaves implementations/count unpublished.
+[[nodiscard]] bool ano_pipeline_prepare_prototype(PipelinePrototype* proto, PipelineType type);
+
 // Sole module -> stage path. VK_NULL_HANDLE stops here (VUID-VkPipelineShaderStageCreateInfo-module).
 // in:  stage bit; module from createShaderModule; spec outlives create, NULL for none
 // out: false, *out untouched on VK_NULL_HANDLE; else true, *out complete

@@ -6,7 +6,9 @@
 #include <anoptic_memory.h>
 #include <anoptic_filesystem.h>
 #include <anoptic_log.h>
+#include "cpp/ano_alloc.h"
 #include "pipeline.h"
+#include "vulkan_backend/pipeline_registry.h"
 #include "pipelines/flat.h"
 #include "pipelines/transmission.h"
 #include "pipelines/additive.h"
@@ -95,6 +97,31 @@ VkShaderModule createShaderModule(VkDevice device, struct Buffer* code)
 	}
 
 	return shaderModule;
+}
+
+bool ano_pipeline_prepare_prototype(PipelinePrototype* proto, PipelineType type)
+{
+	const AnoPipelineSpec* spec = ano_pipeline_spec(type);
+	if (spec == nullptr || spec->kind == AnoPipelineKind::skeleton ||
+		spec->implementationCount == 0 || proto->implementations != nullptr ||
+		proto->implementationCount != 0)
+		return false;
+
+	PipelineImplementation* implementations =
+		ano::allocate_zero<PipelineImplementation>(spec->implementationCount);
+	if (implementations == nullptr)
+		return false;
+
+	const VkPipelineBindPoint bindPoint = spec->kind == AnoPipelineKind::graphics
+		? VK_PIPELINE_BIND_POINT_GRAPHICS : VK_PIPELINE_BIND_POINT_COMPUTE;
+	for (uint32_t i = 0; i < spec->implementationCount; ++i)
+		implementations[i].bindPoint = bindPoint;
+
+	proto->type = type;
+	proto->supportedFeatures = spec->supportedFeatures;
+	proto->implementations = implementations;
+	proto->implementationCount = spec->implementationCount;
+	return true;
 }
 
 // Load flat.task and fill a TASK stage with the {shadowPass, coneCull} specialization

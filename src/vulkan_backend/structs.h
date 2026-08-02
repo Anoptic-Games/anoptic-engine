@@ -248,9 +248,9 @@ typedef struct MaterialData
 
     // 2. Core Material Properties
     [[=AnoMaterialDefault{4294967295.0}]][[=AnoMaterialTexture{PBR_FEATURE_NORMAL_TEXTURE, AnoGltfTextureSource::normal, AnoMaterialTextureDomain::data, true}]] uint32_t normalTexture;
-    [[=AnoMaterialDefault{1.0}]] float normalScale;
+    [[=AnoMaterialDefault{1.0}]][[=AnoMaterialTextureProperty{AnoGltfTextureSource::normal, AnoMaterialTexturePropertyKind::scale}]] float normalScale;
     [[=AnoMaterialDefault{4294967295.0}]][[=AnoMaterialTexture{PBR_FEATURE_OCCLUSION_TEXTURE, AnoGltfTextureSource::occlusion, AnoMaterialTextureDomain::data, true}]] uint32_t occlusionTexture;
-    [[=AnoMaterialDefault{1.0}]] float occlusionStrength;
+    [[=AnoMaterialDefault{1.0}]][[=AnoMaterialTextureProperty{AnoGltfTextureSource::occlusion, AnoMaterialTexturePropertyKind::strength}]] float occlusionStrength;
     [[=AnoMaterialDefault{4294967295.0}]][[=AnoMaterialTexture{PBR_FEATURE_EMISSIVE_TEXTURE, AnoGltfTextureSource::emissive, AnoMaterialTextureDomain::color, true}]] uint32_t emissiveTexture;
     
     // 3. Emissive Factor (aligned to 16 bytes)

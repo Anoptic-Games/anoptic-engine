@@ -11,36 +11,103 @@
 
 /* Enums */
 
+// PBR Feature Flags mapping to glTF properties and extensions
+typedef enum PbrFeatureBits {
+    PBR_FEATURE_NONE = 0,
+    // Core properties
+    PBR_FEATURE_BASE_COLOR_FACTOR          = 1 << 0,
+    PBR_FEATURE_BASE_COLOR_TEXTURE         = 1 << 1,
+    PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR  = 1 << 2,
+    PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE = 1 << 3,
+    PBR_FEATURE_NORMAL_TEXTURE             = 1 << 4,
+    PBR_FEATURE_OCCLUSION_TEXTURE          = 1 << 5,
+    PBR_FEATURE_EMISSIVE_FACTOR            = 1 << 6,
+    PBR_FEATURE_EMISSIVE_TEXTURE           = 1 << 7,
+
+    // Alpha modes
+    PBR_FEATURE_ALPHA_MODE_OPAQUE          = 1 << 8,
+    PBR_FEATURE_ALPHA_MODE_MASK            = 1 << 9,
+    PBR_FEATURE_ALPHA_MODE_BLEND           = 1 << 10,
+
+    // Double-sided
+    PBR_FEATURE_DOUBLE_SIDED               = 1 << 11,
+
+    // Ratified extensions
+    PBR_FEATURE_CLEARCOAT                  = 1 << 12,
+    PBR_FEATURE_TRANSMISSION               = 1 << 13,
+    PBR_FEATURE_VOLUME                     = 1 << 14,
+    PBR_FEATURE_IOR                        = 1 << 15,
+    PBR_FEATURE_SPECULAR                   = 1 << 16,
+    PBR_FEATURE_SHEEN                      = 1 << 17,
+    PBR_FEATURE_IRIDESCENCE                = 1 << 18,
+    PBR_FEATURE_ANISOTROPY                 = 1 << 19,
+    PBR_FEATURE_DISPERSION                 = 1 << 20,
+    PBR_FEATURE_DIFFUSE_TRANSMISSION       = 1 << 21,
+    PBR_FEATURE_EMISSIVE_STRENGTH          = 1 << 22,
+
+    // Legacy extensions
+    PBR_FEATURE_SPECULAR_GLOSSINESS        = 1 << 23,
+} PbrFeatureBits;
+
+typedef uint32_t PbrFeatureFlags;
+
+inline constexpr uint32_t ANO_NO_DRAW_SLOT = UINT32_MAX;
+inline constexpr PbrFeatureFlags ANO_PBR_FLAT_FEATURES =
+    PBR_FEATURE_BASE_COLOR_FACTOR | PBR_FEATURE_BASE_COLOR_TEXTURE |
+    PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR | PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE |
+    PBR_FEATURE_NORMAL_TEXTURE | PBR_FEATURE_OCCLUSION_TEXTURE |
+    PBR_FEATURE_ALPHA_MODE_OPAQUE | PBR_FEATURE_ALPHA_MODE_BLEND;
+inline constexpr PbrFeatureFlags ANO_PBR_TRANSMISSION_FEATURES =
+    ANO_PBR_FLAT_FEATURES | PBR_FEATURE_TRANSMISSION | PBR_FEATURE_VOLUME |
+    PBR_FEATURE_IOR | PBR_FEATURE_DOUBLE_SIDED;
+inline constexpr PbrFeatureFlags ANO_PBR_ADDITIVE_FEATURES =
+    PBR_FEATURE_BASE_COLOR_FACTOR | PBR_FEATURE_BASE_COLOR_TEXTURE |
+    PBR_FEATURE_EMISSIVE_FACTOR | PBR_FEATURE_EMISSIVE_TEXTURE |
+    PBR_FEATURE_EMISSIVE_STRENGTH | PBR_FEATURE_ALPHA_MODE_BLEND |
+    PBR_FEATURE_DOUBLE_SIDED;
+
+enum class AnoPipelineKind : uint8_t { skeleton, graphics, compute };
+enum class AnoPipelineSchedule : uint8_t { none, frame, explicit_path };
+enum class AnoShaderFamily : uint8_t {
+    none, flat, flat_masked, transmission, additive, cull, update, scatter,
+    tpsort, lightcull, shadowsetup, lightsetup, hiz, textraster
+};
+
+struct AnoPipelineSpec final {
+    AnoPipelineKind kind;
+    AnoPipelineSchedule schedule;
+    uint32_t implementationCount;
+    uint32_t drawSlot;
+    PbrFeatureFlags supportedFeatures;
+    AnoShaderFamily shader;
+};
+struct AnoPipelineSentinel final {};
+
 typedef enum PipelineType
 {
-    PIPELINE_FLAT = 0,          // Flat-shaded geometry
-    PIPELINE_PARTICLE,          // Point-sprite / billboard particles
-    PIPELINE_SDF_COMPOSITE,     // SDF raymarching compositing pass
-    PIPELINE_UI,                // UI overlay
-    PIPELINE_TRANSMISSION,      // Refraction / transmission & volume effects
-    PIPELINE_ADDITIVE,          // Order-independent additive (ONE/ONE) glows
-    PIPELINE_FLAT_TWOSIDED,     // Opaque flat, cullMode NONE (glTF doubleSided)
-    PIPELINE_FLAT_MASKED,       // Alpha-tested cutout (glTF alphaMode MASK), cullMode NONE
-    PIPELINE_COMPUTE_CULL,      // GPU compute culling
-    PIPELINE_COMPUTE_UPDATE,    // GPU animation/transform update pass
-    PIPELINE_COMPUTE_SCATTER,   // streamed-transform scatter pass
-    PIPELINE_COMPUTE_TPSORT,    // transparency back-to-front sort of the "over" lane
+    PIPELINE_FLAT [[=AnoPipelineSpec{AnoPipelineKind::graphics, AnoPipelineSchedule::frame, 3, 0, ANO_PBR_FLAT_FEATURES, AnoShaderFamily::flat}]] = 0,
+    PIPELINE_PARTICLE [[=AnoPipelineSpec{AnoPipelineKind::skeleton, AnoPipelineSchedule::none, 0, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::none}]],
+    PIPELINE_SDF_COMPOSITE [[=AnoPipelineSpec{AnoPipelineKind::skeleton, AnoPipelineSchedule::none, 0, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::none}]],
+    PIPELINE_UI [[=AnoPipelineSpec{AnoPipelineKind::skeleton, AnoPipelineSchedule::none, 0, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::none}]],
+    PIPELINE_TRANSMISSION [[=AnoPipelineSpec{AnoPipelineKind::graphics, AnoPipelineSchedule::frame, 2, 1, ANO_PBR_TRANSMISSION_FEATURES, AnoShaderFamily::transmission}]],
+    PIPELINE_ADDITIVE [[=AnoPipelineSpec{AnoPipelineKind::graphics, AnoPipelineSchedule::frame, 1, 2, ANO_PBR_ADDITIVE_FEATURES, AnoShaderFamily::additive}]],
+    PIPELINE_FLAT_TWOSIDED [[=AnoPipelineSpec{AnoPipelineKind::graphics, AnoPipelineSchedule::frame, 3, 3, ANO_PBR_FLAT_FEATURES | PBR_FEATURE_DOUBLE_SIDED, AnoShaderFamily::flat}]],
+    PIPELINE_FLAT_MASKED [[=AnoPipelineSpec{AnoPipelineKind::graphics, AnoPipelineSchedule::frame, 3, 4, ANO_PBR_FLAT_FEATURES | PBR_FEATURE_DOUBLE_SIDED | PBR_FEATURE_ALPHA_MODE_MASK, AnoShaderFamily::flat_masked}]],
+    PIPELINE_COMPUTE_CULL [[=AnoPipelineSpec{AnoPipelineKind::compute, AnoPipelineSchedule::frame, 1, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::cull}]],
+    PIPELINE_COMPUTE_UPDATE [[=AnoPipelineSpec{AnoPipelineKind::compute, AnoPipelineSchedule::frame, 1, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::update}]],
+    PIPELINE_COMPUTE_SCATTER [[=AnoPipelineSpec{AnoPipelineKind::compute, AnoPipelineSchedule::frame, 1, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::scatter}]],
+    PIPELINE_COMPUTE_TPSORT [[=AnoPipelineSpec{AnoPipelineKind::compute, AnoPipelineSchedule::explicit_path, 1, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::tpsort}]],
     // Skeleton slots: buffers/prototype table size for them, no pipeline created yet
-    PIPELINE_DECAL,             // (skeleton) projected / UV-overlay decal draw stream
-    PIPELINE_SKINNED,           // (skeleton) skinned-mesh draw stream
-    PIPELINE_COMPUTE_LIGHTCULL, // clustered-forward froxel light assignment
-    PIPELINE_COMPUTE_SHADOWSETUP, // per-shadow-frustum light-space viewProj + frustum-plane build
-    PIPELINE_COMPUTE_LIGHTSETUP, // per-light world pose precompute
-    PIPELINE_COMPUTE_HIZ,       // hierarchical-Z depth pyramid build for occlusion cull
-    PIPELINE_COMPUTE_TEXTRASTER,// Scanline Sweeper glyph coverage raster into the text overlay
-    PIPELINE_TYPE_COUNT         // Sentinel, array sizing
+    PIPELINE_DECAL [[=AnoPipelineSpec{AnoPipelineKind::skeleton, AnoPipelineSchedule::none, 0, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::none}]],
+    PIPELINE_SKINNED [[=AnoPipelineSpec{AnoPipelineKind::skeleton, AnoPipelineSchedule::none, 0, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::none}]],
+    PIPELINE_COMPUTE_LIGHTCULL [[=AnoPipelineSpec{AnoPipelineKind::compute, AnoPipelineSchedule::frame, 1, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::lightcull}]],
+    PIPELINE_COMPUTE_SHADOWSETUP [[=AnoPipelineSpec{AnoPipelineKind::compute, AnoPipelineSchedule::frame, 1, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::shadowsetup}]],
+    PIPELINE_COMPUTE_LIGHTSETUP [[=AnoPipelineSpec{AnoPipelineKind::compute, AnoPipelineSchedule::frame, 1, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::lightsetup}]],
+    PIPELINE_COMPUTE_HIZ [[=AnoPipelineSpec{AnoPipelineKind::compute, AnoPipelineSchedule::explicit_path, 2, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::hiz}]],
+    PIPELINE_COMPUTE_TEXTRASTER [[=AnoPipelineSpec{AnoPipelineKind::compute, AnoPipelineSchedule::explicit_path, 1, ANO_NO_DRAW_SLOT, PBR_FEATURE_NONE, AnoShaderFamily::textraster}]],
+    PIPELINE_TYPE_COUNT [[=AnoPipelineSentinel{}]]
 } PipelineType;
 
-// Drawing pipeline types get an indirect/drawCount/compacted-index partition, indexed by draw slot.
-// Single source of truth: order defines slot index, length defines partition count.
-#define ANO_NO_DRAW_SLOT 0xFFFFFFFFu
-
-extern const PipelineType ano_draw_pipelines[]; // drawing pipeline types, in slot order
 uint32_t ano_draw_pipeline_count(void);         // number of drawing types == per-camera-view draw-slot stride
 uint32_t ano_draw_slot_of(PipelineType type);   // enum -> draw slot, ANO_NO_DRAW_SLOT if it never draws
 
@@ -118,46 +185,6 @@ void ano_vk_increment_texture_usage(RenderPrimitives* primitives, uint32_t index
 void ano_vk_decrement_texture_usage(RenderPrimitives* primitives, uint32_t index);
 
 void ano_vk_cleanup_primitives(RenderPrimitives* primitives);
-
-// PBR Feature Flags mapping to glTF properties and extensions
-typedef enum PbrFeatureBits {
-    PBR_FEATURE_NONE = 0,
-    // Core properties
-    PBR_FEATURE_BASE_COLOR_FACTOR          = 1 << 0,
-    PBR_FEATURE_BASE_COLOR_TEXTURE         = 1 << 1,
-    PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR  = 1 << 2,
-    PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE = 1 << 3,
-    PBR_FEATURE_NORMAL_TEXTURE             = 1 << 4,
-    PBR_FEATURE_OCCLUSION_TEXTURE          = 1 << 5,
-    PBR_FEATURE_EMISSIVE_FACTOR            = 1 << 6,
-    PBR_FEATURE_EMISSIVE_TEXTURE           = 1 << 7,
-    
-    // Alpha modes
-    PBR_FEATURE_ALPHA_MODE_OPAQUE          = 1 << 8,
-    PBR_FEATURE_ALPHA_MODE_MASK            = 1 << 9,
-    PBR_FEATURE_ALPHA_MODE_BLEND           = 1 << 10,
-    
-    // Double-sided
-    PBR_FEATURE_DOUBLE_SIDED               = 1 << 11,
-    
-    // Ratified extensions
-    PBR_FEATURE_CLEARCOAT                  = 1 << 12,
-    PBR_FEATURE_TRANSMISSION               = 1 << 13,
-    PBR_FEATURE_VOLUME                     = 1 << 14,
-    PBR_FEATURE_IOR                        = 1 << 15,
-    PBR_FEATURE_SPECULAR                   = 1 << 16,
-    PBR_FEATURE_SHEEN                      = 1 << 17,
-    PBR_FEATURE_IRIDESCENCE                = 1 << 18,
-    PBR_FEATURE_ANISOTROPY                 = 1 << 19,
-    PBR_FEATURE_DISPERSION                 = 1 << 20,
-    PBR_FEATURE_DIFFUSE_TRANSMISSION       = 1 << 21,
-    PBR_FEATURE_EMISSIVE_STRENGTH          = 1 << 22,
-    
-    // Legacy extensions
-    PBR_FEATURE_SPECULAR_GLOSSINESS        = 1 << 23,
-} PbrFeatureBits;
-
-typedef uint32_t PbrFeatureFlags;
 
 typedef struct PipelineImplementation
 {

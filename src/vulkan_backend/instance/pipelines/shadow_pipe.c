@@ -6,6 +6,7 @@
 #include <anoptic_memory.h>
 #include <anoptic_filesystem.h>
 #include <anoptic_log.h>
+#include "vulkan_backend/instance/descriptor_layout_schema.h"
 #include "vulkan_backend/instance/pipeline.h"
 #include "flat.h"
 #include <stdio.h>
@@ -192,13 +193,12 @@ bool ano_vk_init_shadow(VulkanContext* ctx, RendererState* state)
 	// --- Moment prefilter pipeline: fullscreen separable box over the atlas (X then Y) ---
 	// One combined-image-sampler at set 0 + 16-byte push (dir + layer).
 	// Vertex: shadowblur.vert (layered) with vertex-stage gl_Layer, else tonemap.vert. Frag: shadowblur.frag.
-	VkDescriptorSetLayoutBinding blurBinding = {};
-	blurBinding.binding = 0;
-	blurBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	blurBinding.descriptorCount = 1;
-	blurBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	const auto& blurSpecs = ANO_VK_SHADOW_BLUR_BINDINGS;
+	VkDescriptorSetLayoutBinding blurBindings[ANO_VK_SHADOW_BLUR_BINDINGS.count] = {};
+	if (!ano_vk_materialize_layout_bindings(blurSpecs, blurBindings))
+		return false;
 	VkDescriptorSetLayoutCreateInfo blurSetInfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = 1, .pBindings = &blurBinding };
+		.bindingCount = blurSpecs.count, .pBindings = blurBindings };
 	if (vkCreateDescriptorSetLayout(ctx->device, &blurSetInfo, NULL, &state->shadowBlurSetLayout) != VK_SUCCESS) {
 		ano_log(ANO_FATAL, "Failed to create shadow blur set layout!"); return false; }
 

@@ -2,20 +2,25 @@
  *
  * SPDX-License-Identifier: LGPL-3.0 */
 
-#include "cpp/ano_alloc.h"
 #include <anoptic_log.h>
 #include "flat.h"
 #include "vulkan_backend/instance/pipeline.h"
-#include <stdio.h>
+#include "vulkan_backend/pipeline_registry.h"
 #include <stdlib.h>
 
-// Shared builder for the flat lanes: cullMode per lane; masked builds the alphaMode MASK cutout lane.
+// Shared builder for the reflected flat lanes.
 // Cache idiom: a pipeline cache is an optimization and VK_NULL_HANDLE is a legal pipelineCache
 // argument, so a refused mint zeroes the handle and the build carries on.
 // Commit-last idiom: implementationCount is published only once its array exists.
-static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto,
-                                PipelineType type, VkCullModeFlags cullMode, bool masked)
+template<PipelineType Type>
+static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
+	static_assert(Type == PIPELINE_FLAT || Type == PIPELINE_FLAT_TWOSIDED || Type == PIPELINE_FLAT_MASKED);
+	constexpr auto spec = ano_pipeline_spec<Type>();
+	constexpr bool masked = spec.shader == AnoShaderFamily::flat_masked;
+	constexpr VkCullModeFlags cullMode =
+		Type == PIPELINE_FLAT ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+
 	// 1. Setup cache
 	VkPipelineCacheCreateInfo cacheInfo = {};
 	cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -51,24 +56,8 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 		return false;
 	}
 
-	proto->type = type;
-	proto->implementations = ano::allocate_zero<PipelineImplementation>(3);
-	if (proto->implementations == NULL)
+	if (!ano_pipeline_prepare_prototype(proto, Type))
 		return false;
-	proto->implementationCount = 3;
-	proto->supportedFeatures =
-		PBR_FEATURE_BASE_COLOR_FACTOR |
-		PBR_FEATURE_BASE_COLOR_TEXTURE |
-		PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR |
-		PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE |
-		PBR_FEATURE_NORMAL_TEXTURE |
-		PBR_FEATURE_OCCLUSION_TEXTURE |
-		PBR_FEATURE_ALPHA_MODE_OPAQUE |
-		PBR_FEATURE_ALPHA_MODE_BLEND;
-	if (cullMode == VK_CULL_MODE_NONE)
-		proto->supportedFeatures |= PBR_FEATURE_DOUBLE_SIDED; // double-sided lane
-	if (masked)
-		proto->supportedFeatures |= PBR_FEATURE_ALPHA_MODE_MASK;
 
 	// Load shaders: mesh shader on capable devices, vertex shader on the fallback.
 	// Depth pre-pass variant (index 2) uses the ANO_DEPTH_ONLY compile of the same source.
@@ -81,21 +70,14 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 		fragShaderModule = VK_NULL_HANDLE, taskModule = VK_NULL_HANDLE;
 
 	bool ok = [&]() -> bool {
-	char geomShaderPath[64];
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
-		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
-	if (!loadFile(geomShaderPath, &geomShaderCode)) { geomShaderCode.data = NULL; return false; }
-
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
-		useMesh ? (useTask ? "flat_depth_task.mesh" : "flat_depth.mesh") : "flat_depth.vert");
-	if (!loadFile(geomShaderPath, &depthGeomShaderCode)) { depthGeomShaderCode.data = NULL; return false; }
+		if (!loadFile(ano_pipeline_geometry_shader_path<Type>(useMesh, useTask), &geomShaderCode))
+			{ geomShaderCode.data = NULL; return false; }
+		if (!loadFile(ano_pipeline_geometry_shader_path<Type>(useMesh, useTask, true), &depthGeomShaderCode))
+			{ depthGeomShaderCode.data = NULL; return false; }
 
 	// fp16 variant when the device has shaderFloat16; masked lane loads the ANO_ALPHA_MASK compile.
-	const char* fragPath = masked
-		? (ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_masked_fp16.frag.spv"
-		                                         : "resources/shaders/flat_masked.frag.spv")
-		: (ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/flat_fp16.frag.spv"
-		                                         : "resources/shaders/flat.frag.spv");
+		const char* fragPath =
+			ano_pipeline_fragment_shader_path<Type>(ctx->deviceCapabilities.shaderFloat16);
 	if (!loadFile(fragPath, &fragShaderCode)) { fragShaderCode.data = NULL; return false; }
 
 	geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
@@ -247,8 +229,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 
 	// Opaque variant (index 0): EQUAL, no write. Masked: LESS + write + alpha-to-coverage.
 	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) return false;
-	proto->implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	proto->implementations[0].depthWrite = masked ? VK_TRUE : VK_FALSE;
+		proto->implementations[0].depthWrite = masked ? VK_TRUE : VK_FALSE;
 	proto->implementations[0].blendEnable = VK_FALSE;
 
 	// Blended variant (index 1): mask off the id write, restore LESS.
@@ -264,8 +245,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	blendAttachments[1].colorWriteMask = 0; // id unwritten
 
 	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[1].pipeline) != VK_SUCCESS) return false;
-	proto->implementations[1].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	proto->implementations[1].depthWrite = VK_FALSE;
+		proto->implementations[1].depthWrite = VK_FALSE;
 	proto->implementations[1].blendEnable = VK_TRUE;
 
 	// Depth pre-pass variant (index 2): ANO_DEPTH_ONLY geometry, no fragment stage, no color attachments.
@@ -298,8 +278,7 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 	prepassInfo.pMultisampleState = &prepassMs;
 
 	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &prepassInfo, NULL, &proto->implementations[2].pipeline) != VK_SUCCESS) return false;
-	proto->implementations[2].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	proto->implementations[2].depthWrite = VK_TRUE;
+		proto->implementations[2].depthWrite = VK_TRUE;
 	proto->implementations[2].blendEnable = VK_FALSE;
 
 	return true;
@@ -318,18 +297,17 @@ static bool flat_init_with_cull(VulkanContext* ctx, RendererState* state, Pipeli
 
 bool ano_pipeline_flat_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
-	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT, VK_CULL_MODE_BACK_BIT, false);
+	return flat_init_with_cull<PIPELINE_FLAT>(ctx, state, proto);
 }
 
 bool ano_pipeline_flat_twosided_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
-	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT_TWOSIDED, VK_CULL_MODE_NONE, false);
+	return flat_init_with_cull<PIPELINE_FLAT_TWOSIDED>(ctx, state, proto);
 }
 
 bool ano_pipeline_flat_masked_init(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)
 {
-	// Cutout casters typically doubleSided: cullMode NONE.
-	return flat_init_with_cull(ctx, state, proto, PIPELINE_FLAT_MASKED, VK_CULL_MODE_NONE, true);
+	return flat_init_with_cull<PIPELINE_FLAT_MASKED>(ctx, state, proto);
 }
 
 void ano_pipeline_flat_cleanup(VulkanContext* ctx, RendererState* state, PipelinePrototype* proto)

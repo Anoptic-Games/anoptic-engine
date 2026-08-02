@@ -3,58 +3,68 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-#include "cpp/ano_alloc.h"
 #include <anoptic_log.h>
+#include "vulkan_backend/instance/descriptor_layout_schema.h"
 #include "vulkan_backend/instance/pipeline.h"
+#include "vulkan_backend/pipeline_registry.h"
 #include <stdlib.h>
 #include <stddef.h>
 
 #include <vulkan/vulkan.h>
 
-// One SPIR-V blob + module per compute stage, all held through the build lambda and discharged once.
-enum { SH_UPDATE, SH_SCATTER, SH_CULL, SH_HIZ, SH_HIZ_RESOLVE, SH_TPSORT, SH_LIGHTCULL,
-       SH_LIGHTSETUP, SH_SHADOWSETUP, SH_COUNT };
-
 // Compute prototypes + descriptor layouts.
 // Cache idiom: refused mint -> VK_NULL_HANDLE; init continues.
 // Commit-last: publish implementationCount only after array exists.
-// Unwind: the build lambda returns false; refused load clears blob (loadFile short-read dangling).
+template<PipelineType Type>
+static bool compute_build(VulkanContext* ctx, RendererState* state,
+    const VkSpecializationInfo* specialization = nullptr, uint32_t implementation = 0,
+    const char* shaderPath = ano_pipeline_compute_shader_path<Type>())
+{
+    constexpr auto spec = ano_pipeline_spec<Type>();
+    static_assert(spec.kind == AnoPipelineKind::compute);
+    PipelinePrototype* proto = &state->prototypes[Type];
+    if (proto->implementations == nullptr && !ano_pipeline_prepare_prototype(proto, Type))
+        return false;
+    if (proto->type != Type || implementation >= proto->implementationCount)
+        return false;
+
+    if (implementation == 0) {
+        VkPipelineCacheCreateInfo cacheInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+        if (vkCreatePipelineCache(ctx->device, &cacheInfo, NULL, &proto->cache) != VK_SUCCESS)
+            proto->cache = VK_NULL_HANDLE;
+    }
+
+    struct Buffer code = {};
+    if (!loadFile(shaderPath, &code))
+        return false;
+    VkShaderModule module = createShaderModule(ctx->device, &code);
+    VkComputePipelineCreateInfo pipelineInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .layout = proto->layout,
+    };
+    const bool built = ano_pipeline_stage(
+        VK_SHADER_STAGE_COMPUTE_BIT, module, specialization, &pipelineInfo.stage) &&
+        vkCreateComputePipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL,
+            &proto->implementations[implementation].pipeline) == VK_SUCCESS;
+    ano_aligned_free(code.data);
+    vkDestroyShaderModule(ctx->device, module, NULL);
+    return built;
+}
+
+// Unwind: the build lambda returns false; each typed mint discharges its shader immediately.
 bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
 {
-    struct { struct Buffer blob; VkShaderModule module; } sh[SH_COUNT] = {};
-
     bool ok = [&]() -> bool {
 
     // Compute Update Pipeline
-    VkDescriptorSetLayoutBinding updateBindings[4] = {};
-    
-    // 0: GlobalUBO
-    updateBindings[0].binding = 0;
-    updateBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    updateBindings[0].descriptorCount = 1;
-    updateBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    // 1: TransformSSBO
-    updateBindings[1].binding = 1;
-    updateBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    updateBindings[1].descriptorCount = 1;
-    updateBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    // 2: MotionSSBO
-    updateBindings[2].binding = 2;
-    updateBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    updateBindings[2].descriptorCount = 1;
-    updateBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    // 3: PrevTransformSSBO
-    updateBindings[3].binding = 3;
-    updateBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    updateBindings[3].descriptorCount = 1;
-    updateBindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    const auto& updateSpecs = ANO_VK_UPDATE_BINDINGS;
+    VkDescriptorSetLayoutBinding updateBindings[ANO_VK_UPDATE_BINDINGS.count] = {};
+    if (!ano_vk_materialize_layout_bindings(updateSpecs, updateBindings))
+        return false;
 
     VkDescriptorSetLayoutCreateInfo updateLayoutInfo = {};
     updateLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    updateLayoutInfo.bindingCount = 4;
+    updateLayoutInfo.bindingCount = updateSpecs.count;
     updateLayoutInfo.pBindings = updateBindings;
 
     if (vkCreateDescriptorSetLayout(ctx->device, &updateLayoutInfo, NULL, &state->updateSetLayout) != VK_SUCCESS)
@@ -82,46 +92,18 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         return false;
     }
 
-    state->prototypes[PIPELINE_COMPUTE_UPDATE].type = PIPELINE_COMPUTE_UPDATE;
-    state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations = ano::allocate_zero<PipelineImplementation>(1);
-    state->prototypes[PIPELINE_COMPUTE_UPDATE].supportedFeatures = PBR_FEATURE_NONE;
-    if (state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations == NULL)
+    if (!compute_build<PIPELINE_COMPUTE_UPDATE>(ctx, state))
         return false;
-    state->prototypes[PIPELINE_COMPUTE_UPDATE].implementationCount = 1;
-
-    if (!loadFile("resources/shaders/update.comp.spv", &sh[SH_UPDATE].blob)) { sh[SH_UPDATE].blob.data = NULL; return false; }
-
-    sh[SH_UPDATE].module = createShaderModule(ctx->device, &sh[SH_UPDATE].blob);
-
-    VkComputePipelineCreateInfo updatePipelineInfo = {};
-    updatePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    updatePipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_UPDATE].layout;
-    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, sh[SH_UPDATE].module, NULL, &updatePipelineInfo.stage))
-        return false;
-
-    VkPipelineCacheCreateInfo updateCacheInfo = {};
-    updateCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (vkCreatePipelineCache(ctx->device, &updateCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_UPDATE].cache) != VK_SUCCESS)
-        state->prototypes[PIPELINE_COMPUTE_UPDATE].cache = VK_NULL_HANDLE;
-
-    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_UPDATE].cache, 1, &updatePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations[0].pipeline) != VK_SUCCESS) return false;
     
-    state->prototypes[PIPELINE_COMPUTE_UPDATE].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
-
     // Compute Scatter Pipeline (streamed transforms, Path B)
-    VkDescriptorSetLayoutBinding scatterBindings[3] = {};
-    for (int b = 0; b < 3; ++b) {
-        scatterBindings[b].binding = (uint32_t)b;
-        scatterBindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        scatterBindings[b].descriptorCount = 1;
-        scatterBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    }
-    // 0: StreamSlots  1: StreamTransforms (dynamic)  2: TransformSSBO (written)
-    scatterBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+    const auto& scatterSpecs = ANO_VK_SCATTER_BINDINGS;
+    VkDescriptorSetLayoutBinding scatterBindings[ANO_VK_SCATTER_BINDINGS.count] = {};
+    if (!ano_vk_materialize_layout_bindings(scatterSpecs, scatterBindings))
+        return false;
 
     VkDescriptorSetLayoutCreateInfo scatterLayoutInfo = {};
     scatterLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    scatterLayoutInfo.bindingCount = 3;
+    scatterLayoutInfo.bindingCount = scatterSpecs.count;
     scatterLayoutInfo.pBindings = scatterBindings;
 
     if (vkCreateDescriptorSetLayout(ctx->device, &scatterLayoutInfo, NULL, &state->scatterSetLayout) != VK_SUCCESS)
@@ -148,38 +130,10 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         return false;
     }
 
-    state->prototypes[PIPELINE_COMPUTE_SCATTER].type = PIPELINE_COMPUTE_SCATTER;
-    state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations = ano::allocate_zero<PipelineImplementation>(1);
-    state->prototypes[PIPELINE_COMPUTE_SCATTER].supportedFeatures = PBR_FEATURE_NONE;
-    if (state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations == NULL)
+    if (!compute_build<PIPELINE_COMPUTE_SCATTER>(ctx, state))
         return false;
-    state->prototypes[PIPELINE_COMPUTE_SCATTER].implementationCount = 1;
-
-    if (!loadFile("resources/shaders/scatter.comp.spv", &sh[SH_SCATTER].blob)) { sh[SH_SCATTER].blob.data = NULL; return false; }
-
-    sh[SH_SCATTER].module = createShaderModule(ctx->device, &sh[SH_SCATTER].blob);
-
-    VkComputePipelineCreateInfo scatterPipelineInfo = {};
-    scatterPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    scatterPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_SCATTER].layout;
-    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, sh[SH_SCATTER].module, NULL, &scatterPipelineInfo.stage))
-        return false;
-
-    VkPipelineCacheCreateInfo scatterCacheInfo = {};
-    scatterCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (vkCreatePipelineCache(ctx->device, &scatterCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SCATTER].cache) != VK_SUCCESS)
-        state->prototypes[PIPELINE_COMPUTE_SCATTER].cache = VK_NULL_HANDLE;
-
-    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_SCATTER].cache, 1, &scatterPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations[0].pipeline) != VK_SUCCESS) return false;
-
-    state->prototypes[PIPELINE_COMPUTE_SCATTER].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
 
     // Compute Culling Pipeline
-    VkPipelineCacheCreateInfo compCacheInfo = {};
-    compCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (vkCreatePipelineCache(ctx->device, &compCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].cache) != VK_SUCCESS)
-        state->prototypes[PIPELINE_COMPUTE_CULL].cache = VK_NULL_HANDLE;
-
     VkPipelineLayoutCreateInfo compLayoutInfo = {};
     compLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     compLayoutInfo.setLayoutCount = 1;
@@ -190,17 +144,6 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         ano_log(ANO_FATAL, "Failed to create compute cull pipeline layout!");
         return false;
     }
-
-    state->prototypes[PIPELINE_COMPUTE_CULL].type = PIPELINE_COMPUTE_CULL;
-    state->prototypes[PIPELINE_COMPUTE_CULL].implementations = ano::allocate_zero<PipelineImplementation>(1);
-    state->prototypes[PIPELINE_COMPUTE_CULL].supportedFeatures = PBR_FEATURE_NONE;
-    if (state->prototypes[PIPELINE_COMPUTE_CULL].implementations == NULL)
-        return false;
-    state->prototypes[PIPELINE_COMPUTE_CULL].implementationCount = 1;
-
-    if (!loadFile("resources/shaders/cull.comp.spv", &sh[SH_CULL].blob)) { sh[SH_CULL].blob.data = NULL; return false; }
-
-    sh[SH_CULL].module = createShaderModule(ctx->device, &sh[SH_CULL].blob);
 
     // constant_id 1: useMeshShader
     VkBool32 compUseMeshShader = ctx->deviceCapabilities.meshShader ? VK_TRUE : VK_FALSE;
@@ -216,22 +159,11 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     compSpecInfo.dataSize = sizeof(VkBool32);
     compSpecInfo.pData = &compUseMeshShader;
 
-    VkComputePipelineCreateInfo computePipelineInfo = {};
-    computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    computePipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_CULL].layout;
-    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, sh[SH_CULL].module, &compSpecInfo, &computePipelineInfo.stage))
+    if (!compute_build<PIPELINE_COMPUTE_CULL>(ctx, state, &compSpecInfo))
         return false;
-
-    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_CULL].cache, 1, &computePipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].pipeline) != VK_SUCCESS) return false;
     
-    state->prototypes[PIPELINE_COMPUTE_CULL].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
-
     // Compute Hi-Z Pyramid Build Pipeline. [0] reduce, [1] downsample via isReduce spec constant (0).
     // Push constant 24 B: { int srcMip; ivec2 dstSize; ivec2 srcSize; }
-    VkPipelineCacheCreateInfo hizCacheInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
-    if (vkCreatePipelineCache(ctx->device, &hizCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].cache) != VK_SUCCESS)
-        state->prototypes[PIPELINE_COMPUTE_HIZ].cache = VK_NULL_HANDLE;
-
     VkPushConstantRange hizPush = { .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = 24 };
     VkPipelineLayoutCreateInfo hizPipeLayoutInfo = {};
     hizPipeLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -245,31 +177,18 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         return false;
     }
 
-    state->prototypes[PIPELINE_COMPUTE_HIZ].type = PIPELINE_COMPUTE_HIZ;
-    state->prototypes[PIPELINE_COMPUTE_HIZ].implementations = ano::allocate_zero<PipelineImplementation>(2);
-    state->prototypes[PIPELINE_COMPUTE_HIZ].supportedFeatures = PBR_FEATURE_NONE;
-    if (state->prototypes[PIPELINE_COMPUTE_HIZ].implementations == NULL)
-        return false;
-    state->prototypes[PIPELINE_COMPUTE_HIZ].implementationCount = 2;
-
-    if (!loadFile("resources/shaders/hiz.comp.spv", &sh[SH_HIZ].blob)) { sh[SH_HIZ].blob.data = NULL; return false; }
-    sh[SH_HIZ].module = createShaderModule(ctx->device, &sh[SH_HIZ].blob);
-
-    // Depth MAX-resolve module if capable, else base. Cap picks lane; refuse stops init.
-    if (ctx->deviceCapabilities.depthMaxResolve)
-    {
-        if (!loadFile("resources/shaders/hiz_resolve.comp.spv", &sh[SH_HIZ_RESOLVE].blob)) { sh[SH_HIZ_RESOLVE].blob.data = NULL; return false; }
-        sh[SH_HIZ_RESOLVE].module = createShaderModule(ctx->device, &sh[SH_HIZ_RESOLVE].blob);
-    }
-    VkShaderModule hizStageModule = ctx->deviceCapabilities.depthMaxResolve ? sh[SH_HIZ_RESOLVE].module : sh[SH_HIZ].module;
+    const char* hizShaderPath = ctx->deviceCapabilities.depthMaxResolve
+        ? "resources/shaders/hiz_resolve.comp.spv"
+        : ano_pipeline_compute_shader_path<PIPELINE_COMPUTE_HIZ>();
 
     // Spec constants: id 0 isReduce, id 1 msaaSamples (reduce source sample count).
+    constexpr auto hizPipeline = ano_pipeline_spec<PIPELINE_COMPUTE_HIZ>();
     struct HizSpecData { VkBool32 isReduce; int32_t msaaSamples; };
     VkSpecializationMapEntry hizSpecMap[2] = {
         { .constantID = 0, .offset = offsetof(struct HizSpecData, isReduce),    .size = sizeof(VkBool32) },
         { .constantID = 1, .offset = offsetof(struct HizSpecData, msaaSamples), .size = sizeof(int32_t)  },
     };
-    for (uint32_t impl = 0; impl < 2; impl++)
+    for (uint32_t impl = 0; impl < hizPipeline.implementationCount; ++impl)
     {
         struct HizSpecData hizSpecData = {
             .isReduce    = (impl == 0u) ? VK_TRUE : VK_FALSE, // [0] reduce, [1] downsample
@@ -281,22 +200,12 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         hizSpec.dataSize = sizeof(hizSpecData);
         hizSpec.pData = &hizSpecData;
 
-        VkComputePipelineCreateInfo hizPipeInfo = {};
-        hizPipeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        hizPipeInfo.layout = state->prototypes[PIPELINE_COMPUTE_HIZ].layout;
-        if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, hizStageModule, &hizSpec, &hizPipeInfo.stage))
+        if (!compute_build<PIPELINE_COMPUTE_HIZ>(
+                ctx, state, &hizSpec, impl, hizShaderPath))
             return false;
-
-        if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_HIZ].cache, 1, &hizPipeInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].pipeline) != VK_SUCCESS) return false;
-        state->prototypes[PIPELINE_COMPUTE_HIZ].implementations[impl].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
     }
 
     // Compute Transparency-Sort Pipeline. Reuses the cull descriptor set layout; shares useMeshShader spec constant.
-    VkPipelineCacheCreateInfo tpsortCacheInfo = {};
-    tpsortCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (vkCreatePipelineCache(ctx->device, &tpsortCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].cache) != VK_SUCCESS)
-        state->prototypes[PIPELINE_COMPUTE_TPSORT].cache = VK_NULL_HANDLE;
-
     VkPipelineLayoutCreateInfo tpsortLayoutInfo = {};
     tpsortLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     tpsortLayoutInfo.setLayoutCount = 1;
@@ -306,16 +215,6 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
         ano_log(ANO_FATAL, "Failed to create transparency-sort pipeline layout!");
         return false;
     }
-
-    state->prototypes[PIPELINE_COMPUTE_TPSORT].type = PIPELINE_COMPUTE_TPSORT;
-    state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations = ano::allocate_zero<PipelineImplementation>(1);
-    state->prototypes[PIPELINE_COMPUTE_TPSORT].supportedFeatures = PBR_FEATURE_NONE;
-    if (state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations == NULL)
-        return false;
-    state->prototypes[PIPELINE_COMPUTE_TPSORT].implementationCount = 1;
-
-    if (!loadFile("resources/shaders/tpsort.comp.spv", &sh[SH_TPSORT].blob)) { sh[SH_TPSORT].blob.data = NULL; return false; }
-    sh[SH_TPSORT].module = createShaderModule(ctx->device, &sh[SH_TPSORT].blob);
 
     VkBool32 tpsortUseMeshShader = ctx->deviceCapabilities.meshShader ? VK_TRUE : VK_FALSE;
     VkSpecializationMapEntry tpsortSpecMapEntry = {};
@@ -328,29 +227,18 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     tpsortSpecInfo.dataSize = sizeof(VkBool32);
     tpsortSpecInfo.pData = &tpsortUseMeshShader;
 
-    VkComputePipelineCreateInfo tpsortPipelineInfo = {};
-    tpsortPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    tpsortPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_TPSORT].layout;
-    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, sh[SH_TPSORT].module, &tpsortSpecInfo, &tpsortPipelineInfo.stage))
+    if (!compute_build<PIPELINE_COMPUTE_TPSORT>(ctx, state, &tpsortSpecInfo))
         return false;
-
-    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_TPSORT].cache, 1, &tpsortPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].pipeline) != VK_SUCCESS) return false;
-    state->prototypes[PIPELINE_COMPUTE_TPSORT].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
-
     // Compute Light-cull Pipeline (clustered-forward froxel light assignment).
     // 0: GlobalUBO (in)  1: TransformSSBO (in, light world pos)  2: LightSSBO (in)
     // 3: clusterLightCount (out)  4: clusterLightIndices (out)
-    VkDescriptorSetLayoutBinding lightcullBindings[5] = {};
-    for (uint32_t b = 0; b < 5; ++b) {
-        lightcullBindings[b].binding = b;
-        lightcullBindings[b].descriptorType = (b == 0)
-            ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        lightcullBindings[b].descriptorCount = 1;
-        lightcullBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    }
+    const auto& lightcullSpecs = ANO_VK_LIGHT_CULL_BINDINGS;
+    VkDescriptorSetLayoutBinding lightcullBindings[ANO_VK_LIGHT_CULL_BINDINGS.count] = {};
+    if (!ano_vk_materialize_layout_bindings(lightcullSpecs, lightcullBindings))
+        return false;
     VkDescriptorSetLayoutCreateInfo lightcullLayoutInfo = {};
     lightcullLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    lightcullLayoutInfo.bindingCount = 5;
+    lightcullLayoutInfo.bindingCount = lightcullSpecs.count;
     lightcullLayoutInfo.pBindings = lightcullBindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &lightcullLayoutInfo, NULL, &state->lightcullSetLayout) != VK_SUCCESS)
         return false;
@@ -362,42 +250,17 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     if (vkCreatePipelineLayout(ctx->device, &lightcullPipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].layout) != VK_SUCCESS)
         return false;
 
-    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].type = PIPELINE_COMPUTE_LIGHTCULL;
-    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations = ano::allocate_zero<PipelineImplementation>(1);
-    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].supportedFeatures = PBR_FEATURE_NONE;
-    if (state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations == NULL)
+    if (!compute_build<PIPELINE_COMPUTE_LIGHTCULL>(ctx, state))
         return false;
-    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementationCount = 1;
-
-    if (!loadFile("resources/shaders/lightcull.comp.spv", &sh[SH_LIGHTCULL].blob)) { sh[SH_LIGHTCULL].blob.data = NULL; return false; }
-    sh[SH_LIGHTCULL].module = createShaderModule(ctx->device, &sh[SH_LIGHTCULL].blob);
-
-    VkComputePipelineCreateInfo lightcullPipelineInfo = {};
-    lightcullPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    lightcullPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].layout;
-    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, sh[SH_LIGHTCULL].module, NULL, &lightcullPipelineInfo.stage))
-        return false;
-
-    VkPipelineCacheCreateInfo lightcullCacheInfo = {};
-    lightcullCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (vkCreatePipelineCache(ctx->device, &lightcullCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache) != VK_SUCCESS)
-        state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache = VK_NULL_HANDLE;
-
-    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].cache, 1, &lightcullPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].pipeline) != VK_SUCCESS) return false;
-    state->prototypes[PIPELINE_COMPUTE_LIGHTCULL].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
-
     // Compute Light-setup Pipeline: per-light world pose (worldPos/worldDir) precompute.
     // 0: TransformSSBO (in)  1: LightSSBO (in)  2: LightRuntimeSSBO (out, 64B/light). Push constant: light count.
-    VkDescriptorSetLayoutBinding lightsetupBindings[3] = {};
-    for (uint32_t b = 0; b < 3; ++b) {
-        lightsetupBindings[b].binding = b;
-        lightsetupBindings[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        lightsetupBindings[b].descriptorCount = 1;
-        lightsetupBindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    }
+    const auto& lightsetupSpecs = ANO_VK_LIGHT_SETUP_BINDINGS;
+    VkDescriptorSetLayoutBinding lightsetupBindings[ANO_VK_LIGHT_SETUP_BINDINGS.count] = {};
+    if (!ano_vk_materialize_layout_bindings(lightsetupSpecs, lightsetupBindings))
+        return false;
     VkDescriptorSetLayoutCreateInfo lightsetupLayoutInfo = {};
     lightsetupLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    lightsetupLayoutInfo.bindingCount = 3;
+    lightsetupLayoutInfo.bindingCount = lightsetupSpecs.count;
     lightsetupLayoutInfo.pBindings = lightsetupBindings;
     if (vkCreateDescriptorSetLayout(ctx->device, &lightsetupLayoutInfo, NULL, &state->lightsetupSetLayout) != VK_SUCCESS)
         return false;
@@ -416,30 +279,8 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     if (vkCreatePipelineLayout(ctx->device, &lightsetupPipelineLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].layout) != VK_SUCCESS)
         return false;
 
-    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].type = PIPELINE_COMPUTE_LIGHTSETUP;
-    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations = ano::allocate_zero<PipelineImplementation>(1);
-    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].supportedFeatures = PBR_FEATURE_NONE;
-    if (state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations == NULL)
+    if (!compute_build<PIPELINE_COMPUTE_LIGHTSETUP>(ctx, state))
         return false;
-    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementationCount = 1;
-
-    if (!loadFile("resources/shaders/lightsetup.comp.spv", &sh[SH_LIGHTSETUP].blob)) { sh[SH_LIGHTSETUP].blob.data = NULL; return false; }
-    sh[SH_LIGHTSETUP].module = createShaderModule(ctx->device, &sh[SH_LIGHTSETUP].blob);
-
-    VkComputePipelineCreateInfo lightsetupPipelineInfo = {};
-    lightsetupPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    lightsetupPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].layout;
-    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, sh[SH_LIGHTSETUP].module, NULL, &lightsetupPipelineInfo.stage))
-        return false;
-
-    VkPipelineCacheCreateInfo lightsetupCacheInfo = {};
-    lightsetupCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (vkCreatePipelineCache(ctx->device, &lightsetupCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache) != VK_SUCCESS)
-        state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache = VK_NULL_HANDLE;
-
-    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].cache, 1, &lightsetupPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations[0].pipeline) != VK_SUCCESS) return false;
-    state->prototypes[PIPELINE_COMPUTE_LIGHTSETUP].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
-
     // Compute Shadow-setup Pipeline: builds each shadow frustum's light-space viewProj + planes.
     VkPipelineLayoutCreateInfo shadowSetupLayoutInfo = {};
     shadowSetupLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -448,38 +289,10 @@ bool ano_vk_init_compute(VulkanContext* ctx, RendererState* state)
     if (vkCreatePipelineLayout(ctx->device, &shadowSetupLayoutInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].layout) != VK_SUCCESS)
         return false;
 
-    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].type = PIPELINE_COMPUTE_SHADOWSETUP;
-    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations = ano::allocate_zero<PipelineImplementation>(1);
-    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].supportedFeatures = PBR_FEATURE_NONE;
-    if (state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations == NULL)
+    if (!compute_build<PIPELINE_COMPUTE_SHADOWSETUP>(ctx, state))
         return false;
-    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementationCount = 1;
-
-    if (!loadFile("resources/shaders/shadowsetup.comp.spv", &sh[SH_SHADOWSETUP].blob)) { sh[SH_SHADOWSETUP].blob.data = NULL; return false; }
-    sh[SH_SHADOWSETUP].module = createShaderModule(ctx->device, &sh[SH_SHADOWSETUP].blob);
-
-    VkComputePipelineCreateInfo shadowSetupPipelineInfo = {};
-    shadowSetupPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    shadowSetupPipelineInfo.layout = state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].layout;
-    if (!ano_pipeline_stage(VK_SHADER_STAGE_COMPUTE_BIT, sh[SH_SHADOWSETUP].module, NULL, &shadowSetupPipelineInfo.stage))
-        return false;
-
-    VkPipelineCacheCreateInfo shadowSetupCacheInfo = {};
-    shadowSetupCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (vkCreatePipelineCache(ctx->device, &shadowSetupCacheInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache) != VK_SUCCESS)
-        state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache = VK_NULL_HANDLE;
-
-    if (vkCreateComputePipelines(ctx->device, state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].cache, 1, &shadowSetupPipelineInfo, NULL, &state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations[0].pipeline) != VK_SUCCESS) return false;
-    state->prototypes[PIPELINE_COMPUTE_SHADOWSETUP].implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
-
     return true;
     }();
 
-    // Discharge blobs + modules (NULL / VK_NULL_HANDLE no-ops).
-    for (int s = 0; s < SH_COUNT; s++)
-    {
-        ano_aligned_free(sh[s].blob.data);
-        vkDestroyShaderModule(ctx->device, sh[s].module, NULL);
-    }
     return ok;
 }

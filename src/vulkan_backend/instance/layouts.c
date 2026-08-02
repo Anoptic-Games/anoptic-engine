@@ -17,24 +17,6 @@
 
 #include <vulkan/vulkan.h>
 
-// Inputs: compile-time schema table and geometry-stage expansion for this device.
-// Output: fully initialized Vulkan layout bindings in schema order.
-template<size_t Count>
-static void ano_vk_materialize_layout_bindings(
-	const AnoVkDescriptorBindingTable<Count>& specs,
-	VkDescriptorSetLayoutBinding (&bindings)[Count],
-	VkShaderStageFlags geometryStage)
-{
-	for (size_t i = 0; i < Count; ++i) {
-		bindings[i].binding = (uint32_t)i;
-		bindings[i].descriptorType = specs.values[i].descriptorType;
-		bindings[i].descriptorCount = specs.values[i].descriptorCount;
-		bindings[i].stageFlags = ano_vk_descriptor_stage_flags(
-			specs.values[i].stage, geometryStage);
-		bindings[i].pImmutableSamplers = NULL;
-	}
-}
-
 bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 {
 	// Geometry stage: mesh on capable devices, vertex fallback, plus task for the meshlet cull.
@@ -44,7 +26,8 @@ bool ano_vk_init_global_layout(VulkanContext* ctx, RendererState* state)
 
 	const auto& specs = ANO_VK_GLOBAL_BINDINGS;
 	VkDescriptorSetLayoutBinding bindings[ANO_VK_GLOBAL_BINDINGS.count] = {};
-	ano_vk_materialize_layout_bindings(specs, bindings, geometryStage);
+	if (!ano_vk_materialize_layout_bindings(specs, bindings, geometryStage))
+		return false;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -65,7 +48,8 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 {
 	const auto& cullSpecs = ANO_VK_CULL_BINDINGS<ANO_VIEW_COUNT>;
 	VkDescriptorSetLayoutBinding bindings[ANO_VK_CULL_BINDINGS<ANO_VIEW_COUNT>.count] = {};
-	ano_vk_materialize_layout_bindings(cullSpecs, bindings, 0);
+	if (!ano_vk_materialize_layout_bindings(cullSpecs, bindings))
+		return false;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -80,7 +64,8 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 
 	const auto& hizSpecs = ANO_VK_HIZ_BINDINGS;
 	VkDescriptorSetLayoutBinding hizBindings[ANO_VK_HIZ_BINDINGS.count] = {};
-	ano_vk_materialize_layout_bindings(hizSpecs, hizBindings, 0);
+	if (!ano_vk_materialize_layout_bindings(hizSpecs, hizBindings))
+		return false;
 
 	VkDescriptorSetLayoutCreateInfo hizLayoutInfo = {};
 	hizLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -94,7 +79,8 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 
 	const auto& setupSpecs = ANO_VK_SHADOW_SETUP_BINDINGS;
 	VkDescriptorSetLayoutBinding setupBindings[ANO_VK_SHADOW_SETUP_BINDINGS.count] = {};
-	ano_vk_materialize_layout_bindings(setupSpecs, setupBindings, 0);
+	if (!ano_vk_materialize_layout_bindings(setupSpecs, setupBindings))
+		return false;
 	VkDescriptorSetLayoutCreateInfo setupInfo = {};
 	setupInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	setupInfo.bindingCount = setupSpecs.count;
@@ -107,7 +93,8 @@ bool ano_vk_init_cull_layout(VulkanContext* ctx, RendererState* state)
 		| (state->taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
 	const auto& geomSpecs = ANO_VK_SHADOW_GEOMETRY_BINDINGS;
 	VkDescriptorSetLayoutBinding geomBindings[ANO_VK_SHADOW_GEOMETRY_BINDINGS.count] = {};
-	ano_vk_materialize_layout_bindings(geomSpecs, geomBindings, geomStage);
+	if (!ano_vk_materialize_layout_bindings(geomSpecs, geomBindings, geomStage))
+		return false;
 	VkDescriptorSetLayoutCreateInfo geomInfo = {};
 	geomInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	geomInfo.bindingCount = geomSpecs.count;
@@ -147,30 +134,25 @@ bool ano_vk_init_material_layouts(VulkanContext* ctx, RendererState* state)
 	ano_log(ANO_INFO, "Bindless texture array: maxTextures = %u (device update-after-bind limit %u)",
 		state->bindlessTextures.maxTextures, uabLimit);
 
-	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
-	samplerLayoutBinding.binding = 0;
-	samplerLayoutBinding.descriptorCount = state->bindlessTextures.maxTextures;
-	samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	samplerLayoutBinding.pImmutableSamplers = NULL;
-	// FRAGMENT for geometry sampling, COMPUTE for UI overlay image prims.
-	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
-
-	VkDescriptorBindingFlags bindlessFlags = 
-		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-		VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-		VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+	const auto& bindlessSpecs = ANO_VK_BINDLESS_BINDINGS;
+	VkDescriptorSetLayoutBinding bindlessBindings[ANO_VK_BINDLESS_BINDINGS.count] = {};
+	if (!ano_vk_materialize_layout_bindings(
+			bindlessSpecs, bindlessBindings, 0, state->bindlessTextures.maxTextures))
+		return false;
+	VkDescriptorBindingFlags bindlessFlags[ANO_VK_BINDLESS_BINDINGS.count] = {};
+	ano_vk_materialize_layout_binding_flags(bindlessSpecs, bindlessFlags);
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfo extendedInfo = {};
 	extendedInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-	extendedInfo.bindingCount = 1;
-	extendedInfo.pBindingFlags = &bindlessFlags;
+	extendedInfo.bindingCount = bindlessSpecs.count;
+	extendedInfo.pBindingFlags = bindlessFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	layoutInfo.pNext = &extendedInfo;
 	layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-	layoutInfo.bindingCount = 1;
-	layoutInfo.pBindings = &samplerLayoutBinding;
+	layoutInfo.bindingCount = bindlessSpecs.count;
+	layoutInfo.pBindings = bindlessBindings;
 
 	if (vkCreateDescriptorSetLayout(ctx->device, &layoutInfo, NULL, &state->bindlessTextures.layout) != VK_SUCCESS)
 	{

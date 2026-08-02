@@ -2,11 +2,10 @@
  *
  * SPDX-License-Identifier: LGPL-3.0 */
 
-#include "cpp/ano_alloc.h"
 #include <anoptic_log.h>
 #include "transmission.h"
 #include "vulkan_backend/instance/pipeline.h"
-#include <stdio.h>
+#include "vulkan_backend/pipeline_registry.h"
 #include <stdlib.h>
 
 // Transmission lane: opaque (index 0) + blended (index 1) variants.
@@ -45,24 +44,8 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 		return false;
 	}
 
-	proto->type = PIPELINE_TRANSMISSION;
-	proto->implementations = ano::allocate_zero<PipelineImplementation>(2);
-	if (proto->implementations == NULL)
+	if (!ano_pipeline_prepare_prototype(proto, PIPELINE_TRANSMISSION))
 		return false;
-	proto->implementationCount = 2;
-	proto->supportedFeatures =
-		PBR_FEATURE_BASE_COLOR_FACTOR |
-		PBR_FEATURE_BASE_COLOR_TEXTURE |
-		PBR_FEATURE_METALLIC_ROUGHNESS_FACTOR |
-		PBR_FEATURE_METALLIC_ROUGHNESS_TEXTURE |
-		PBR_FEATURE_NORMAL_TEXTURE |
-		PBR_FEATURE_OCCLUSION_TEXTURE |
-		PBR_FEATURE_ALPHA_MODE_OPAQUE | 
-		PBR_FEATURE_ALPHA_MODE_BLEND |
-		PBR_FEATURE_TRANSMISSION |
-		PBR_FEATURE_VOLUME |
-		PBR_FEATURE_IOR |
-		PBR_FEATURE_DOUBLE_SIDED;   // cullMode NONE -> double-sided
 
 	// Load shaders: mesh on capable devices, vertex on fallback.
 	// Unwind: goto fail discharges all. Clear dangling buffer on load refuse.
@@ -71,15 +54,13 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	VkShaderModule taskModule = VK_NULL_HANDLE;
 
 	bool ok = [&]() -> bool {
-	char geomShaderPath[64];
-	snprintf(geomShaderPath, sizeof(geomShaderPath), "resources/shaders/%s.spv",
-		useMesh ? (useTask ? "flat_task.mesh" : "flat.mesh") : "flat.vert");
-	if (!loadFile(geomShaderPath, &geomShaderCode)) { geomShaderCode.data = NULL; return false; }
+		if (!loadFile(ano_pipeline_geometry_shader_path<PIPELINE_TRANSMISSION>(useMesh, useTask),
+				&geomShaderCode)) { geomShaderCode.data = NULL; return false; }
 
-	// fp16 CDF-reconstruct variant when shaderFloat16 available.
-	if (!loadFile(ctx->deviceCapabilities.shaderFloat16 ? "resources/shaders/transmission_fp16.frag.spv"
-	                                                    : "resources/shaders/transmission.frag.spv",
-	              &fragShaderCode)) { fragShaderCode.data = NULL; return false; }
+		// fp16 CDF-reconstruct variant when shaderFloat16 available.
+		if (!loadFile(ano_pipeline_fragment_shader_path<PIPELINE_TRANSMISSION>(
+				ctx->deviceCapabilities.shaderFloat16), &fragShaderCode))
+			{ fragShaderCode.data = NULL; return false; }
 
 	geomShaderModule = createShaderModule(ctx->device, &geomShaderCode);
 	fragShaderModule = createShaderModule(ctx->device, &fragShaderCode);
@@ -213,7 +194,6 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 
 	// Opaque variant (index 0)
 	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[0].pipeline) != VK_SUCCESS) return false;
-	proto->implementations[0].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[0].depthWrite = VK_TRUE;
 	proto->implementations[0].blendEnable = VK_FALSE;
 
@@ -229,7 +209,6 @@ bool ano_pipeline_transmission_init(VulkanContext* ctx, RendererState* state, Pi
 	colorBlending.pAttachments = &colorBlendAttachment;
 	
 	if (vkCreateGraphicsPipelines(ctx->device, proto->cache, 1, &pipelineInfo, NULL, &proto->implementations[1].pipeline) != VK_SUCCESS) return false;
-	proto->implementations[1].bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	proto->implementations[1].depthWrite = VK_FALSE;
 	proto->implementations[1].blendEnable = VK_TRUE;
 

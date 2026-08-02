@@ -13,6 +13,7 @@ enum class AnoGltfTextureSource : uint8_t {
 };
 
 enum class AnoMaterialTextureDomain : uint8_t { color, data };
+enum class AnoMaterialTexturePropertyKind : uint8_t { scale, strength };
 
 struct AnoMaterialDefault final {
     double value;
@@ -23,6 +24,11 @@ struct AnoMaterialTexture final {
     AnoGltfTextureSource source;
     AnoMaterialTextureDomain domain;
     bool detectsFeature;
+};
+
+struct AnoMaterialTextureProperty final {
+    AnoGltfTextureSource source;
+    AnoMaterialTexturePropertyKind kind;
 };
 
 #endif
