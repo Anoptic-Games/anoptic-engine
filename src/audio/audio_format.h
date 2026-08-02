@@ -13,11 +13,12 @@
 #error "audio_format.h requires C++26"
 #endif
 
-#include <meta>
 #include <stddef.h>
 #include <stdint.h>
 
 #include <anoptic_audio.h>
+
+#include "cpp/ano_reflect.h"
 
 enum class AnoAudioNumericKind : uint8_t { floating_point, signed_integer };
 enum class AnoAudioSampleType : uint8_t;
@@ -58,11 +59,6 @@ inline constexpr uint32_t ANO_AUDIO_CORE_FLAG_FLOAT = 1u << 0;
 inline constexpr uint32_t ANO_AUDIO_CORE_FLAG_SIGNED_INTEGER = 1u << 2;
 inline constexpr uint32_t ANO_AUDIO_CORE_FLAG_PACKED = 1u << 3;
 inline constexpr uint32_t ANO_AUDIO_CORE_FLAG_NONINTERLEAVED = 1u << 5;
-
-inline constexpr size_t ANO_AUDIO_SAMPLE_TYPE_COUNT = 2;
-inline constexpr size_t ANO_AUDIO_CHANNEL_LAYOUT_COUNT = 2;
-inline constexpr size_t ANO_AUDIO_INTERLEAVE_COUNT = 2;
-inline constexpr size_t ANO_AUDIO_BACKEND_COUNT = 6;
 
 enum class AnoAudioSampleType : uint8_t {
     f32 [[=AnoAudioSampleMapping{
@@ -156,52 +152,11 @@ enum class AnoAudioPlatform : uint8_t {
         AnoAudioRatePolicy::platform_converter}]] = ANO_AUDIO_BACKEND_COREAUDIO,
 };
 
-template<class Annotation>
-consteval Annotation ano_audio_annotation(std::meta::info declaration)
-{
-    const auto annotations = std::define_static_array(
-        std::meta::annotations_of_with_type(declaration, ^^Annotation));
-    if (annotations.size() != 1)
-        __builtin_abort();
-    return std::meta::extract<Annotation>(annotations[0]);
-}
-
-template<class Mapping, size_t Count>
-struct AnoAudioRegistry final {
-    Mapping mappings[Count];
-    const char* names[Count];
-};
-
-template<class Enum, class Mapping, size_t Count, size_t FirstValue>
-consteval auto ano_reflect_audio_enum()
-{
-    static constexpr auto enumerators =
-        std::define_static_array(std::meta::enumerators_of(^^Enum));
-    static_assert(enumerators.size() == Count);
-    AnoAudioRegistry<Mapping, Count> result{};
-    bool seen[Count] = {};
-    template for (constexpr auto enumerator : enumerators) {
-        constexpr Enum value = [:enumerator:];
-        constexpr size_t raw = static_cast<size_t>(value);
-        static_assert(raw >= FirstValue && raw - FirstValue < Count);
-        constexpr size_t index = raw - FirstValue;
-        if (seen[index])
-            __builtin_abort();
-        seen[index] = true;
-        result.mappings[index] = ano_audio_annotation<Mapping>(enumerator);
-        result.names[index] = std::define_static_string(std::meta::identifier_of(enumerator));
-    }
-    for (bool present : seen)
-        if (!present)
-            __builtin_abort();
-    return result;
-}
-
 consteval auto ano_reflect_audio_samples()
 {
-    auto result = ano_reflect_audio_enum<AnoAudioSampleType, AnoAudioSampleMapping,
-        ANO_AUDIO_SAMPLE_TYPE_COUNT, 0>();
-    for (const AnoAudioSampleMapping& mapping : result.mappings)
+    auto result =
+        ano::reflect_enum_contracts<AnoAudioSampleType, AnoAudioSampleMapping>();
+    for (const AnoAudioSampleMapping& mapping : result.values)
         if (mapping.storage.bytes == 0 ||
             mapping.storage.bytes * 8u != mapping.storage.bits)
             __builtin_abort();
@@ -210,9 +165,9 @@ consteval auto ano_reflect_audio_samples()
 
 consteval auto ano_reflect_audio_channels()
 {
-    auto result = ano_reflect_audio_enum<AnoAudioChannelLayout, AnoAudioChannelProjection,
-        ANO_AUDIO_CHANNEL_LAYOUT_COUNT, 0>();
-    for (const AnoAudioChannelProjection& mapping : result.mappings)
+    auto result = ano::reflect_enum_contracts<
+        AnoAudioChannelLayout, AnoAudioChannelProjection>();
+    for (const AnoAudioChannelProjection& mapping : result.values)
         if (mapping.count == 0 || mapping.count > 2 || mapping.waveMask == 0)
             __builtin_abort();
     return result;
@@ -220,15 +175,15 @@ consteval auto ano_reflect_audio_channels()
 
 consteval auto ano_reflect_audio_interleaves()
 {
-    return ano_reflect_audio_enum<AnoAudioInterleave, AnoAudioInterleaveProjection,
-        ANO_AUDIO_INTERLEAVE_COUNT, 0>();
+    return ano::reflect_enum_contracts<
+        AnoAudioInterleave, AnoAudioInterleaveProjection>();
 }
 
 consteval auto ano_reflect_audio_backends()
 {
-    auto result = ano_reflect_audio_enum<AnoAudioPlatform, AnoAudioBackendCapability,
-        ANO_AUDIO_BACKEND_COUNT, 1>();
-    for (const AnoAudioBackendCapability& capability : result.mappings)
+    auto result = ano::reflect_enum_contracts<
+        AnoAudioPlatform, AnoAudioBackendCapability, 1>();
+    for (const AnoAudioBackendCapability& capability : result.values)
         if ((capability.directSampleMask | capability.convertedSampleMask) == 0 ||
             (capability.directSampleMask & capability.convertedSampleMask) != 0 ||
             capability.layoutMask == 0 || capability.interleaveMask == 0)
@@ -240,17 +195,34 @@ inline constexpr auto ANO_AUDIO_SAMPLE_REGISTRY = ano_reflect_audio_samples();
 inline constexpr auto ANO_AUDIO_CHANNEL_REGISTRY = ano_reflect_audio_channels();
 inline constexpr auto ANO_AUDIO_INTERLEAVE_REGISTRY = ano_reflect_audio_interleaves();
 inline constexpr auto ANO_AUDIO_BACKEND_REGISTRY = ano_reflect_audio_backends();
+inline constexpr auto ANO_AUDIO_SAMPLE_NAMES =
+    ano::reflect_enum_identifiers<AnoAudioSampleType>();
+inline constexpr auto ANO_AUDIO_CHANNEL_NAMES =
+    ano::reflect_enum_identifiers<AnoAudioChannelLayout>();
+inline constexpr auto ANO_AUDIO_INTERLEAVE_NAMES =
+    ano::reflect_enum_identifiers<AnoAudioInterleave>();
+inline constexpr auto ANO_AUDIO_BACKEND_NAMES =
+    ano::reflect_enum_identifiers<AnoAudioPlatform, 1>();
+
+inline constexpr size_t ANO_AUDIO_SAMPLE_TYPE_COUNT =
+    ano::reflected_enumerator_count<AnoAudioSampleType>;
+inline constexpr size_t ANO_AUDIO_CHANNEL_LAYOUT_COUNT =
+    ano::reflected_enumerator_count<AnoAudioChannelLayout>;
+inline constexpr size_t ANO_AUDIO_INTERLEAVE_COUNT =
+    ano::reflected_enumerator_count<AnoAudioInterleave>;
+inline constexpr size_t ANO_AUDIO_BACKEND_COUNT =
+    ano::reflected_enumerator_count<AnoAudioPlatform>;
 
 constexpr const AnoAudioSampleMapping* ano_audio_sample_mapping(AnoAudioSampleType sample)
 {
     const size_t index = static_cast<size_t>(sample);
-    return index < ANO_AUDIO_SAMPLE_TYPE_COUNT ? &ANO_AUDIO_SAMPLE_REGISTRY.mappings[index] : nullptr;
+    return index < ANO_AUDIO_SAMPLE_TYPE_COUNT ? &ANO_AUDIO_SAMPLE_REGISTRY.values[index] : nullptr;
 }
 
 constexpr const AnoAudioChannelProjection* ano_audio_channel_mapping(AnoAudioChannelLayout layout)
 {
     const size_t index = static_cast<size_t>(layout);
-    return index < ANO_AUDIO_CHANNEL_LAYOUT_COUNT ? &ANO_AUDIO_CHANNEL_REGISTRY.mappings[index] : nullptr;
+    return index < ANO_AUDIO_CHANNEL_LAYOUT_COUNT ? &ANO_AUDIO_CHANNEL_REGISTRY.values[index] : nullptr;
 }
 
 constexpr const AnoAudioInterleaveProjection* ano_audio_interleave_mapping(
@@ -258,14 +230,14 @@ constexpr const AnoAudioInterleaveProjection* ano_audio_interleave_mapping(
 {
     const size_t index = static_cast<size_t>(interleave);
     return index < ANO_AUDIO_INTERLEAVE_COUNT
-        ? &ANO_AUDIO_INTERLEAVE_REGISTRY.mappings[index] : nullptr;
+        ? &ANO_AUDIO_INTERLEAVE_REGISTRY.values[index] : nullptr;
 }
 
 constexpr const AnoAudioBackendCapability* ano_audio_backend_capability(AnoAudioBackend backend)
 {
     const size_t value = static_cast<size_t>(backend);
     return value > 0 && value <= ANO_AUDIO_BACKEND_COUNT
-        ? &ANO_AUDIO_BACKEND_REGISTRY.mappings[value - 1] : nullptr;
+        ? &ANO_AUDIO_BACKEND_REGISTRY.values[value - 1] : nullptr;
 }
 
 constexpr bool ano_audio_format_valid(AnoAudioFormat format)
@@ -305,26 +277,26 @@ constexpr bool ano_audio_backend_supports(AnoAudioBackend backend, AnoAudioForma
 constexpr const char* ano_audio_sample_name(AnoAudioSampleType sample)
 {
     const size_t index = static_cast<size_t>(sample);
-    return index < ANO_AUDIO_SAMPLE_TYPE_COUNT ? ANO_AUDIO_SAMPLE_REGISTRY.names[index] : "invalid";
+    return index < ANO_AUDIO_SAMPLE_TYPE_COUNT ? ANO_AUDIO_SAMPLE_NAMES.values[index] : "invalid";
 }
 
 constexpr const char* ano_audio_layout_name(AnoAudioChannelLayout layout)
 {
     const size_t index = static_cast<size_t>(layout);
-    return index < ANO_AUDIO_CHANNEL_LAYOUT_COUNT ? ANO_AUDIO_CHANNEL_REGISTRY.names[index] : "invalid";
+    return index < ANO_AUDIO_CHANNEL_LAYOUT_COUNT ? ANO_AUDIO_CHANNEL_NAMES.values[index] : "invalid";
 }
 
 constexpr const char* ano_audio_interleave_name(AnoAudioInterleave interleave)
 {
     const size_t index = static_cast<size_t>(interleave);
-    return index < ANO_AUDIO_INTERLEAVE_COUNT ? ANO_AUDIO_INTERLEAVE_REGISTRY.names[index] : "invalid";
+    return index < ANO_AUDIO_INTERLEAVE_COUNT ? ANO_AUDIO_INTERLEAVE_NAMES.values[index] : "invalid";
 }
 
 constexpr const char* ano_audio_backend_name(AnoAudioBackend backend)
 {
     const size_t value = static_cast<size_t>(backend);
     return value > 0 && value <= ANO_AUDIO_BACKEND_COUNT
-        ? ANO_AUDIO_BACKEND_REGISTRY.names[value - 1] : "invalid";
+        ? ANO_AUDIO_BACKEND_NAMES.values[value - 1] : "invalid";
 }
 
 constexpr uint32_t ano_audio_frame_bytes(AnoAudioFormat format)
@@ -454,7 +426,7 @@ constexpr AnoAudioCoreAudioProjection ano_audio_project_coreaudio(AnoAudioFormat
     return result;
 }
 
-static_assert(ANO_AUDIO_CHANNEL_REGISTRY.mappings[static_cast<size_t>(
+static_assert(ANO_AUDIO_CHANNEL_REGISTRY.values[static_cast<size_t>(
                   AnoAudioChannelLayout::stereo)].count == ANO_AUDIO_CHANNELS);
 static_assert(ano_audio_backend_supports(ANO_AUDIO_BACKEND_NULL_DEV, ano_audio_mix_format(48000)));
 static_assert(ano_audio_backend_supports(ANO_AUDIO_BACKEND_PIPEWIRE, ano_audio_mix_format(48000)));

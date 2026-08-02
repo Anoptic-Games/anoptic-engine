@@ -568,6 +568,7 @@ void ano_render_publish_view(AnoRenderBridge *bridge, const AnoViewState *view);
 // Occlusion model from next recorded frame. Render thread only. L key cycles. Out-of-range ignored.
 void            ano_render_set_lighting_mode(AnoLightingMode mode);
 AnoLightingMode ano_render_get_lighting_mode(void);
+const char     *ano_render_lighting_mode_name(AnoLightingMode mode);
 
 // Per-view screen-area cull (projected bounding-sphere radius, px). Below threshold: no draw.
 // 0 disables; negative clamps to 0; bad view ignored. Next recorded frame; render thread.

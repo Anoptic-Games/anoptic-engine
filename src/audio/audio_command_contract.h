@@ -29,7 +29,7 @@ consteval auto reflect_fields()
     if (used != result.declared)
         __builtin_abort();
     for (size_t i = 0; i < commands.count; ++i) {
-        const AnoAudioCommandPayload payload = commands.contracts[i].payload;
+        const AnoAudioCommandPayload payload = commands.values[i].payload;
         const bool partial = payload == AnoAudioCommandPayload::source_update ||
                              payload == AnoAudioCommandPayload::bus_update;
         if (partial != (result.allowed[i] != 0))
@@ -53,8 +53,8 @@ static_assert(ano::validate_tagged_union<AnoAudioEventPayload, AnoAudioEventPayl
     [](AnoAudioEventContract contract) { return contract.payload != AnoAudioEventPayloadKind::none; }));
 static_assert([] consteval {
     for (size_t i = 0; i < events.count; ++i) {
-        if ((events.contracts[i].ownership == AnoAudioPayloadOwnership::returned) !=
-            (events.contracts[i].payload == AnoAudioEventPayloadKind::buffer))
+        if ((events.values[i].ownership == AnoAudioPayloadOwnership::returned) !=
+            (events.values[i].payload == AnoAudioEventPayloadKind::buffer))
             return false;
     }
     return true;

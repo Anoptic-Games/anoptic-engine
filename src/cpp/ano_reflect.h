@@ -4,39 +4,236 @@
 #include <meta>
 #include <stddef.h>
 #include <stdint.h>
+#include <string_view>
+#include <type_traits>
 
 namespace ano {
 
-template<class Contract, size_t Count>
-struct EnumContractRegistry final {
-    static constexpr size_t count = Count;
-    Contract contracts[Count];
-    constexpr const Contract* find(size_t index) const { return index < Count ? &contracts[index] : nullptr; }
+constexpr bool enum_identifier_ends_with(std::string_view identifier,
+                                         std::string_view suffix)
+{
+    return identifier.size() >= suffix.size()
+        && identifier.substr(identifier.size() - suffix.size()) == suffix;
+}
+
+struct ReflectedEnumDomain final {
+    size_t count;
+    bool valid;
 };
 
-template<class Enum, class Contract>
-consteval auto reflect_enum_contracts()
+// Dense values occupy [0, *_COUNT). Negative policy sentinels may follow the count.
+template<class Enum>
+consteval ReflectedEnumDomain reflect_enum_domain()
+{
+    static_assert(std::is_enum_v<Enum>);
+    static constexpr auto enumerators =
+        std::define_static_array(std::meta::enumerators_of(^^Enum));
+    size_t count = 0;
+    size_t sentinels = 0;
+    template for (constexpr auto enumerator : enumerators) {
+        constexpr auto identifier = std::meta::identifier_of(enumerator);
+        if constexpr (enum_identifier_ends_with(identifier, "_COUNT")) {
+            constexpr auto raw = static_cast<int64_t>([:enumerator:]);
+            static_assert(raw > 0);
+            count = static_cast<size_t>(raw);
+            ++sentinels;
+        }
+    }
+    if (sentinels != 1 || count > enumerators.size())
+        return { count, false };
+
+    bool seen[enumerators.size()] = {};
+    bool valid = true;
+    template for (constexpr auto enumerator : enumerators) {
+        constexpr auto identifier = std::meta::identifier_of(enumerator);
+        constexpr auto raw = static_cast<int64_t>([:enumerator:]);
+        if constexpr (!enum_identifier_ends_with(identifier, "_COUNT") && raw >= 0) {
+            if (static_cast<size_t>(raw) >= count || seen[static_cast<size_t>(raw)])
+                valid = false;
+            else
+                seen[static_cast<size_t>(raw)] = true;
+        }
+    }
+    for (size_t i = 0; i < count; ++i)
+        valid = valid && seen[i];
+    return { count, valid };
+}
+
+template<class Enum>
+inline constexpr ReflectedEnumDomain reflected_enum_domain =
+    reflect_enum_domain<Enum>();
+
+template<class Enum>
+inline constexpr size_t reflected_enum_count = reflected_enum_domain<Enum>.count;
+
+template<class Enum>
+inline constexpr size_t reflected_enumerator_count = [] consteval {
+    return std::define_static_array(std::meta::enumerators_of(^^Enum)).size();
+}();
+
+enum class EnumNameCase : uint8_t { preserve, lower, upper };
+
+constexpr char enum_name_case(char value, EnumNameCase nameCase)
+{
+    if (nameCase == EnumNameCase::lower && value >= 'A' && value <= 'Z')
+        return static_cast<char>(value + ('a' - 'A'));
+    if (nameCase == EnumNameCase::upper && value >= 'a' && value <= 'z')
+        return static_cast<char>(value - ('a' - 'A'));
+    return value;
+}
+
+constexpr bool enum_name_equal(const char* lhs, const char* rhs)
+{
+    if (lhs == nullptr || rhs == nullptr)
+        return false;
+    while (*lhs != '\0' && *lhs == *rhs) {
+        ++lhs;
+        ++rhs;
+    }
+    return *lhs == *rhs;
+}
+
+template<class Value, size_t Count>
+struct EnumRegistry final {
+    static constexpr size_t count = Count;
+    Value values[Count];
+
+    static constexpr size_t size() { return Count; }
+
+    constexpr const Value* find(size_t index) const
+    {
+        return index < Count ? &values[index] : nullptr;
+    }
+
+    constexpr int64_t find(const char* name, int64_t fallback) const
+        requires std::is_same_v<Value, const char*>
+    {
+        if (name != nullptr)
+            for (size_t i = 0; i < Count; ++i)
+                if (enum_name_equal(name, values[i]))
+                    return static_cast<int64_t>(i);
+        return fallback;
+    }
+};
+
+template<class Enum, class Value, size_t Count, size_t FirstValue,
+         class Projection>
+consteval auto reflect_enum_values(Projection projection)
 {
     static constexpr auto enumerators =
         std::define_static_array(std::meta::enumerators_of(^^Enum));
-    EnumContractRegistry<Contract, enumerators.size()> result{};
-    bool seen[enumerators.size()] = {};
+    EnumRegistry<Value, Count> result{};
+    bool seen[Count] = {};
     template for (constexpr auto enumerator : enumerators) {
-        constexpr Enum value = [:enumerator:];
-        constexpr size_t index = static_cast<size_t>(value);
-        static_assert(index < enumerators.size());
-        if (seen[index])
-            __builtin_abort();
-        seen[index] = true;
-        constexpr auto annotations = std::define_static_array(
-            std::meta::annotations_of_with_type(enumerator, ^^Contract));
-        static_assert(annotations.size() == 1);
-        result.contracts[index] = std::meta::extract<Contract>(annotations[0]);
+        constexpr auto raw = static_cast<int64_t>([:enumerator:]);
+        if constexpr (raw >= static_cast<int64_t>(FirstValue)
+                      && raw < static_cast<int64_t>(FirstValue + Count)) {
+            constexpr size_t index = static_cast<size_t>(raw) - FirstValue;
+            if (seen[index])
+                __builtin_abort();
+            seen[index] = true;
+            result.values[index] =
+                projection.template operator()<enumerator>();
+        }
     }
     for (bool present : seen)
         if (!present)
             __builtin_abort();
     return result;
+}
+
+template<class Enum>
+consteval auto reflect_enum_names(std::string_view prefix, EnumNameCase nameCase,
+                                  int64_t emptyValue = -1)
+{
+    static_assert(reflected_enum_domain<Enum>.valid,
+                  "reflected names require one dense enum domain and a *_COUNT sentinel");
+    return reflect_enum_values<Enum, const char*,
+        reflected_enum_count<Enum>, 0>(
+        [=]<auto enumerator>() consteval {
+            constexpr auto raw = static_cast<int64_t>([:enumerator:]);
+            constexpr auto identifier = std::meta::identifier_of(enumerator);
+            if (!identifier.starts_with(prefix))
+                __builtin_abort();
+            char transformed[identifier.size() + 1] = {};
+            size_t length = 0;
+            if (raw != emptyValue)
+                for (size_t i = prefix.size(); i < identifier.size(); ++i)
+                    transformed[length++] = enum_name_case(identifier[i], nameCase);
+            return std::define_static_string(
+                std::string_view(transformed, length));
+        });
+}
+
+template<class Enum, size_t FirstValue = 0>
+consteval auto reflect_enum_identifiers()
+{
+    return reflect_enum_values<Enum, const char*,
+        reflected_enumerator_count<Enum>, FirstValue>(
+        []<auto enumerator>() consteval {
+            return std::define_static_string(
+                std::meta::identifier_of(enumerator));
+        });
+}
+
+template<class Enum>
+consteval std::string_view reflected_enum_identifier(size_t index)
+{
+    static constexpr auto enumerators =
+        std::define_static_array(std::meta::enumerators_of(^^Enum));
+    std::string_view result{};
+    template for (constexpr auto enumerator : enumerators) {
+        constexpr auto raw = static_cast<int64_t>([:enumerator:]);
+        if (raw >= 0 && static_cast<size_t>(raw) == index)
+            result = std::meta::identifier_of(enumerator);
+    }
+    return result;
+}
+
+template<class From, class To>
+consteval bool reflected_enum_suffixes_equal(std::string_view fromPrefix,
+                                             std::string_view toPrefix,
+                                             size_t first = 0)
+{
+    if (!reflected_enum_domain<From>.valid || !reflected_enum_domain<To>.valid
+        || reflected_enum_count<From> != reflected_enum_count<To>)
+        return false;
+    for (size_t i = first; i < reflected_enum_count<From>; ++i) {
+        const auto from = reflected_enum_identifier<From>(i);
+        const auto to = reflected_enum_identifier<To>(i);
+        if (!from.starts_with(fromPrefix) || !to.starts_with(toPrefix)
+            || from.substr(fromPrefix.size()) != to.substr(toPrefix.size()))
+            return false;
+    }
+    return true;
+}
+
+template<class Enum, class Contract>
+consteval auto reflect_dense_enum_contracts()
+{
+    static_assert(reflected_enum_domain<Enum>.valid,
+                  "reflected contracts require one dense enum domain and a *_COUNT sentinel");
+    return reflect_enum_values<Enum, Contract,
+        reflected_enum_count<Enum>, 0>(
+        []<auto enumerator>() consteval {
+            constexpr auto annotations = std::define_static_array(
+                std::meta::annotations_of_with_type(enumerator, ^^Contract));
+            static_assert(annotations.size() == 1);
+            return std::meta::extract<Contract>(annotations[0]);
+        });
+}
+
+template<class Enum, class Contract, size_t FirstValue = 0>
+consteval auto reflect_enum_contracts()
+{
+    return reflect_enum_values<Enum, Contract,
+        reflected_enumerator_count<Enum>, FirstValue>(
+        []<auto enumerator>() consteval {
+            constexpr auto annotations = std::define_static_array(
+                std::meta::annotations_of_with_type(enumerator, ^^Contract));
+            static_assert(annotations.size() == 1);
+            return std::meta::extract<Contract>(annotations[0]);
+        });
 }
 
 template<size_t Count>
@@ -101,7 +298,7 @@ consteval bool validate_pointer_payloads(const Registry& registry, HasPointer ha
         }
     }
     for (size_t i = 0; i < Registry::count; ++i)
-        if (count[i] != static_cast<uint8_t>(hasPointer(registry.contracts[i])))
+        if (count[i] != static_cast<uint8_t>(hasPointer(registry.values[i])))
             return false;
     return true;
 }
@@ -137,12 +334,12 @@ consteval bool validate_tagged_union(const Registry& registry, RequiresPayload r
         constexpr Link link = std::meta::extract<Link>(annotations[0]);
         constexpr size_t index = static_cast<size_t>(link.kind);
         static_assert(index < Registry::count);
-        if (registry.contracts[index].payload != link.payload)
+        if (registry.values[index].payload != link.payload)
             return false;
         ++count[index];
     }
     for (size_t i = 0; i < Registry::count; ++i)
-        if (count[i] != static_cast<uint8_t>(requiresPayload(registry.contracts[i])))
+        if (count[i] != static_cast<uint8_t>(requiresPayload(registry.values[i])))
             return false;
     return true;
 }

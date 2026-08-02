@@ -499,8 +499,6 @@ typedef struct MusicState {
 	uint64_t flashUntil; // cadence rim until
 } MusicState;
 
-static const char *const MODE_NAMES[7] = { "ionian", "dorian", "phrygian", "lydian",
-                                           "mixolydian", "aeolian", "locrian" };
 static const char *const PC_NAMES[12] = { "C", "C#", "D", "D#", "E", "F",
                                           "F#", "G", "G#", "A", "A#", "B" };
 static_assert(sizeof PC_NAMES / sizeof *PC_NAMES == 12, "PC_NAMES is a pitch-class table");
@@ -647,7 +645,7 @@ static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFont
 	int n1, n2;
 	if (st->bar >= 0) {
 		n1 = snprintf(line1, sizeof line1, "bar %d  %s %s  %s", st->bar,
-		              PC_NAMES[st->keyTonic % 12], MODE_NAMES[st->mode % 7],
+		              PC_NAMES[st->keyTonic % 12], ano_mode_name((AnoMode)st->mode),
 		              ROMAN[(st->chordDegree >= 0 && st->chordDegree <= 7)
 		                        ? st->chordDegree : 0]);
 		n2 = snprintf(line2, sizeof line2, "composed in %u us on the audio thread",

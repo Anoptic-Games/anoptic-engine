@@ -20,7 +20,7 @@ constexpr float kPi4 = 0.78539816339744830962f;
 using SourceFlags = ano::EnumFlags<
     AnoAudioSourceFlags,
     ANO_AUDIO_SOURCE_LOOP | ANO_AUDIO_SOURCE_POSITIONAL>;
-using SourceKind = ano::EnumValue<AnoAudioSourceKind, ANO_AUDIO_SOURCE_COUNT>;
+using SourceKind = ano::EnumValue<AnoAudioSourceKind>;
 
 static_assert(ano::Data<AnoAudioSource>);
 static_assert(ano::Data<SourceFlags>);

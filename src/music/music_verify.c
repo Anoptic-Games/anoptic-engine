@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "music_cadence.h"
 #include "music_perc.h"
 
 #define LINT_MAX_LINE  1024 // merged melodic line
@@ -725,10 +726,6 @@ static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, int horizo
                           AnoLintReport *out)
 {
     // cadence bar: the policy's arrival degree; pre-cadence: its approach
-    static const int8_t ARRIVE[3][2] = { { 1, -1 }, { 5, -1 }, { 6, -1 } };
-    static const int8_t APPROACH[3][2] = { { 5, 7 }, { 2, 4 }, { 5, 7 } };
-    static const char *const PNAME[3] = { "authentic", "half", "deceptive" };
-
     for (uint32_t i = 0; i < ncx; ++i) {
         const AnoHarmonicContext *c = &cx[i];
         if (!judged(c->bar, horizon))
@@ -738,9 +735,12 @@ static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, int horizo
             continue;
         if (c->chord.applied)
             continue; // Secondary dominant: tonicize obligation owns resolution.
+        const AnoCadencePolicy policy =
+            static_cast<AnoCadencePolicy>(c->cadencePolicy);
+        const auto& contract = ano::music::cadence_contract(policy);
         const int8_t *allowed = c->cadenceSlot == ANO_CTX_SLOT_CADENCE
-                                    ? ARRIVE[c->cadencePolicy]
-                                    : APPROACH[c->cadencePolicy];
+                                    ? contract.arrivalDegrees
+                                    : contract.approachDegrees;
         // D3 split: last segment approaching cadence.
         AnoChord judged = c->chordSpanCount ? c->chords[c->chordSpanCount - 1].chord
                                             : c->chord;
@@ -748,7 +748,7 @@ static void lint_cadences(const AnoHarmonicContext *cx, uint32_t ncx, int horizo
             vio(out, "cadence", c->bar,
                 "%s (%s) realized degree %d, expected one of (%d%s%d)",
                 c->cadenceSlot == ANO_CTX_SLOT_CADENCE ? "cadence" : "pre-cadence",
-                PNAME[c->cadencePolicy], judged.degree, allowed[0],
+                ano::music::cadence_name(policy), judged.degree, allowed[0],
                 allowed[1] < 0 ? "" : ", ", allowed[1] < 0 ? allowed[0] : allowed[1]);
     }
 }

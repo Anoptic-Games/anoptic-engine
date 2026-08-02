@@ -15,8 +15,8 @@
 
 #define FX_TAU_F 6.28318530717958647692f
 
-using EffectKind = ano::EnumValue<AnoAudioEffectKind, ANO_AUDIO_FX_COUNT>;
-using FilterMode = ano::EnumValue<AnoAudioFilterMode, ANO_AUDIO_FILTER_COUNT>;
+using EffectKind = ano::EnumValue<AnoAudioEffectKind>;
+using FilterMode = ano::EnumValue<AnoAudioFilterMode>;
 
 static_assert(ano::Data<AnoAudioFx>);
 static_assert(ano::Data<EffectKind>);

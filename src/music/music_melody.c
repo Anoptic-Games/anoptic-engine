@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include "music_cadence.h"
 #include "music_melody.h"
 
 #define GRID ANO_MUSIC_GRID
@@ -507,11 +508,12 @@ static uint32_t mel_double_line(const AnoMusicEvent *events, uint32_t count,
 // Policy-appropriate cadence-target pcs, filtered to chord members.
 static uint32_t cadence_target_pcs(const AnoHarmonicContext *ctx, uint8_t out[5])
 {
-    static const int DEGS[3][2] = { { 1, 3 }, { 2, 5 }, { 1, 3 } }; // auth/half/dec
-    const int *degs = DEGS[ctx->cadencePolicy];
+    const auto& cadence = ano::music::cadence_contract(
+        static_cast<AnoCadencePolicy>(ctx->cadencePolicy));
     uint32_t n = 0;
     for (int i = 0; i < 2; ++i) {
-        uint8_t pc = (uint8_t)(ano_scale_pitch_at(ctx->scale, degs[i], 4) % 12);
+        uint8_t pc = (uint8_t)(ano_scale_pitch_at(
+            ctx->scale, cadence.melodyDegrees[i], 4) % 12);
         if (pc_in(pc, ctx->chordPcs, ctx->chordPcCount))
             out[n++] = pc;
     }

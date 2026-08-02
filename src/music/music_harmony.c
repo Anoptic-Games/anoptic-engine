@@ -7,6 +7,7 @@
 // force_dominant and borrow gate short-circuit draws (Python or / early-return).
 
 #include "music_theory.h"
+#include "music_cadence.h"
 
 AnoHarmonyConfig ano_harmony_config_default(void)
 {
@@ -35,9 +36,6 @@ static const int    PD_DEG[2] = { 4, 2 };
 static const double PD_W[2]   = { 1.00, 0.60 };
 static const int    D_DEG[2] = { 5, 7 };
 static const double D_W[2]   = { 1.00, 0.15 };
-
-static const int CADENCE_TARGET[3]      = { 1, 5, 6 };   // authentic, half, deceptive
-static const char PRE_CADENCE_FUNCTION[3] = { 'D', 'P', 'D' };
 
 static int choose_degree(char function, int prevDegree, const AnoHarmonyConfig *cfg,
                          AnoMusicRng *rng, bool suppressTonic)
@@ -114,7 +112,8 @@ AnoChord ano_next_chord(AnoChord prev, AnoCadenceSlot slot, AnoCadencePolicy pol
         return ano_chord(1, choose_extensions(1, tension, false, rng));
 
     if (slot == ANO_SLOT_CADENCE) {
-        int degree = CADENCE_TARGET[policy];
+        const auto& cadence = ano::music::cadence_contract(policy);
+        int degree = cadence.targetDegree;
         int8_t source = policy == ANO_CADENCE_DECEPTIVE
                       ? maybe_borrow(degree, mode, valence, cfg, rng) : ANO_MODE_NONE;
         AnoChord c = ano_chord(degree, choose_extensions(degree, tension, degree == 5, rng));
@@ -125,7 +124,7 @@ AnoChord ano_next_chord(AnoChord prev, AnoCadenceSlot slot, AnoCadencePolicy pol
     if (slot == ANO_SLOT_PRE_CADENCE) {
         if (tonicize) // the applied dominant resolves at the cadence; no draws
             return ano_chord_applied_dominant(tonicize, true);
-        char function = PRE_CADENCE_FUNCTION[policy];
+        char function = ano::music::cadence_contract(policy).preCadenceFunction;
         int degree;
         if (function == 'D')
             // Python `or` short-circuit: forceDominant skips the draw

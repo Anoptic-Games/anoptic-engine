@@ -15,6 +15,23 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
+#define ANO_MUSIC_META(...) [[=__VA_ARGS__]]
+struct AnoModeContract final {
+    uint8_t intervals[7];
+    int brightness;
+};
+struct AnoCadenceContract final {
+    int8_t targetDegree;
+    char preCadenceFunction;
+    int8_t melodyDegrees[2];
+    int8_t arrivalDegrees[2];
+    int8_t approachDegrees[2];
+};
+#else
+#define ANO_MUSIC_META(...)
+#endif
+
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -104,22 +121,29 @@ typedef struct AnoMeter
 // Enum ORDER is load-bearing: mapper walks modes along the brightness axis in this order; renumbering changes the music.
 typedef enum AnoMode
 {
-    ANO_MODE_IONIAN = 0,
-    ANO_MODE_DORIAN,
-    ANO_MODE_PHRYGIAN,
-    ANO_MODE_LYDIAN,
-    ANO_MODE_MIXOLYDIAN,
-    ANO_MODE_AEOLIAN,
-    ANO_MODE_LOCRIAN,
+    ANO_MODE_IONIAN ANO_MUSIC_META(AnoModeContract{{0, 2, 4, 5, 7, 9, 11}, 2}) = 0,
+    ANO_MODE_DORIAN ANO_MUSIC_META(AnoModeContract{{0, 2, 3, 5, 7, 9, 10}, 0}),
+    ANO_MODE_PHRYGIAN ANO_MUSIC_META(AnoModeContract{{0, 1, 3, 5, 7, 8, 10}, -2}),
+    ANO_MODE_LYDIAN ANO_MUSIC_META(AnoModeContract{{0, 2, 4, 6, 7, 9, 11}, 3}),
+    ANO_MODE_MIXOLYDIAN ANO_MUSIC_META(AnoModeContract{{0, 2, 4, 5, 7, 9, 10}, 1}),
+    ANO_MODE_AEOLIAN ANO_MUSIC_META(AnoModeContract{{0, 2, 3, 5, 7, 8, 10}, -1}),
+    ANO_MODE_LOCRIAN ANO_MUSIC_META(AnoModeContract{{0, 1, 3, 5, 6, 8, 10}, -1}),
     ANO_MODE_COUNT,
     ANO_MODE_NONE = -1, // valence-driven (with mapper) / ionian (without)
 } AnoMode;
 
+// Reflected lowercase enum name. Invalid/NONE falls back to ionian.
+const char *ano_mode_name(AnoMode mode);
+
 typedef enum AnoCadencePolicy
 {
-    ANO_CADENCE_AUTHENTIC = 0,
-    ANO_CADENCE_HALF,
-    ANO_CADENCE_DECEPTIVE,
+    ANO_CADENCE_AUTHENTIC ANO_MUSIC_META(AnoCadenceContract{
+        1, 'D', {1, 3}, {1, -1}, {5, 7}}) = 0,
+    ANO_CADENCE_HALF ANO_MUSIC_META(AnoCadenceContract{
+        5, 'P', {2, 5}, {5, -1}, {2, 4}}),
+    ANO_CADENCE_DECEPTIVE ANO_MUSIC_META(AnoCadenceContract{
+        6, 'D', {1, 3}, {6, -1}, {5, 7}}),
+    ANO_CADENCE_COUNT,
     ANO_CADENCE_NONE = -1, // not a cadence bar
 } AnoCadencePolicy;
 

@@ -29,8 +29,8 @@ arrows never reverse. `anoptic_audio.h` contains no music type even though it ca
 
 A patch name in `AnoMusicalParams.instruments` is an `AnoPatchName`: a *timbre the composer
 named*, not a voice id in some backend's registry. The synth decides which of its voices
-plays it, through one explicit table (`PATCH_OF_MUSIC` in `src/synth/ano_synth.c`). The
-composer never learns what a synth is.
+plays it through separately typed enum spaces whose one-to-one correspondence is proven by
+C++26 reflection at compile time. The composer never learns what a synth is.
 
 ## The determinism contract
 

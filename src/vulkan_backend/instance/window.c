@@ -174,8 +174,7 @@ static void keyCallback(GLFWwindow* window, int key, int scancode, int action, i
 	if (key == GLFW_KEY_L && action == GLFW_PRESS) {
 		AnoLightingMode next = (AnoLightingMode)(((uint32_t)ano_render_get_lighting_mode() + 1u) % (uint32_t)ANO_LIGHTING_MODE_COUNT);
 		ano_render_set_lighting_mode(next);
-		static const char* const names[ANO_LIGHTING_MODE_COUNT] = { "SHADOWMAP", "HYBRID", "RADIANCE_CASCADES" };
-		ano_log(ANO_INFO, "Lighting mode: %s", names[next]);
+		ano_log(ANO_INFO, "Lighting mode: %s", ano_render_lighting_mode_name(next));
 	}
 	// LOD bias: [ finer, ] coarser.
 	if ((key == GLFW_KEY_LEFT_BRACKET || key == GLFW_KEY_RIGHT_BRACKET) &&

@@ -5,6 +5,7 @@
 
 #include <anoptic_log.h>
 
+#include "cpp/ano_types.h"
 #include "vulkan_backend/vulkanMaster.h"
 #include "vulkan_backend/backend.h"
 #include "vulkan_backend/components.h"
@@ -19,6 +20,18 @@ static uint32_t    g_defaultMaterial;
 
 // Material SSBO row 0, claimed before any glTF parse.
 #define ANO_DEFAULT_MATERIAL_INDEX 0u
+
+namespace {
+
+using LightingMode = ano::EnumValue<AnoLightingMode>;
+inline constexpr auto LIGHTING_MODE_NAMES =
+    ano::reflect_enum_names<AnoLightingMode>(
+        "ANO_LIGHTING_", ano::EnumNameCase::upper);
+
+static_assert(ano::Data<LightingMode>);
+static_assert(ano::Data<decltype(LIGHTING_MODE_NAMES)>);
+
+} // namespace
 
 uint32_t anoRenderAssetCount(void) { return g_assetCount; }
 
@@ -38,7 +51,7 @@ const AnoFontBake* anoRenderTextBake(void)
 }
 // Lighting-mode control. Published into the GlobalUBO tail by updateCullingBuffers.
 void ano_render_set_lighting_mode(AnoLightingMode mode) {
-    if ((uint32_t)mode >= (uint32_t)ANO_LIGHTING_MODE_COUNT) return;
+    if (!LightingMode::from(mode)) return;
     if (rendererState.lightingMode != (uint32_t)mode) {
         rendererState.lightingMode = (uint32_t)mode;
         // Discard the in-progress timing window.
@@ -48,6 +61,11 @@ void ano_render_set_lighting_mode(AnoLightingMode mode) {
 
 AnoLightingMode ano_render_get_lighting_mode(void) {
     return (AnoLightingMode)rendererState.lightingMode;
+}
+
+const char *ano_render_lighting_mode_name(AnoLightingMode mode) {
+    const auto parsed = LightingMode::from(mode);
+    return parsed ? LIGHTING_MODE_NAMES.values[parsed->index()] : "?";
 }
 
 // Per-view screen-area cull threshold. Squared into CullUBO.viewCullParams[view][1] by updateCullingBuffers.

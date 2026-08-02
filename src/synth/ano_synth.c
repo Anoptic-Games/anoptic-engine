@@ -658,7 +658,7 @@ bool ano_music_apply_command(AnoMusicEngine *e, const AnoAudioCommand *cmd)
     const bool known = ano::audio_contract::visit_command(
         cmd->kind, [&]<AnoAudioCommandKind Kind> {
     constexpr AnoAudioCommandContract contract =
-        ano::audio_contract::commands.contracts[static_cast<size_t>(Kind)];
+        ano::audio_contract::commands.values[static_cast<size_t>(Kind)];
     if constexpr (contract.target == AnoAudioCommandTarget::mixer ||
                   contract.payload == AnoAudioCommandPayload::music_seek) {
         applied = false;

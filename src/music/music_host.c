@@ -13,6 +13,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "cpp/ano_reflect.h"
 #include "music_conductor.h"
 
 // Cadence cycle capacity: policy_of indexes cadencePolicies[phrase % count].
@@ -39,7 +40,7 @@ static bool mode_ok(double v)
 static bool cadence_ok(double v)
 {
     return v >= static_cast<double>(ANO_CADENCE_AUTHENTIC)
-        && v <= static_cast<double>(ANO_CADENCE_DECEPTIVE);
+        && v < static_cast<double>(ANO_CADENCE_COUNT);
 }
 
 AnoMusicConfig ano_music_config_default(void)
@@ -191,40 +192,34 @@ void ano_music_request_motif(AnoMusicEngine *e, const char *tag)
 // Pinnable Tier-2 names. Unknown name refused.
 typedef enum OverrideId
 {
-    OV_TEMPO, OV_VELOCITY, OV_ARTICULATION, OV_DENSITY, OV_ROUGHNESS,
-    OV_ACCENT, OV_REGISTER, OV_HARMONIC_RHYTHM, OV_CADENCE, OV_MODE,
-    OV_TEXTURE, OV_CUTOFF, OV_REVERB, OV_DELAY, OV_DRIVE, OV_WIDTH,
+    OV_TEMPO_BPM, OV_VELOCITY_CENTER, OV_ARTICULATION, OV_NOTE_DENSITY, OV_ROUGHNESS,
+    OV_ACCENT_DEPTH, OV_REGISTER_CENTER, OV_HARMONIC_RHYTHM, OV_CADENCE_POLICY, OV_MODE,
+    OV_TEXTURE, OV_FILTER_CUTOFF, OV_REVERB_SEND, OV_DELAY_SEND, OV_DRIVE, OV_STEREO_WIDTH,
     OV_COUNT,
 } OverrideId;
 
-static const char *const OV_NAMES[OV_COUNT] = {
-    "tempo_bpm", "velocity_center", "articulation", "note_density", "roughness",
-    "accent_depth", "register_center", "harmonic_rhythm", "cadence_policy", "mode",
-    "texture", "filter_cutoff", "reverb_send", "delay_send", "drive", "stereo_width",
-};
+inline constexpr auto OVERRIDE_NAMES = ano::reflect_enum_names<OverrideId>(
+    "OV_", ano::EnumNameCase::lower);
 
 static int override_id(const char *param)
 {
-    for (int i = 0; i < OV_COUNT; ++i)
-        if (strcmp(param, OV_NAMES[i]) == 0)
-            return i;
-    return -1;
+    return static_cast<int>(OVERRIDE_NAMES.find(param, -1));
 }
 
 // Install one pin. Out-of-contract cadence/mode: no pin.
 static void override_apply(AnoOverrides *o, int id, bool set, double v)
 {
     switch (id) {
-    case OV_TEMPO:
+    case OV_TEMPO_BPM:
         o->hasTempoBpm = set && isfinite(v) && v > 0.0;
         o->tempoBpm = o->hasTempoBpm ? v : 0.0;
         break;
-    case OV_VELOCITY:     o->hasVelocityCenter = set; o->velocityCenter = v; break;
+    case OV_VELOCITY_CENTER: o->hasVelocityCenter = set; o->velocityCenter = v; break;
     case OV_ARTICULATION: o->hasArticulation = set;   o->articulation = v; break;
-    case OV_DENSITY:      o->hasNoteDensity = set;    o->noteDensity = v; break;
+    case OV_NOTE_DENSITY: o->hasNoteDensity = set;    o->noteDensity = v; break;
     case OV_ROUGHNESS:    o->hasRoughness = set;      o->roughness = v; break;
-    case OV_ACCENT:       o->hasAccentDepth = set;    o->accentDepth = (int)v; break;
-    case OV_REGISTER:
+    case OV_ACCENT_DEPTH: o->hasAccentDepth = set;    o->accentDepth = (int)v; break;
+    case OV_REGISTER_CENTER:
         o->hasRegisterCenter = set && v >= 0.0 && v <= 127.0;
         o->registerCenter = o->hasRegisterCenter ? (int)v : 0;
         break;
@@ -232,7 +227,7 @@ static void override_apply(AnoOverrides *o, int id, bool set, double v)
         o->hasHarmonicRhythm = set;
         o->harmonicRhythm = v;
         break;
-    case OV_CADENCE:
+    case OV_CADENCE_POLICY:
         o->hasCadencePolicy = set && cadence_ok(v);
         o->cadencePolicy = o->hasCadencePolicy ? (int8_t)v : (int8_t)ANO_CADENCE_NONE;
         break;
@@ -241,11 +236,11 @@ static void override_apply(AnoOverrides *o, int id, bool set, double v)
         o->mode = o->hasMode ? (int)v : ANO_MODE_NONE;
         break;
     case OV_TEXTURE: o->hasTexture = set;       o->texture = (AnoTexture)(int)v; break;
-    case OV_CUTOFF:  o->hasFilterCutoff = set;  o->filterCutoff = v; break;
-    case OV_REVERB:  o->hasReverbSend = set;    o->reverbSend = v; break;
-    case OV_DELAY:   o->hasDelaySend = set;     o->delaySend = v; break;
-    case OV_DRIVE:   o->hasDrive = set;         o->drive = v; break;
-    case OV_WIDTH:   o->hasStereoWidth = set;   o->stereoWidth = v; break;
+    case OV_FILTER_CUTOFF: o->hasFilterCutoff = set; o->filterCutoff = v; break;
+    case OV_REVERB_SEND:   o->hasReverbSend = set;   o->reverbSend = v; break;
+    case OV_DELAY_SEND:    o->hasDelaySend = set;    o->delaySend = v; break;
+    case OV_DRIVE:         o->hasDrive = set;        o->drive = v; break;
+    case OV_STEREO_WIDTH:  o->hasStereoWidth = set;  o->stereoWidth = v; break;
     default: break;
     }
 }

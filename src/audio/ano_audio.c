@@ -64,7 +64,7 @@ static AnoAudioBackend backend_env_override(AnoAudioBackend want)
     if (!env || !env[0])
         return want;
     for (size_t i = 0; i < ANO_AUDIO_BACKEND_COUNT; ++i)
-        if (strcmp(env, ANO_AUDIO_BACKEND_REGISTRY.names[i]) == 0)
+        if (strcmp(env, ANO_AUDIO_BACKEND_NAMES.values[i]) == 0)
             return static_cast<AnoAudioBackend>(i + 1u);
     ano_log(ANO_WARN, "audio: unknown ANO_AUDIO_BACKEND '%s'; ignored.", env);
     return want;

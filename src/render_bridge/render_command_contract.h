@@ -32,7 +32,7 @@ consteval auto reflect_fields()
     if (used != result.declared)
         __builtin_abort();
     for (size_t i = 0; i < commands.count; ++i) {
-        const AnoRenderCommandPayload payload = commands.contracts[i].payload;
+        const AnoRenderCommandPayload payload = commands.values[i].payload;
         const bool fieldsExpected = payload == AnoRenderCommandPayload::create ||
                                     payload == AnoRenderCommandPayload::update ||
                                     payload == AnoRenderCommandPayload::bulk_update;
