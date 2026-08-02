@@ -42,7 +42,7 @@ static void null_device_stop(AnoAudioMixer *mx)
 const AnoAudioDeviceApi *ano_audio_device_null(void)
 {
     static const AnoAudioDeviceApi api = {
-        .name  = "null",
+        .backend = ANO_AUDIO_BACKEND_NULL_DEV,
         .start = null_device_start,
         .stop  = null_device_stop,
     };

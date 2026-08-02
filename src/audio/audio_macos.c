@@ -14,6 +14,14 @@
 
 #include <anoptic_log.h>
 
+static_assert(static_cast<uint32_t>(kAudioFormatLinearPCM) == ANO_AUDIO_CORE_FORMAT_LINEAR_PCM);
+static_assert(static_cast<uint32_t>(kAudioFormatFlagIsFloat) == ANO_AUDIO_CORE_FLAG_FLOAT);
+static_assert(static_cast<uint32_t>(kAudioFormatFlagIsSignedInteger) ==
+              ANO_AUDIO_CORE_FLAG_SIGNED_INTEGER);
+static_assert(static_cast<uint32_t>(kAudioFormatFlagIsPacked) == ANO_AUDIO_CORE_FLAG_PACKED);
+static_assert(static_cast<uint32_t>(kAudioFormatFlagIsNonInterleaved) ==
+              ANO_AUDIO_CORE_FLAG_NONINTERLEAVED);
+
 typedef struct AnoCoreAudioState
 {
     AudioUnit    unit;
@@ -60,15 +68,21 @@ static bool coreaudio_start(AnoAudioMixer *mx)
     if (!st)
         return false;
 
+    const AnoAudioFormat format = ano_audio_mix_format(mx->sampleRate);
+    const AnoAudioCoreAudioProjection projection = ano_audio_project_coreaudio(format);
+    if (!projection.valid) {
+        mi_free(st);
+        return false;
+    }
     AudioStreamBasicDescription fmt = {
         .mSampleRate       = (Float64)mx->sampleRate,
-        .mFormatID         = kAudioFormatLinearPCM,
-        .mFormatFlags      = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-        .mBytesPerPacket   = ANO_AUDIO_CHANNELS * sizeof(float),
-        .mFramesPerPacket  = 1,
-        .mBytesPerFrame    = ANO_AUDIO_CHANNELS * sizeof(float),
-        .mChannelsPerFrame = ANO_AUDIO_CHANNELS,
-        .mBitsPerChannel   = 32,
+        .mFormatID         = projection.formatId,
+        .mFormatFlags      = projection.formatFlags,
+        .mBytesPerPacket   = projection.bytesPerPacket,
+        .mFramesPerPacket  = projection.framesPerPacket,
+        .mBytesPerFrame    = projection.bytesPerFrame,
+        .mChannelsPerFrame = projection.channelsPerFrame,
+        .mBitsPerChannel   = projection.bitsPerChannel,
     };
     AURenderCallbackStruct cb = {
         .inputProc = coreaudio_render,
@@ -108,8 +122,9 @@ static bool coreaudio_start(AnoAudioMixer *mx)
     if (AudioOutputUnitStart(st->unit) != noErr)
         goto fail_published;
     st->started = true;
-    ano_log(ANO_INFO, "audio/coreaudio: default-output AUHAL up, %u Hz f32 stereo (unit converts).",
-            mx->sampleRate);
+    ano_log(ANO_INFO, "audio/coreaudio: default-output AUHAL up, %u Hz %s %s %s (unit converts).",
+            mx->sampleRate, ano_audio_sample_name(format.sample),
+            ano_audio_layout_name(format.layout), ano_audio_interleave_name(format.interleave));
     return true;
 
 fail_published:
@@ -134,7 +149,7 @@ static void coreaudio_stop(AnoAudioMixer *mx)
 const AnoAudioDeviceApi *ano_audio_device_coreaudio(void)
 {
     static const AnoAudioDeviceApi api = {
-        .name  = "coreaudio",
+        .backend = ANO_AUDIO_BACKEND_COREAUDIO,
         .start = coreaudio_start,
         .stop  = coreaudio_stop,
     };

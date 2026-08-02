@@ -7,7 +7,6 @@
 
 #include "audio_internal.h"
 #include "audio_pull.h"
-#include "dsp/noise.h"  // TPDF dither (ALSA s16)
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -21,9 +20,6 @@
 
 // snd_pcm_set_params + blocking writei. Constants from alsa/pcm.h.
 #define ANO_ALSA_STREAM_PLAYBACK   0
-#define ANO_ALSA_RW_INTERLEAVED    3
-#define ANO_ALSA_FORMAT_S16_LE     2
-#define ANO_ALSA_FORMAT_FLOAT_LE   14
 
 typedef struct ano_snd_pcm ano_snd_pcm; // opaque snd_pcm_t
 
@@ -43,6 +39,7 @@ typedef struct AnoAlsaState
     ano_snd_pcm *pcm;
     AnoAudioPull pull;
     AnoDspRng    dither; // TPDF for s16
+    AnoAudioFormat format;
     float       *fbuf;
     int16_t     *sbuf;   // NULL when float granted
 } AnoAlsaState;
@@ -52,21 +49,13 @@ static void *alsa_main(void *arg)
     AnoAudioMixer *mx = static_cast<AnoAudioMixer *>(arg);
     AnoAlsaState  *st = static_cast<AnoAlsaState *>(mx->deviceState);
     const uint32_t frames     = mx->blockFrames;
-    const size_t   frameBytes = st->sbuf ? ANO_AUDIO_CHANNELS * sizeof(int16_t)
-                                         : ANO_AUDIO_CHANNELS * sizeof(float);
+    const size_t   frameBytes = ano_audio_frame_bytes(st->format);
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
         ano_audio_pull_frames(mx, &st->pull, st->fbuf, frames);
         const void *src = st->fbuf;
         if (st->sbuf) {
-            // final 16-bit quantization: the one place TPDF dither applies (with DSound s16)
-            for (uint32_t i = 0; i < frames * ANO_AUDIO_CHANNELS; ++i) {
-                float v = st->fbuf[i];
-                v = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
-                float y = v * 32767.0f + ano_dsp_tpdf(&st->dither);
-                if (y > 32767.0f) y = 32767.0f;
-                if (y < -32768.0f) y = -32768.0f;
-                st->sbuf[i] = (int16_t)(y >= 0.0f ? y + 0.5f : y - 0.5f);
-            }
+            ano_audio_convert_f32_s16(st->fbuf, st->sbuf,
+                                      frames * ANO_AUDIO_CHANNELS, &st->dither);
             src = st->sbuf;
         }
         uint32_t written = 0;
@@ -105,6 +94,8 @@ static bool alsa_start(AnoAudioMixer *mx)
     }
     unsigned latencyUs =
         (unsigned)((uint64_t)mx->blockFrames * 4u * 1000000ull / mx->sampleRate);
+    const AnoAudioFormat f32Format = ano_audio_mix_format(mx->sampleRate);
+    const AnoAudioAlsaProjection f32 = ano_audio_project_alsa(f32Format);
     int err = 0;
 
 #define ANO_ALSA_SYM(dst, name) do { \
@@ -124,12 +115,15 @@ static bool alsa_start(AnoAudioMixer *mx)
     if (st->pcm_open(&st->pcm, "default", ANO_ALSA_STREAM_PLAYBACK, 0) < 0)
         goto fail;
 
-    // float first, s16 fallback. latency = 4 blocks
-    err = st->pcm_set_params(st->pcm, ANO_ALSA_FORMAT_FLOAT_LE, ANO_ALSA_RW_INTERLEAVED,
-                             ANO_AUDIO_CHANNELS, mx->sampleRate, 1, latencyUs);
+    // Native mix first, reflected s16 fallback. latency = 4 blocks.
+    st->format = f32Format;
+    err = st->pcm_set_params(st->pcm, f32.format, f32.access,
+                             f32.channels, f32.sampleRate, 1, latencyUs);
     if (err < 0) {
-        err = st->pcm_set_params(st->pcm, ANO_ALSA_FORMAT_S16_LE, ANO_ALSA_RW_INTERLEAVED,
-                                 ANO_AUDIO_CHANNELS, mx->sampleRate, 1, latencyUs);
+        st->format.sample = AnoAudioSampleType::s16;
+        const AnoAudioAlsaProjection s16 = ano_audio_project_alsa(st->format);
+        err = st->pcm_set_params(st->pcm, s16.format, s16.access,
+                                 s16.channels, s16.sampleRate, 1, latencyUs);
         if (err < 0) {
             ano_log(ANO_WARN, "audio/alsa: set_params failed: %s", st->strerr(err));
             goto fail_pcm;
@@ -155,7 +149,7 @@ static bool alsa_start(AnoAudioMixer *mx)
         goto fail_pcm;
     }
     ano_log(ANO_INFO, "audio/alsa: device 'default' open, %s, latency request %u us.",
-            st->sbuf ? "s16 (float refused)" : "f32", latencyUs);
+            ano_audio_sample_name(st->format.sample), latencyUs);
     return true;
 
 fail_pcm:
@@ -187,7 +181,7 @@ static void alsa_stop(AnoAudioMixer *mx)
 const AnoAudioDeviceApi *ano_audio_device_alsa(void)
 {
     static const AnoAudioDeviceApi api = {
-        .name  = "alsa",
+        .backend = ANO_AUDIO_BACKEND_ALSA,
         .start = alsa_start,
         .stop  = alsa_stop,
     };
@@ -305,11 +299,15 @@ typedef struct AnoPipewireState
     AnoAudioPull        pull;
     ANO_ATOMIC(int)         error; // state_changed(ERROR)
     AnoAudioMixer      *mx;
+    AnoAudioFormat      format;
 } AnoPipewireState;
 
-// EnumFormat pod: F32 stereo at rate. 42 words / 168 bytes.
-static uint32_t pw_build_format_pod(uint32_t *w, uint32_t rate)
+// EnumFormat pod: one reflected interleaved raw format. 42 words / 168 bytes.
+static uint32_t pw_build_format_pod(uint32_t *w, AnoAudioFormat format)
 {
+    const AnoAudioPipeWireProjection projection = ano_audio_project_pipewire(format);
+    if (!projection.valid)
+        return 0;
     uint32_t i = 0;
     w[i++] = 160u;     w[i++] = 15u;      // pod header: body size, SPA_TYPE_Object
     w[i++] = 0x40003u; w[i++] = 3u;       // object body: OBJECT_Format, id EnumFormat
@@ -321,17 +319,18 @@ static uint32_t pw_build_format_pod(uint32_t *w, uint32_t rate)
     w[i++] = 1u;       w[i++] = 0u;       //   raw, pad
     w[i++] = 0x10001u; w[i++] = 0u;       // prop AUDIO_format
     w[i++] = 4u;       w[i++] = 3u;       //   Id pod
-    w[i++] = 283u;     w[i++] = 0u;       //   F32_LE, pad
+    w[i++] = projection.format; w[i++] = 0u;
     w[i++] = 0x10003u; w[i++] = 0u;       // prop AUDIO_rate
     w[i++] = 4u;       w[i++] = 4u;       //   Int pod
-    w[i++] = rate;     w[i++] = 0u;       //   rate, pad
+    w[i++] = projection.sampleRate; w[i++] = 0u;
     w[i++] = 0x10004u; w[i++] = 0u;       // prop AUDIO_channels
     w[i++] = 4u;       w[i++] = 4u;       //   Int pod
-    w[i++] = 2u;       w[i++] = 0u;       //   stereo, pad
+    w[i++] = projection.channels; w[i++] = 0u;
     w[i++] = 0x10005u; w[i++] = 0u;       // prop AUDIO_position
-    w[i++] = 16u;      w[i++] = 13u;      //   Array pod, body 16
+    w[i++] = 8u + projection.channels * 4u; w[i++] = 13u;
     w[i++] = 4u;       w[i++] = 3u;       //   child: size 4, Id
-    w[i++] = 3u;       w[i++] = 4u;       //   FL, FR (packed, no pad needed)
+    w[i++] = projection.positions[0];
+    w[i++] = projection.channels == 2u ? projection.positions[1] : 0u;
     return i * (uint32_t)sizeof(uint32_t);
 }
 
@@ -347,7 +346,7 @@ static void pw_on_process(void *data)
         st->api.stream_queue_buffer(st->stream, b);
         return;
     }
-    const uint32_t stride = ANO_AUDIO_CHANNELS * (uint32_t)sizeof(float);
+    const uint32_t stride = ano_audio_frame_bytes(st->format);
     uint32_t frames = d->maxsize / stride;
     if (b->requested != 0u && b->requested < frames)
         frames = (uint32_t)b->requested;
@@ -381,6 +380,11 @@ static bool pw_start(AnoAudioMixer *mx)
     if (!st)
         return false;
     st->mx = mx;
+    st->format = ano_audio_mix_format(mx->sampleRate);
+    if (!ano_audio_backend_supports(ANO_AUDIO_BACKEND_PIPEWIRE, st->format)) {
+        mi_free(st);
+        return false;
+    }
     atomic_init(&st->error, 0);
 
     st->api.lib = dlopen("libpipewire-0.3.so.0", RTLD_NOW | RTLD_LOCAL);
@@ -444,7 +448,8 @@ static bool pw_start(AnoAudioMixer *mx)
     if (st->api.thread_loop_start(st->loop) != 0)
         goto fail_stream;
 
-    pw_build_format_pod(podWords, mx->sampleRate);
+    if (pw_build_format_pod(podWords, st->format) == 0)
+        goto fail_started;
     params[0] = reinterpret_cast<const AnoSpaPod *>(podWords);
     st->api.thread_loop_lock(st->loop);
     res = st->api.stream_connect(st->stream, ANO_PW_DIRECTION_OUTPUT, ANO_PW_ID_ANY,
@@ -472,8 +477,10 @@ static bool pw_start(AnoAudioMixer *mx)
     }
 
     mx->deviceState = st;
-    ano_log(ANO_INFO, "audio/pipewire: stream up (lib %s), requested quantum %s.",
-            st->api.get_library_version(), latency);
+    ano_log(ANO_INFO, "audio/pipewire: stream up (lib %s), %s %s %s, requested quantum %s.",
+            st->api.get_library_version(), ano_audio_sample_name(st->format.sample),
+            ano_audio_layout_name(st->format.layout),
+            ano_audio_interleave_name(st->format.interleave), latency);
     return true;
 
 fail_started:
@@ -507,7 +514,7 @@ static void pw_stop(AnoAudioMixer *mx)
 const AnoAudioDeviceApi *ano_audio_device_pipewire(void)
 {
     static const AnoAudioDeviceApi api = {
-        .name  = "pipewire",
+        .backend = ANO_AUDIO_BACKEND_PIPEWIRE,
         .start = pw_start,
         .stop  = pw_stop,
     };

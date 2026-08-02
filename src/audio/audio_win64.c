@@ -18,7 +18,6 @@
 #include "audio_internal.h"
 #include "audio_pull.h"
 #include "cpp/ano_alloc.h"
-#include "dsp/noise.h" // TPDF dither (DSound s16)
 
 #include <anoptic_log.h>
 #include <anoptic_time.h>
@@ -26,10 +25,6 @@
 /* Wave formats */
 
 // AnoWfxExt is flat (not nested AnoWfx): nesting would shift fields by +2 pad.
-
-#define ANO_WAVE_FORMAT_PCM        0x0001
-#define ANO_WAVE_FORMAT_EXTENSIBLE 0xFFFE
-#define ANO_SPEAKER_FRONT_PAIR     0x3 // FL | FR
 
 typedef struct AnoWfx
 {
@@ -64,23 +59,41 @@ static_assert(offsetof(AnoWfxExt, Samples) == 18, "extensible fields start at 18
 static_assert(offsetof(AnoWfxExt, dwChannelMask) == 20, "channel mask at 20");
 static_assert(offsetof(AnoWfxExt, SubFormat) == 24, "subformat at 24");
 
-static const GUID ANO_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT =
-    { 0x00000003, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
-
-static AnoWfxExt wfx_f32_stereo(uint32_t rate)
+static AnoWfxExt wfx_extensible(AnoAudioFormat format)
 {
+    const AnoAudioWaveProjection projection =
+        ano_audio_project_wave(format, AnoAudioWaveEncoding::extensible);
     AnoWfxExt w = {0};
-    w.wFormatTag      = ANO_WAVE_FORMAT_EXTENSIBLE;
-    w.nChannels       = ANO_AUDIO_CHANNELS;
-    w.nSamplesPerSec  = rate;
-    w.wBitsPerSample  = 32;
-    w.nBlockAlign     = ANO_AUDIO_CHANNELS * 4;
-    w.nAvgBytesPerSec = rate * w.nBlockAlign;
-    w.cbSize          = 22;
-    w.Samples.wValidBitsPerSample = 32;
-    w.dwChannelMask = ANO_SPEAKER_FRONT_PAIR;
-    w.SubFormat     = ANO_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+    if (!projection.valid)
+        return w;
+    w.wFormatTag      = projection.formatTag;
+    w.nChannels       = projection.channels;
+    w.nSamplesPerSec  = projection.sampleRate;
+    w.wBitsPerSample  = projection.bitsPerSample;
+    w.nBlockAlign     = projection.blockAlign;
+    w.nAvgBytesPerSec = projection.averageBytesPerSecond;
+    w.cbSize          = projection.extraSize;
+    w.Samples.wValidBitsPerSample = projection.validBitsPerSample;
+    w.dwChannelMask = projection.channelMask;
+    w.SubFormat = GUID{projection.subFormatData1, 0x0000, 0x0010,
+                       {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
     return w;
+}
+
+static AnoWfx wfx_classic(AnoAudioFormat format)
+{
+    const AnoAudioWaveProjection projection =
+        ano_audio_project_wave(format, AnoAudioWaveEncoding::classic);
+    if (!projection.valid)
+        return {};
+    return {
+        .wFormatTag = projection.formatTag,
+        .nChannels = projection.channels,
+        .nSamplesPerSec = projection.sampleRate,
+        .nAvgBytesPerSec = projection.averageBytesPerSecond,
+        .nBlockAlign = projection.blockAlign,
+        .wBitsPerSample = projection.bitsPerSample,
+    };
 }
 
 /* WASAPI COM surface */
@@ -293,7 +306,8 @@ static void *wasapi_main(void *arg)
     HANDLE evt = NULL, mmcss = NULL;
     UINT32 bufferFrames = 0;
     bool   viaClient3 = false, started = false, comUp = false;
-    AnoWfxExt wfx = wfx_f32_stereo(mx->sampleRate);
+    const AnoAudioFormat format = ano_audio_mix_format(mx->sampleRate);
+    AnoWfxExt wfx = wfx_extensible(format);
     AnoWfx *mix = NULL;
     uint32_t mixRate = 0, mixChannels = 0;
     uint32_t refusals = 0, packetRefusals = 0;
@@ -316,7 +330,7 @@ static void *wasapi_main(void *arg)
         mixChannels = mix->nChannels;
         st->coTaskFree(mix);
     }
-    if (mixRate == mx->sampleRate && mixChannels == ANO_AUDIO_CHANNELS) {
+    if (mixRate == mx->sampleRate && mixChannels == wfx.nChannels) {
         AnoIAudioClient3 *c3 = NULL;
         if (SUCCEEDED(client->v->QueryInterface(client, &ANO_IID_IAudioClient3, (void **)&c3))) {
             UINT32 def = 0, fund = 0, mn = 0, mx3 = 0;
@@ -497,7 +511,7 @@ static void wasapi_stop(AnoAudioMixer *mx)
 const AnoAudioDeviceApi *ano_audio_device_wasapi(void)
 {
     static const AnoAudioDeviceApi api = {
-        .name  = "wasapi",
+        .backend = ANO_AUDIO_BACKEND_WASAPI,
         .start = wasapi_start,
         .stop  = wasapi_stop,
     };
@@ -583,23 +597,15 @@ typedef struct AnoDsoundState
 
 // Fill one mixer block into locked region (s16 convert if needed).
 static void dsound_fill(AnoAudioMixer *mx, AnoDsoundState *st, float *fbuf,
-                        void *dst, uint32_t frames, bool s16)
+                        void *dst, uint32_t frames, AnoAudioFormat format)
 {
     ano_audio_pull_frames(mx, &st->pull, fbuf, frames);
-    if (!s16) {
-        memcpy(dst, fbuf, (size_t)frames * ANO_AUDIO_CHANNELS * sizeof(float));
+    if (format.sample == AnoAudioSampleType::f32) {
+        memcpy(dst, fbuf, (size_t)frames * ano_audio_frame_bytes(format));
         return;
     }
-    // s16 path: TPDF dither at final quantization (with ALSA s16)
-    int16_t *out = static_cast<int16_t *>(dst);
-    for (uint32_t i = 0; i < frames * ANO_AUDIO_CHANNELS; ++i) {
-        float v = fbuf[i];
-        v = v > 1.0f ? 1.0f : (v < -1.0f ? -1.0f : v);
-        float y = v * 32767.0f + ano_dsp_tpdf(&st->dither);
-        if (y > 32767.0f) y = 32767.0f;
-        if (y < -32768.0f) y = -32768.0f;
-        out[i] = (int16_t)(y >= 0.0f ? y + 0.5f : y - 0.5f);
-    }
+    ano_audio_convert_f32_s16(fbuf, static_cast<int16_t *>(dst),
+                              frames * ANO_AUDIO_CHANNELS, &st->dither);
 }
 
 // Ring needs recover when lost or not playing (lost may still report PLAYING).
@@ -646,19 +652,19 @@ static void *dsound_main(void *arg)
     AnoIDirectSoundBuffer *primary   = NULL;
     AnoIDirectSoundBuffer *secondary = NULL;
     float *fbuf = NULL;
-    bool started = false, s16 = false;
+    bool started = false;
     HWND hwnd = NULL;
-    AnoWfxExt wfx = wfx_f32_stereo(mx->sampleRate);
+    AnoAudioFormat outputFormat = ano_audio_mix_format(mx->sampleRate);
+    AnoWfxExt wfx = wfx_extensible(outputFormat);
     AnoDsBufferDesc pdesc = { .dwSize = sizeof pdesc, .dwFlags = ANO_DSBCAPS_PRIMARYBUFFER };
-    const uint32_t blockBytesF32 = mx->blockFrames * ANO_AUDIO_CHANNELS * (uint32_t)sizeof(float);
-    const uint32_t blockBytesS16 = mx->blockFrames * ANO_AUDIO_CHANNELS * (uint32_t)sizeof(int16_t);
+    uint32_t blockBytes = mx->blockFrames * ano_audio_frame_bytes(outputFormat);
     AnoDsBufferDesc sdesc = {
         .dwSize = sizeof sdesc,
         .dwFlags = ANO_DSBCAPS_GLOBALFOCUS | ANO_DSBCAPS_GETCURRENTPOSITION2,
-        .dwBufferBytes = 4u * blockBytesF32,
+        .dwBufferBytes = 4u * blockBytes,
         .lpwfxFormat = reinterpret_cast<AnoWfx *>(&wfx),
     };
-    uint32_t blockBytes = 0, bufferBytes = 0;
+    uint32_t bufferBytes = 0;
     void *p1 = NULL, *p2 = NULL;
     DWORD n1 = 0, n2 = 0;
     DWORD writeCursor = 0;
@@ -675,23 +681,15 @@ static void *dsound_main(void *arg)
         primary->v->SetFormat(primary, (const AnoWfx *)&wfx);
 
     if (FAILED(ds->v->CreateSoundBuffer(ds, &sdesc, &secondary, NULL))) {
-        // s16 + TPDF
-        AnoWfx w16 = {
-            .wFormatTag = ANO_WAVE_FORMAT_PCM,
-            .nChannels = ANO_AUDIO_CHANNELS,
-            .nSamplesPerSec = mx->sampleRate,
-            .nAvgBytesPerSec = mx->sampleRate * ANO_AUDIO_CHANNELS * 2,
-            .nBlockAlign = ANO_AUDIO_CHANNELS * 2,
-            .wBitsPerSample = 16,
-        };
-        sdesc.dwBufferBytes = 4u * blockBytesS16;
+        outputFormat.sample = AnoAudioSampleType::s16;
+        AnoWfx w16 = wfx_classic(outputFormat);
+        blockBytes = mx->blockFrames * ano_audio_frame_bytes(outputFormat);
+        sdesc.dwBufferBytes = 4u * blockBytes;
         sdesc.lpwfxFormat   = &w16;
         if (FAILED(ds->v->CreateSoundBuffer(ds, &sdesc, &secondary, NULL)))
             goto fail;
-        s16 = true;
         ano_dsp_rng_seed(&st->dither, 0xD50DDu);
     }
-    blockBytes  = s16 ? blockBytesS16 : blockBytesF32;
     bufferBytes = 4u * blockBytes;
 
     fbuf = ano::heap_allocate_zero<float>(
@@ -709,7 +707,7 @@ static void *dsound_main(void *arg)
     started = true;
 
     ano_log(ANO_INFO, "audio/dsound: secondary %s ring %u bytes (4 blocks).",
-            s16 ? "s16 (float refused)" : "f32", bufferBytes);
+            ano_audio_sample_name(outputFormat.sample), bufferBytes);
     atomic_store_explicit(&st->init, ANO_WIN_INIT_OK, memory_order_release);
 
     // cursor chase: fill block-sized chunks the play cursor has consumed
@@ -734,7 +732,7 @@ static void *dsound_main(void *arg)
                 break;
             // block-aligned locks in a block-multiple ring never split
             if (n1 == blockBytes && p1)
-                dsound_fill(mx, st, fbuf, p1, mx->blockFrames, s16);
+                dsound_fill(mx, st, fbuf, p1, mx->blockFrames, outputFormat);
             secondary->v->Unlock(secondary, p1, n1, p2, n2);
             writeCursor = (writeCursor + blockBytes) % bufferBytes;
             writable   -= blockBytes;
@@ -811,7 +809,7 @@ static void dsound_stop(AnoAudioMixer *mx)
 const AnoAudioDeviceApi *ano_audio_device_dsound(void)
 {
     static const AnoAudioDeviceApi api = {
-        .name  = "dsound",
+        .backend = ANO_AUDIO_BACKEND_DSOUND,
         .start = dsound_start,
         .stop  = dsound_stop,
     };

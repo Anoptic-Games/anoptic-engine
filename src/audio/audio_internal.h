@@ -15,8 +15,10 @@
 #include <anoptic_atomic.h>
 #include <anoptic_threads.h>
 #include "audio_bridge.h"
+#include "audio_format.h"
 #include "audio_fx.h" // effect chains + dsp/smooth.h (AnoAudioSmooth)
 #include "audio_source.h"
+#include "dsp/noise.h"
 
 // Master clip guard ceiling.
 #define ANO_AUDIO_CLIP_CEIL 0.98f
@@ -67,7 +69,7 @@ typedef struct AnoAudioMixer AnoAudioMixer;
 // Device consumes mx->blockRing. start/stop own the consumer. Never touches the graph.
 typedef struct AnoAudioDeviceApi
 {
-    const char *name;
+    AnoAudioBackend backend;
     bool (*start)(AnoAudioMixer *mx);
     void (*stop)(AnoAudioMixer *mx);
 } AnoAudioDeviceApi;
@@ -150,5 +152,9 @@ void ano_audio_render_block(AnoAudioMixer *mx, float *out);
 
 // Realtime mixer thread entry. arg = AnoAudioMixer*.
 void *ano_audio_mixer_main(void *arg);
+
+// Final f32 -> signed-16 quantization shared by ALSA and DirectSound.
+void ano_audio_convert_f32_s16(const float *input, int16_t *output,
+                               uint32_t sampleCount, AnoDspRng *dither);
 
 #endif // ANO_AUDIO_INTERNAL_H

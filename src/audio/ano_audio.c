@@ -62,12 +62,9 @@ static AnoAudioBackend backend_env_override(AnoAudioBackend want)
     const char *env = getenv("ANO_AUDIO_BACKEND");
     if (!env || !env[0])
         return want;
-    if (strcmp(env, "null") == 0)      return ANO_AUDIO_BACKEND_NULL_DEV;
-    if (strcmp(env, "pipewire") == 0)  return ANO_AUDIO_BACKEND_PIPEWIRE;
-    if (strcmp(env, "alsa") == 0)      return ANO_AUDIO_BACKEND_ALSA;
-    if (strcmp(env, "wasapi") == 0)    return ANO_AUDIO_BACKEND_WASAPI;
-    if (strcmp(env, "dsound") == 0)    return ANO_AUDIO_BACKEND_DSOUND;
-    if (strcmp(env, "coreaudio") == 0) return ANO_AUDIO_BACKEND_COREAUDIO;
+    for (const AnoAudioBackendSpec& spec : ANO_AUDIO_BACKEND_REGISTRY.values)
+        if (strcmp(env, spec.name) == 0)
+            return spec.backend;
     ano_log(ANO_WARN, "audio: unknown ANO_AUDIO_BACKEND '%s'; ignored.", env);
     return want;
 }
@@ -126,6 +123,7 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     AnoAudioBridge *bridge;
     uint32_t blockStride;
     AnoAudioBackend want;
+    const AnoAudioFormat mixFormat = ano_audio_mix_format(rate);
 
     mi_heap_t *heap = mi_heap_new();
     if (!heap)
@@ -193,13 +191,18 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
         };
         for (size_t i = 0; i < sizeof cascade / sizeof cascade[0] && !mx->device; ++i) {
             const AnoAudioDeviceApi *api = backend_api(cascade[i]);
-            if (api && api->start(mx))
+            if (api && ano_audio_backend_supports(api->backend, mixFormat) && api->start(mx))
                 mx->device = api;
         }
     } else {
         const AnoAudioDeviceApi *api = backend_api(want);
         if (!api) {
             ano_log(ANO_ERROR, "audio: backend %u is not available on this platform.", want);
+            goto fail_heap;
+        }
+        if (!ano_audio_backend_supports(api->backend, mixFormat)) {
+            ano_log(ANO_ERROR, "audio: backend %s does not support the engine mix contract.",
+                    ano_audio_backend_name(api->backend));
             goto fail_heap;
         }
         if (api->start(mx))
@@ -219,7 +222,7 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     g_mixer = mx;
     g_heap  = heap;
     ano_log(ANO_INFO, "audio: up 〜 backend=%s, %u Hz, block %u (%u deep), %u buses.",
-            mx->device->name, rate, bf, devBlocks, buses);
+            ano_audio_backend_name(mx->device->backend), rate, bf, devBlocks, buses);
     return true;
 
 fail_heap:
