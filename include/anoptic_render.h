@@ -230,6 +230,7 @@ typedef enum RenderFieldBits
 
 #ifdef __cplusplus
 struct AnoRenderFieldUse final { uint32_t fields; uint32_t commands; };
+struct AnoRenderBulkRequired final {};
 struct AnoRenderOwnedPayloadFor final { uint32_t commands; };
 #endif
 
@@ -267,7 +268,7 @@ typedef struct RenderUpdateBatch
 {
     uint32_t        count;
     uint32_t        fields;       // RenderFieldBits shared by every entry; only these arrays are consumed
-    const uint32_t *render_ids;   // [count] targets (unresolved ids are skipped)
+    const uint32_t *render_ids ANO_RENDER_META(AnoRenderBulkRequired{}); // [count] targets (unresolved ids are skipped)
     const mat4 *transforms ANO_RENDER_META(AnoRenderFieldUse{RFIELD_TRANSFORM, 1u << RCMD_BULK_UPDATE}); // [count] teleport rewrites base pose
     const AnoMotionDescriptor *motion ANO_RENDER_META(AnoRenderFieldUse{RFIELD_ANIM, 1u << RCMD_BULK_UPDATE});
     const uint32_t *mesh ANO_RENDER_META(AnoRenderFieldUse{RFIELD_MESH_MAT, 1u << RCMD_BULK_UPDATE});

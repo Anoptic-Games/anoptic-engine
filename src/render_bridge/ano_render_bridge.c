@@ -9,6 +9,7 @@
 
 #include "render_bridge.h"
 #include "render_command_contract.h"
+#include "bulk_update_plan.h"
 #include <anoptic_meta.h>
 
 #include <stdint.h>
@@ -108,17 +109,6 @@ bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
 
 /* Bulk */
 
-// Pack: ids, pad to ANO_BULK_OVERALIGN, then over-aligned sub-arrays (mat4 / motion / userdata).
-#define ANO_BULK_OVERALIGN 16u
-static_assert(sizeof(mat4) % ANO_BULK_OVERALIGN == 0u
-                   && sizeof(AnoMotionDescriptor) % ANO_BULK_OVERALIGN == 0u
-                   && sizeof(AnoInstanceData) % ANO_BULK_OVERALIGN == 0u,
-               "one pad after the id array carries every over-aligned bulk sub-array only while each is a whole number of ANO_BULK_OVERALIGN units");
-static_assert(alignof(mat4) <= ANO_BULK_OVERALIGN
-                   && alignof(AnoMotionDescriptor) <= ANO_BULK_OVERALIGN
-                   && alignof(AnoInstanceData) <= ANO_BULK_OVERALIGN,
-               "a bulk sub-array wants stricter alignment than the pack provides");
-
 // in:  bridge, batch (caller-owned; only mask-named arrays are read)
 // out: ACCEPTED with one render-owned block enqueued, or a refusal
 // inv: NULL batch before count; zero count before any array touch
@@ -129,52 +119,36 @@ AnoRenderSubmitResult ano_render_submit_bulk_update(AnoRenderBridge *bridge, con
     if (batch->count == 0u)
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_ACCEPTED); // documented no-op
     uint32_t count = batch->count, fields = batch->fields;
-    // Absent array for a named field -> INVALID. RFIELD_LIGHT is not bulk.
-    if ((fields & ~ano::render_contract::allowed_fields(RCMD_BULK_UPDATE)) != 0u
-        || batch->render_ids == NULL
-        || ((fields & RFIELD_TRANSFORM) && batch->transforms == NULL)
-        || ((fields & RFIELD_ANIM)      && batch->motion == NULL)
-        || ((fields & RFIELD_MESH_MAT)  && (batch->mesh == NULL || batch->material == NULL))
-        || ((fields & RFIELD_USERDATA)  && batch->instance_data == NULL))
+    const ano::render_bulk::BulkPackPlan *plan = ano::render_bulk::find_plan(fields);
+    if (plan == nullptr)
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_INVALID);
-    // Checked size: add_array / align_up refuse overflow.
+
+    const void *sources[ano::render_bulk::segmentCount];
     size_t bytes = sizeof(RenderUpdateBatch);
-    if (!ano_size_add_array(&bytes, count, sizeof(uint32_t)) // ids
-        || !ano_size_align_up(&bytes, ANO_BULK_OVERALIGN)    // pad
-        || ((fields & RFIELD_TRANSFORM) && !ano_size_add_array(&bytes, count, sizeof(mat4)))
-        || ((fields & RFIELD_ANIM)      && !ano_size_add_array(&bytes, count, sizeof(AnoMotionDescriptor)))
-        || ((fields & RFIELD_USERDATA)  && !ano_size_add_array(&bytes, count, sizeof(AnoInstanceData)))
-        || ((fields & RFIELD_MESH_MAT)  && (!ano_size_add_array(&bytes, count, sizeof(uint32_t))
-                                            || !ano_size_add_array(&bytes, count, sizeof(uint32_t)))))
-        return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_INVALID);
+    for (size_t i = 0u; i < plan->count; ++i) {
+        const ano::render_bulk::BulkSegment& segment = ano::render_bulk::segment(*plan, i);
+        sources[i] = segment.source(*batch);
+        if (sources[i] == nullptr
+            || !ano_size_align_up(&bytes, segment.alignment)
+            || !ano_size_add_array(&bytes, count, segment.stride))
+            return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_INVALID);
+    }
+
     char *blk = static_cast<char *>(mi_malloc(bytes));
     if (!blk)
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_OOM);
     RenderUpdateBatch *b = (RenderUpdateBatch *)blk;
     *b = (RenderUpdateBatch){ .count = count, .fields = fields };
-    char *cur = blk + sizeof(RenderUpdateBatch);
-    b->render_ids = (uint32_t *)cur;
-    memcpy(cur, batch->render_ids, (size_t)count * sizeof(uint32_t)); cur += (size_t)count * sizeof(uint32_t);
-    // Pad to ANO_BULK_OVERALIGN (same order as the size pass).
-    cur = blk + (((size_t)(cur - blk) + (ANO_BULK_OVERALIGN - 1u)) & ~(size_t)(ANO_BULK_OVERALIGN - 1u));
-    if (fields & RFIELD_TRANSFORM) {
-        b->transforms = (mat4 *)cur;
-        memcpy(cur, batch->transforms, (size_t)count * sizeof(mat4)); cur += (size_t)count * sizeof(mat4);
+    size_t offset = sizeof(RenderUpdateBatch);
+    for (size_t i = 0u; i < plan->count; ++i) {
+        const ano::render_bulk::BulkSegment& segment = ano::render_bulk::segment(*plan, i);
+        const bool aligned = ano_size_align_up(&offset, segment.alignment);
+        ano::assume(aligned);
+        segment.copy(*b, blk + offset, sources[i], count);
+        offset += static_cast<size_t>(count) * segment.stride;
     }
-    if (fields & RFIELD_ANIM) {
-        b->motion = (AnoMotionDescriptor *)cur;
-        memcpy(cur, batch->motion, (size_t)count * sizeof(AnoMotionDescriptor)); cur += (size_t)count * sizeof(AnoMotionDescriptor);
-    }
-    if (fields & RFIELD_USERDATA) {
-        b->instance_data = (AnoInstanceData *)cur;
-        memcpy(cur, batch->instance_data, (size_t)count * sizeof(AnoInstanceData)); cur += (size_t)count * sizeof(AnoInstanceData);
-    }
-    if (fields & RFIELD_MESH_MAT) {
-        b->mesh = (uint32_t *)cur;
-        memcpy(cur, batch->mesh, (size_t)count * sizeof(uint32_t)); cur += (size_t)count * sizeof(uint32_t);
-        b->material = (uint32_t *)cur;
-        memcpy(cur, batch->material, (size_t)count * sizeof(uint32_t)); cur += (size_t)count * sizeof(uint32_t);
-    }
+    ano::assume(offset == bytes);
+
     RenderCommand cmd = { .kind = RCMD_BULK_UPDATE, .update = b, .bulk_owned = true };
     if (!ano_render_submit(bridge, &cmd)) {
         ano_render_command_release(&cmd); // failed push: retire block
