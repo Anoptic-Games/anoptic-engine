@@ -508,7 +508,12 @@ bool initVulkan() // Initializes Vulkan
 	textureAllocator.blocks = NULL;
 	textureAllocator.blockCount = 0;
 
-	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator, ctx.device, ctx.queueFamilyIndices.graphicsFamily, ctx.queueFamilyIndices.transferFamily)) {
+	static_assert(MAX_FRAMES_IN_FLIGHT > 0 && MAX_FRAMES_IN_FLIGHT <= 8,
+	              "mesh publication uses one byte of frame-slot bits");
+	if (!ano_vk_init_geometry_pool(&rendererState.globalGeometryPool, &gpuAllocator,
+	                               ctx.device, ctx.queueFamilyIndices.graphicsFamily,
+	                               ctx.queueFamilyIndices.transferFamily,
+	                               MAX_FRAMES_IN_FLIGHT)) {
 		ano_log(ANO_FATAL, "Quitting init: geometry pool creation failure!");
 		unInitVulkan();
 		return false;

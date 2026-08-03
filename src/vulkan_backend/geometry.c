@@ -8,12 +8,48 @@
 #include <stdio.h>
 #include <anoptic_log.h>
 
-bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device, uint32_t graphicsFamily, uint32_t transferFamily)
+static void geometry_pool_release_mesh_registry(GeometryPool* pool)
 {
+    free(pool->meshes);
+    free(pool->meshGpuPublication.pendingFrames);
+    free(pool->meshGpuPublication.dirtyRows);
+    pool->meshes = NULL;
+    pool->meshCount = 0;
+    pool->meshCapacity = 0;
+    pool->meshGpuPublication = {};
+}
+
+static void geometry_pool_mark_gpu_dirty(GeometryPool* pool, uint32_t meshIndex)
+{
+    ano::assume(meshIndex < ANO_MAX_MESHES);
+    MeshGpuPublication* publication = &pool->meshGpuPublication;
+    if (publication->pendingFrames[meshIndex] == 0u) {
+        ano::assume(publication->dirtyCount < ANO_MAX_MESHES);
+        publication->dirtyRows[publication->dirtyCount++] = meshIndex;
+    }
+    publication->pendingFrames[meshIndex] = publication->allFrames;
+}
+
+bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
+                               uint32_t graphicsFamily, uint32_t transferFamily,
+                               uint32_t framesInFlight)
+{
+    if (framesInFlight == 0u || framesInFlight > 8u) return false;
     pool->meshCount = 0;
     pool->meshCapacity = 100;
     pool->meshes = ano::allocate_zero<MeshRegion>(pool->meshCapacity);
-    if (!pool->meshes) return false;
+    pool->meshGpuPublication = {};
+    pool->meshGpuPublication.pendingFrames =
+        ano::allocate_zero<uint8_t>(ANO_MAX_MESHES);
+    pool->meshGpuPublication.dirtyRows =
+        ano::allocate<uint32_t>(ANO_MAX_MESHES);
+    pool->meshGpuPublication.allFrames =
+        static_cast<uint8_t>((1u << framesInFlight) - 1u);
+    if (!pool->meshes || !pool->meshGpuPublication.pendingFrames
+        || !pool->meshGpuPublication.dirtyRows) {
+        geometry_pool_release_mesh_registry(pool);
+        return false;
+    }
     pool->vertexWriteOffset = 0;
     pool->indexWriteOffset = 0;
     
@@ -46,18 +82,27 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
         .queueFamilyIndexCount = concurrent ? 2u : 0u,
         .pQueueFamilyIndices = concurrent ? queueFamilyIndices : NULL
     };
-    vkCreateBuffer(device, &vInfo, NULL, &pool->vertexBuffer);
+    if (vkCreateBuffer(device, &vInfo, NULL, &pool->vertexBuffer) != VK_SUCCESS) {
+        pool->vertexBuffer = VK_NULL_HANDLE;
+        geometry_pool_release_mesh_registry(pool);
+        return false;
+    }
     VkMemoryRequirements vReqs;
     vkGetBufferMemoryRequirements(device, pool->vertexBuffer, &vReqs);
     pool->vertexAlloc = gpu_alloc(alloc, vReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (pool->vertexAlloc.memory == VK_NULL_HANDLE) {
         vkDestroyBuffer(device, pool->vertexBuffer, NULL);
         pool->vertexBuffer = VK_NULL_HANDLE; // atomic rollback: null handle (cleanup guards on it) + free meshes
-        free(pool->meshes);
-        pool->meshes = NULL;
+        geometry_pool_release_mesh_registry(pool);
         return false;
     }
-    vkBindBufferMemory(device, pool->vertexBuffer, pool->vertexAlloc.memory, pool->vertexAlloc.offset);
+    if (vkBindBufferMemory(device, pool->vertexBuffer, pool->vertexAlloc.memory,
+                           pool->vertexAlloc.offset) != VK_SUCCESS) {
+        vkDestroyBuffer(device, pool->vertexBuffer, NULL);
+        pool->vertexBuffer = VK_NULL_HANDLE;
+        geometry_pool_release_mesh_registry(pool);
+        return false;
+    }
 
     VkBufferCreateInfo iInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -67,7 +112,13 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
         .queueFamilyIndexCount = concurrent ? 2u : 0u,
         .pQueueFamilyIndices = concurrent ? queueFamilyIndices : NULL
     };
-    vkCreateBuffer(device, &iInfo, NULL, &pool->indexBuffer);
+    if (vkCreateBuffer(device, &iInfo, NULL, &pool->indexBuffer) != VK_SUCCESS) {
+        vkDestroyBuffer(device, pool->vertexBuffer, NULL);
+        pool->vertexBuffer = VK_NULL_HANDLE;
+        pool->indexBuffer = VK_NULL_HANDLE;
+        geometry_pool_release_mesh_registry(pool);
+        return false;
+    }
     VkMemoryRequirements iReqs;
     vkGetBufferMemoryRequirements(device, pool->indexBuffer, &iReqs);
     pool->indexAlloc = gpu_alloc(alloc, iReqs, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -76,11 +127,18 @@ bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice
         vkDestroyBuffer(device, pool->indexBuffer, NULL);
         pool->vertexBuffer = VK_NULL_HANDLE; // atomic rollback: null both handles + free meshes
         pool->indexBuffer = VK_NULL_HANDLE;
-        free(pool->meshes);
-        pool->meshes = NULL;
+        geometry_pool_release_mesh_registry(pool);
         return false;
     }
-    vkBindBufferMemory(device, pool->indexBuffer, pool->indexAlloc.memory, pool->indexAlloc.offset);
+    if (vkBindBufferMemory(device, pool->indexBuffer, pool->indexAlloc.memory,
+                           pool->indexAlloc.offset) != VK_SUCCESS) {
+        vkDestroyBuffer(device, pool->vertexBuffer, NULL);
+        vkDestroyBuffer(device, pool->indexBuffer, NULL);
+        pool->vertexBuffer = VK_NULL_HANDLE;
+        pool->indexBuffer = VK_NULL_HANDLE;
+        geometry_pool_release_mesh_registry(pool);
+        return false;
+    }
 
     return true;
 }
@@ -89,10 +147,7 @@ void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device)
 {
     if (pool->vertexBuffer) vkDestroyBuffer(device, pool->vertexBuffer, NULL);
     if (pool->indexBuffer) vkDestroyBuffer(device, pool->indexBuffer, NULL);
-    if (pool->meshes) free(pool->meshes);
-    pool->meshes = NULL;
-    pool->meshCount = 0;
-    pool->meshCapacity = 0;
+    geometry_pool_release_mesh_registry(pool);
     
     if (pool->vertexFreeBlocks) free(pool->vertexFreeBlocks);
     pool->vertexFreeBlocks = NULL;
@@ -407,7 +462,7 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
     if (recycled) {
         meshIndex = pool->freeMeshIndices[pool->freeMeshIndexCount - 1];
     } else {
-        // Cap at ANO_MAX_MESHES (updateCullingBuffers writes meshData[i*9] for i < meshCount).
+        // Cap at the fixed GPU row-buffer domain.
         if (pool->meshCount >= ANO_MAX_MESHES) return ANO_MESH_NONE; // GPU buffers full
         if (pool->meshCount >= pool->meshCapacity) {
             uint32_t capacity = pool->meshCapacity == 0 ? 100u : pool->meshCapacity * 2u;
@@ -425,6 +480,7 @@ uint32_t geometry_pool_upload(GeometryPool* pool, GpuAllocator* alloc, VkDevice 
 
     if (recycled) pool->freeMeshIndexCount--;
     else          pool->meshCount++;
+    geometry_pool_mark_gpu_dirty(pool, meshIndex);
     return meshIndex;
 }
 
@@ -560,7 +616,11 @@ uint32_t geometry_pool_upload_chain(GeometryPool* pool, GpuAllocator* alloc, VkD
     pool->meshCount = lodBase + produced;
 
     // Base lodCount = chain length; members stay at 1
-    if (produced) pool->meshes[lodBase].lodCount = produced;
+    if (produced) {
+        pool->meshes[lodBase].lodCount = produced;
+        for (uint32_t i = 0; i < produced; ++i)
+            geometry_pool_mark_gpu_dirty(pool, lodBase + i);
+    }
 
     if (out_lodBase)  *out_lodBase = produced ? lodBase : ANO_MESH_NONE;
     if (out_lodCount) *out_lodCount = produced;
@@ -620,6 +680,7 @@ void geometry_pool_free(GeometryPool* pool, uint32_t meshIndex)
 
     // Clear mesh
     memset(mesh, 0, sizeof(MeshRegion));
+    geometry_pool_mark_gpu_dirty(pool, meshIndex);
 }
 
 // Free contiguous LOD chain (all levels). Symmetric with geometry_pool_upload_chain.

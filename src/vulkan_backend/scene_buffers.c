@@ -15,6 +15,7 @@
 #include "vulkan_backend/slot_upload.h"
 #include "vulkan_backend/shadow/shadow.h"
 #include "vulkan_backend/scene_buffers.h"
+#include "vulkan_backend/frame/schema/cull_ubo.h"
 
 //Init and cleanup functions
 
@@ -295,7 +296,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
     state->shadowLodBias = ANO_SHADOW_LOD_BIAS_DEFAULT; // shadow LOD offset relative to view-0
     
     VkDeviceSize meshDataSize = sizeof(GpuMeshData) * maxMeshes;
-    VkDeviceSize meshBoundsSize = sizeof(float) * 4 * maxMeshes; // vec4
+    VkDeviceSize meshBoundsSize = sizeof(GpuMeshBounds) * maxMeshes;
     VkDeviceSize drawCountSize = sizeof(uint32_t) * ano_draw_partition_count();
     VkDeviceSize compactedEntityIndicesSize = sizeof(uint32_t) * maxEntities * ano_draw_partition_count();
     // Transparency sort keys, one float per camera draw slot.
@@ -332,7 +333,8 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
             ano_log(ANO_FATAL, "Failed to create mesh bounds buffer!");
             return false;
         }
-        state->culling.meshBoundsMapped[i] = state->culling.meshBoundsAllocs[i].mapped;
+        state->culling.meshBoundsMapped[i] =
+            static_cast<GpuMeshBounds*>(state->culling.meshBoundsAllocs[i].mapped);
 
         // Draw Count Buffer
         VkBufferCreateInfo countInfo = {};
@@ -386,6 +388,7 @@ bool createCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t max
             return false;
         }
         state->culling.ubo.mapped[i] = (CullUBO*)state->culling.ubo.allocs[i].mapped;
+        ano_initialize_cull_ubo_invariants(state->culling.ubo.mapped[i], state->taskCull);
     }
     return true;
 }

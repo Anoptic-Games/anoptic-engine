@@ -28,6 +28,15 @@ typedef struct MeshRegion
     uint32_t    lodCount;           // # contiguous LOD meshes from this base (1 == standalone); cull reads it off the base
 } MeshRegion;
 
+// Render-thread mesh-row publication. One queued row, one pending bit per frame slot.
+typedef struct MeshGpuPublication
+{
+    uint8_t*    pendingFrames;
+    uint32_t*   dirtyRows;
+    uint32_t    dirtyCount;
+    uint8_t     allFrames;
+} MeshGpuPublication;
+
 typedef struct GeoFreeBlock
 {
     uint32_t offset;
@@ -59,13 +68,16 @@ typedef struct GeometryPool
     uint32_t        meshCount;
     uint32_t        meshCapacity;
     MeshRegion*     meshes;             // registered mesh regions
+    MeshGpuPublication meshGpuPublication;
 
     uint32_t*       freeMeshIndices;
     uint32_t        freeMeshIndexCount;
     uint32_t        freeMeshIndexCapacity;
 } GeometryPool;
 
-bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device, uint32_t graphicsFamily, uint32_t transferFamily);
+bool ano_vk_init_geometry_pool(GeometryPool* pool, GpuAllocator* alloc, VkDevice device,
+                               uint32_t graphicsFamily, uint32_t transferFamily,
+                               uint32_t framesInFlight);
 void ano_vk_cleanup_geometry_pool(GeometryPool* pool, VkDevice device);
 
 // Per-mesh GPU buffer capacity (MeshSSBO / MeshBoundsSSBO). Host pool must not register past this.

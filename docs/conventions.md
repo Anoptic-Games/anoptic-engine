@@ -17,4 +17,6 @@ Wrap a foreign library behind an Anoptic interface when it is broadly used or pl
 
 Express invariants structurally, in types, or at compile time before adding runtime guards. Keep checks at untrusted and foreign boundaries.
 
+For renderer verification from WSL, use `nix build .#release-wsl`, stage the emitted `result/bin/anopticengine.exe` and runtime tree onto a Windows-local path, then launch the `.exe` from Windows. A missing in-guest Vulkan target is not a renderer build failure; do not invent an in-WSL Linux renderer workaround or rebuild the cross-toolchain by hand.
+
 Debug-only diagnostics must not enter Release. Public `ano_debug_*` operations compile to `((void)0)` outside Debug.

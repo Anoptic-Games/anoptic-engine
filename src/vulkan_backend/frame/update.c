@@ -12,6 +12,7 @@
 #include "vulkan_backend/backend.h"
 #include "vulkan_backend/gpu_alloc.h"
 #include "vulkan_backend/frame/frame.h"
+#include "vulkan_backend/frame/schema/mesh_rows.h"
 
 bool updateUniformBuffer(VulkanContext* ctx, RendererState* state)
 { // Updates the per-frame camera projection params.
@@ -141,6 +142,34 @@ void updateTransformBuffer(VulkanContext* ctx, RendererState* state, uint32_t fr
 	state->transformBuffer.count = state->entityCount;
 }
 
+static void publishDirtyMeshRows(RendererState* state, uint32_t frameIndex)
+{
+    MeshGpuPublication* publication =
+        &state->globalGeometryPool.meshGpuPublication;
+    ano::assume(frameIndex < 8u);
+    const uint8_t frameBit = static_cast<uint8_t>(1u << frameIndex);
+    ano::assume((publication->allFrames & frameBit) != 0u);
+
+    uint32_t stillDirty = 0;
+    for (uint32_t i = 0; i < publication->dirtyCount; ++i) {
+        const uint32_t meshIndex = publication->dirtyRows[i];
+        ano::assume(meshIndex < ANO_MAX_MESHES);
+        uint8_t pending = publication->pendingFrames[meshIndex];
+        if (pending & frameBit) {
+            const MeshRegion& mesh = state->globalGeometryPool.meshes[meshIndex];
+            state->culling.meshDataMapped[frameIndex][meshIndex] =
+                ano_project_mesh_row<GpuMeshData>(mesh);
+            state->culling.meshBoundsMapped[frameIndex][meshIndex] =
+                ano_project_mesh_row<GpuMeshBounds>(mesh);
+            pending = static_cast<uint8_t>(pending & ~frameBit);
+            publication->pendingFrames[meshIndex] = pending;
+        }
+        if (pending != 0u)
+            publication->dirtyRows[stillDirty++] = meshIndex;
+    }
+    publication->dirtyCount = stillDirty;
+}
+
 void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t frameIndex)
 {
     // slotHighWater is the cull/dispatch bound, dead slots self-skip in shaders.
@@ -172,7 +201,6 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         ubo->hizParams[v][0] = (float)state->frames[frameIndex].views[v].hizWidth;
         ubo->hizParams[v][1] = (float)state->frames[frameIndex].views[v].hizHeight;
         ubo->hizParams[v][2] = (state->hizEnable[v] && hizWarm) ? (float)state->frames[frameIndex].views[v].hizMipCount : 0.0f;
-        ubo->hizParams[v][3] = 0.0f;
         ubo->hizProj[v][0] = viewUbo->proj[0][0];
         ubo->hizProj[v][1] = viewUbo->proj[1][1];
         ubo->hizProj[v][2] = viewUbo->proj[2][2];
@@ -207,54 +235,12 @@ void updateCullingBuffers(VulkanContext* ctx, RendererState* state, uint32_t fra
         ano_render_publish_snapshot(&state->bridge, &snap);
     }
 
-    ubo->viewCount = ANO_VIEW_COUNT;
     ubo->entityCount = entityCount;
+    // Capacity can grow; every rotating frame slot must observe the new partition stride.
     ubo->maxEntities = state->culling.maxEntities;
-    ubo->drawSlotCount = ano_draw_pipeline_count();
     ubo->shadowLodBias = state->shadowLodBias; // shadow LOD offset relative to view-0 LOD
-
-    // Publish the PipelineType -> draw-slot map cull.comp compacts by.
-    for (uint32_t t = 0; t < 16u; ++t)
-        ubo->drawSlotOf[t] = (t < PIPELINE_TYPE_COUNT) ? ano_draw_slot_of((PipelineType)t) : ANO_NO_DRAW_SLOT;
-
-    // Special lanes the cull pass branches on. ANO_NO_DRAW_SLOT when absent.
-    ubo->specialSlots[0] = ano_draw_slot_of(PIPELINE_ADDITIVE);
-    ubo->specialSlots[1] = ano_draw_slot_of(PIPELINE_TRANSMISSION);
-    ubo->specialSlots[2] = ano_draw_slot_of(PIPELINE_FLAT_MASKED); // casters -> per-frustum MASKED shadow partition
-    ubo->specialSlots[3] = ANO_NO_DRAW_SLOT;
-
-    // Task-shader meshlet cull: sizes mesh-path commands as ceil(meshletCount/32) task workgroups.
-    ubo->taskParams[0] = state->taskCull ? 1u : 0u;
-    ubo->taskParams[1] = 0u;
-    ubo->taskParams[2] = 0u;
-    ubo->taskParams[3] = 0u;
 
     // EntitySSBO is seeded at init and mutated sparsely via the command bridge, not per-frame.
 
-    // Update MeshSSBO and MeshBoundsSSBO, clamped to ANO_MAX_MESHES.
-    uint32_t meshCount = state->globalGeometryPool.meshCount;
-    if (meshCount > ANO_MAX_MESHES) meshCount = ANO_MAX_MESHES;
-    GpuMeshData* meshData = state->culling.meshDataMapped[frameIndex];
-    float* meshBounds = (float*)state->culling.meshBoundsMapped[frameIndex];
-    
-    for(uint32_t i=0; i < meshCount; i++) {
-        MeshRegion* mesh = &state->globalGeometryPool.meshes[i];
-        
-        meshData[i] = {
-            .meshletCount = mesh->meshletCount,
-            .meshletOffset = mesh->meshletOffset,
-            .uniqueVerticesOffset = mesh->uniqueVerticesOffset,
-            .trianglesOffset = mesh->trianglesOffset,
-            .vertexOffset = mesh->vertexOffset,
-            .classicIndexCount = mesh->classicIndexCount,
-            .classicFirstIndex = static_cast<uint32_t>(mesh->classicIndexOffset / sizeof(uint32_t)),
-            .boundsOffset = mesh->boundsOffset,
-            .lodCount = mesh->lodCount,
-        };
-
-        meshBounds[i*4 + 0] = mesh->boundingSphereCenter[0];
-        meshBounds[i*4 + 1] = mesh->boundingSphereCenter[1];
-        meshBounds[i*4 + 2] = mesh->boundingSphereCenter[2];
-        meshBounds[i*4 + 3] = mesh->boundingSphereRadius;
-    }
+    publishDirtyMeshRows(state, frameIndex);
 }

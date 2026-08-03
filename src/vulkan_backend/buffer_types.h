@@ -117,6 +117,14 @@ typedef struct GpuEntityInfo
     uint32_t materialIndex;
 } GpuEntityInfo;
 
+enum class AnoMeshFieldDerivation : uint8_t {
+    classic_index_bytes_to_elements,
+};
+
+struct AnoMeshDerivedField final {
+    AnoMeshFieldDerivation kind;
+};
+
 typedef struct GpuMeshData
 {
     uint32_t meshletCount;
@@ -125,10 +133,17 @@ typedef struct GpuMeshData
     uint32_t trianglesOffset;
     uint32_t vertexOffset;
     uint32_t classicIndexCount;
+    [[=AnoMeshDerivedField{AnoMeshFieldDerivation::classic_index_bytes_to_elements}]]
     uint32_t classicFirstIndex;
     uint32_t boundsOffset;
     uint32_t lodCount;
 } GpuMeshData;
+
+typedef struct GpuMeshBounds
+{
+    float boundingSphereCenter[3];
+    float boundingSphereRadius;
+} GpuMeshBounds;
 
 typedef struct CullUBO
 {
@@ -206,15 +221,15 @@ typedef struct CullingBuffers {
     // Per-slot mesh/material; ×1 device-local + delta staging.
     SlotUpload              entity;
 
-    // MeshSSBO: host-visible, rewritten each frame.
+    // MeshSSBO: host-visible, changed rows published once per frame slot.
     VkBuffer                meshDataBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           meshDataAllocs[MAX_FRAMES_IN_FLIGHT];
     GpuMeshData*            meshDataMapped[MAX_FRAMES_IN_FLIGHT];
 
-    // MeshBoundsSSBO: vec4 sphere (xyz + radius) per mesh; host-visible, rewritten each frame
+    // MeshBoundsSSBO: vec4-compatible sphere per mesh; changed rows follow MeshSSBO.
     VkBuffer                meshBoundsBuffer[MAX_FRAMES_IN_FLIGHT];
     GpuAllocation           meshBoundsAllocs[MAX_FRAMES_IN_FLIGHT];
-    void*                   meshBoundsMapped[MAX_FRAMES_IN_FLIGHT];
+    GpuMeshBounds*          meshBoundsMapped[MAX_FRAMES_IN_FLIGHT];
 
     // GPU-written per-partition draw counts (DEVICE_LOCAL; cull atomics)
     VkBuffer                drawCountBuffer[MAX_FRAMES_IN_FLIGHT];
