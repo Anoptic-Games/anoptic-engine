@@ -26,6 +26,8 @@ void ano_record_hiz_tail(VkCommandBuffer cmd);
 
 /* frame/record_views.c */
 
+// Fixed device draw kernel after capability gates.
+void ano_select_view_draw_profile(void);
 // Per-view geometry passes (+ picking on view 0), then the composite/tonemap onto the swapchain.
 void ano_record_views(VkCommandBuffer cmd, uint32_t entityCount, uint32_t drawSlotCount);
 void ano_record_composite(VkCommandBuffer cmd, uint32_t imageIndex);

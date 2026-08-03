@@ -488,6 +488,7 @@ bool initVulkan() // Initializes Vulkan
             return false;
         }
     }
+    ano_select_view_draw_profile();
 
 	gpuAllocator.device = ctx.device;
 	vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &gpuAllocator.memProps);

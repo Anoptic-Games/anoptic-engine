@@ -12,6 +12,7 @@
 #include "vulkan_backend/text_raster.h"
 #include "vulkan_backend/frame/frame.h"
 #include "vulkan_backend/frame/pass_schema.h"
+#include "vulkan_backend/frame/schema/draw_profiles.h"
 #include "vulkan_backend/pipeline_registry.h"
 
 static constexpr auto view_pass_enumerators =
@@ -19,6 +20,100 @@ static constexpr auto view_pass_enumerators =
 
 static constexpr auto frame_attachment_enumerators =
     std::define_static_array(std::meta::enumerators_of(^^AnoFrameAttachment));
+
+using AnoDrawKernel = void (*)(VkCommandBuffer, VkPipelineLayout,
+    uint32_t, uint32_t, uint32_t) noexcept;
+
+template<AnoDrawGeometry Geometry, AnoDrawSubmission Submission>
+static void record_draw_kernel(VkCommandBuffer cmd, VkPipelineLayout layout,
+                               uint32_t baseOffset, uint32_t partition,
+                               uint32_t entityCount) noexcept
+{
+    static_assert(static_cast<size_t>(Geometry) < ANO_DRAW_GEOMETRY_COUNT);
+    static_assert(static_cast<size_t>(Submission) < ANO_DRAW_SUBMISSION_COUNT);
+    constexpr bool mesh = Geometry != AnoDrawGeometry::vertex;
+    constexpr bool task = Geometry == AnoDrawGeometry::task;
+    constexpr VkShaderStageFlags stages =
+        (mesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
+        | VK_SHADER_STAGE_FRAGMENT_BIT
+        | (task ? VK_SHADER_STAGE_TASK_BIT_EXT : 0u);
+    constexpr uint32_t stride =
+        mesh ? sizeof(VkDrawMeshTasksIndirectCommandEXT)
+             : sizeof(VkDrawIndexedIndirectCommand);
+
+    vkCmdPushConstants(cmd, layout, stages, 0, sizeof(uint32_t), &baseOffset);
+
+    if constexpr (!mesh)
+        vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer,
+            0, VK_INDEX_TYPE_UINT32);
+
+    const uint32_t maxDraws = rendererState.indirectBuffer.capacity;
+    const VkBuffer indirectBuffer =
+        rendererState.indirectBuffer.buffer[rendererState.frameIndex];
+    const VkDeviceSize indirectOffset =
+        static_cast<VkDeviceSize>(partition) * maxDraws * stride;
+
+    if constexpr (Submission == AnoDrawSubmission::counted) {
+        const VkBuffer countBuffer =
+            rendererState.culling.drawCountBuffer[rendererState.frameIndex];
+        const VkDeviceSize countOffset =
+            static_cast<VkDeviceSize>(partition) * sizeof(uint32_t);
+        if constexpr (mesh)
+            pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuffer,
+                indirectOffset, countBuffer, countOffset, maxDraws, stride);
+        else
+            vkCmdDrawIndexedIndirectCount(cmd, indirectBuffer, indirectOffset,
+                countBuffer, countOffset, maxDraws, stride);
+    } else {
+        if constexpr (mesh)
+            pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBuffer,
+                indirectOffset, entityCount, stride);
+        else
+            vkCmdDrawIndexedIndirect(cmd, indirectBuffer, indirectOffset,
+                entityCount, stride);
+    }
+}
+
+struct AnoDrawKernelRegistry final {
+    AnoDrawKernel kernels[ANO_DRAW_GEOMETRY_COUNT][ANO_DRAW_SUBMISSION_COUNT];
+};
+
+consteval AnoDrawKernelRegistry ano_reflect_draw_kernels()
+{
+    AnoDrawKernelRegistry result{};
+    static constexpr auto profiles =
+        std::define_static_array(std::meta::enumerators_of(^^AnoDrawProfile));
+    template for (constexpr auto profile : profiles) {
+        if constexpr ([:profile:] != AnoDrawProfile::count) {
+            constexpr AnoDrawProfileSpec spec = ano_draw_profile_spec<profile>();
+            result.kernels[static_cast<size_t>(spec.geometry)]
+                          [static_cast<size_t>(spec.submission)] =
+                &record_draw_kernel<spec.geometry, spec.submission>;
+        }
+    }
+    for (const auto& geometry : result.kernels)
+        for (AnoDrawKernel kernel : geometry)
+            if (kernel == nullptr)
+                __builtin_abort();
+    return result;
+}
+
+static constexpr AnoDrawKernelRegistry drawKernelRegistry =
+    ano_reflect_draw_kernels();
+static AnoDrawKernel selectedDrawKernel;
+
+void ano_select_view_draw_profile(void)
+{
+    const AnoDrawGeometry geometry = !ctx.deviceCapabilities.meshShader
+        ? AnoDrawGeometry::vertex
+        : rendererState.taskCull ? AnoDrawGeometry::task
+                                 : AnoDrawGeometry::mesh;
+    const AnoDrawSubmission submission = ctx.deviceCapabilities.drawIndirectCount
+        ? AnoDrawSubmission::counted : AnoDrawSubmission::uncounted;
+    selectedDrawKernel =
+        drawKernelRegistry.kernels[static_cast<size_t>(geometry)]
+                                  [static_cast<size_t>(submission)];
+}
 
 template<AnoFramePass Pass>
 static inline void record_view_compute_pass(VkCommandBuffer cmd, uint32_t entityCount,
@@ -204,40 +299,9 @@ static inline void record_graphics_pass(VkCommandBuffer cmd, uint32_t v,
         constexpr uint32_t slot = pipeline.drawSlot;
         uint32_t partition = v * drawSlotCount + slot;
         uint32_t baseOffset = partition * rendererState.culling.maxEntities;
-        bool useMesh = ctx.deviceCapabilities.meshShader;
-        VkShaderStageFlags pcStage =
-            (useMesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT)
-            | VK_SHADER_STAGE_FRAGMENT_BIT
-            | (rendererState.taskCull ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
-        vkCmdPushConstants(cmd, rendererState.prototypes[Prototype].layout,
-            pcStage, 0, sizeof(uint32_t), &baseOffset);
-
-        VkBuffer indirectBuf = rendererState.indirectBuffer.buffer[rendererState.frameIndex];
-        VkBuffer drawCountBuf = rendererState.culling.drawCountBuffer[rendererState.frameIndex];
-        VkDeviceSize countOffset = (VkDeviceSize)partition * sizeof(uint32_t);
-        uint32_t maxDraws = rendererState.indirectBuffer.capacity;
-
-        if (useMesh) {
-            VkDeviceSize indirectOffset =
-                (VkDeviceSize)partition * maxDraws * sizeof(VkDrawMeshTasksIndirectCommandEXT);
-            if (ctx.deviceCapabilities.drawIndirectCount)
-                pfnVkCmdDrawMeshTasksIndirectCountEXT(cmd, indirectBuf, indirectOffset,
-                    drawCountBuf, countOffset, maxDraws, sizeof(VkDrawMeshTasksIndirectCommandEXT));
-            else
-                pfnVkCmdDrawMeshTasksIndirectEXT(cmd, indirectBuf, indirectOffset,
-                    entityCount, sizeof(VkDrawMeshTasksIndirectCommandEXT));
-        } else {
-            vkCmdBindIndexBuffer(cmd, rendererState.globalGeometryPool.indexBuffer,
-                0, VK_INDEX_TYPE_UINT32);
-            VkDeviceSize indirectOffset =
-                (VkDeviceSize)partition * maxDraws * sizeof(VkDrawIndexedIndirectCommand);
-            if (ctx.deviceCapabilities.drawIndirectCount)
-                vkCmdDrawIndexedIndirectCount(cmd, indirectBuf, indirectOffset,
-                    drawCountBuf, countOffset, maxDraws, sizeof(VkDrawIndexedIndirectCommand));
-            else
-                vkCmdDrawIndexedIndirect(cmd, indirectBuf, indirectOffset,
-                    entityCount, sizeof(VkDrawIndexedIndirectCommand));
-        }
+        ano::assume(selectedDrawKernel != nullptr);
+        selectedDrawKernel(cmd, rendererState.prototypes[Prototype].layout,
+            baseOffset, partition, entityCount);
     }
 
     if constexpr (Prototype == PIPELINE_ADDITIVE)
