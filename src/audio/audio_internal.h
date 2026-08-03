@@ -122,7 +122,7 @@ struct AnoAudioMixer
     AnoAudioBridge *bridge; // NULL = offline (no events, no telemetry)
 
     // Cooked-block lane (realtime). stride = blockFrames * CHANNELS * sizeof(float).
-    AnoAudioRing blockRing;
+    ano::ByteSpscRing blockRing;
     float       *blockScratch;  // mixer render target before push
     float       *deviceScratch; // device pop / pull carry (one backend at a time)
     // Own cache line.

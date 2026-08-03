@@ -19,12 +19,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <anoptic_atomic.h>
-#include <string.h>
 #include <mimalloc.h>
-#include <anoptic_memory.h> // ANO_CACHE_LINE / ANO_THREAD_LINE
 #include <anoptic_math.h>
 #include <anoptic_render.h> // command/event protocol + opaque AnoRenderBridge
+#include <anoptic_threads_typed.h>
 
 // Event protocol / RenderSnapshot / AnoViewState are public in anoptic_render.h. Transport only here.
 
@@ -57,56 +55,6 @@ typedef struct DisplayState
 } DisplayState;
 
 
-/* SPSC Ring */
-
-// Bounded SPSC over fixed-size POD. Capacity power of two (mask wrap).
-// Producer owns tail, consumer owns head; acquire peer, release self (own cursor relaxed).
-// head/tail on separate ANO_THREAD_LINE regions; ring owner must match that align.
-typedef struct AnoSpscRing
-{
-    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) tail; // producer-owned: next write index
-    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint32_t) head; // consumer-owned: next read index
-    alignas(ANO_THREAD_LINE) uint32_t mask;         // capacity - 1 (immutable after init)
-    uint32_t                          stride;       // element size in bytes
-    uint8_t                          *buffer;       // capacity * stride bytes
-} AnoSpscRing;
-
-// in:  ring, heap, capacity_pow2 (rounded up to pow2, >= 2), stride (> 0)
-// out: true on success; false on bad args or alloc failure
-bool ano_spsc_init(AnoSpscRing *ring, mi_heap_t *heap, uint32_t capacity_pow2, uint32_t stride);
-
-// Releases the ring buffer. Does not release the backing heap.
-void ano_spsc_destroy(AnoSpscRing *ring);
-
-// PRODUCER only. Copies `stride` bytes from `elem`. false if full.
-static inline bool ano_spsc_push(AnoSpscRing *ring, const void *elem)
-{
-    uint32_t tail = atomic_load_explicit(&ring->tail, memory_order_relaxed);
-    uint32_t head = atomic_load_explicit(&ring->head, memory_order_acquire);
-    if ((tail - head) > ring->mask) // (tail - head) == capacity means full
-        return false;
-    uint8_t *slot = ring->buffer + (size_t)(tail & ring->mask) * ring->stride;
-    for (uint32_t i = 0; i < ring->stride; ++i)
-        slot[i] = ((const uint8_t *)elem)[i];
-    atomic_store_explicit(&ring->tail, tail + 1u, memory_order_release);
-    return true;
-}
-
-// CONSUMER only. Copies next element into `out` (>= stride bytes). false if empty.
-static inline bool ano_spsc_pop(AnoSpscRing *ring, void *out)
-{
-    uint32_t head = atomic_load_explicit(&ring->head, memory_order_relaxed);
-    uint32_t tail = atomic_load_explicit(&ring->tail, memory_order_acquire);
-    if (head == tail) // empty
-        return false;
-    const uint8_t *slot = ring->buffer + (size_t)(head & ring->mask) * ring->stride;
-    for (uint32_t i = 0; i < ring->stride; ++i)
-        ((uint8_t *)out)[i] = slot[i];
-    atomic_store_explicit(&ring->head, head + 1u, memory_order_release);
-    return true;
-}
-
-
 /* Checked Sizing */
 
 // in:  *bytes (running total), count, stride (> 0)
@@ -133,62 +81,21 @@ static inline bool ano_size_align_up(size_t *bytes, size_t align)
 }
 
 
-/* Seqlock */
-
-// Latest-wins epoch. Even version == stable, odd == mid-write; version 0 == unpublished.
-// One producer per version; readers retry if version moved across the copy.
-// value: _Atomic word lane, sizeof(payload)/8 entries (asserted at the bridge).
-// Relaxed word copies; torn loads discarded by version recheck.
-static inline void ano_seqpub_store(ANO_ATOMIC(uint64_t) *value, ANO_ATOMIC(uint64_t) *version, const void *v, size_t stride)
-{
-    uint64_t s = atomic_load_explicit(version, memory_order_relaxed); // producer-owned version
-    atomic_store_explicit(version, s + 1u, memory_order_relaxed);     // odd marker
-    atomic_thread_fence(memory_order_release);                        // odd before value writes
-    for (size_t i = 0; i < stride / 8u; ++i) {
-        uint64_t w;
-        memcpy(&w, (const uint8_t *)v + 8u * i, 8u);
-        atomic_store_explicit(&value[i], w, memory_order_relaxed);
-    }
-    atomic_store_explicit(version, s + 2u, memory_order_release);     // even + publish
-}
-
-// false (out untouched) if unpublished. Else copies an untorn value.
-static inline bool ano_seqpub_load(const ANO_ATOMIC(uint64_t) *value, const ANO_ATOMIC(uint64_t) *version, void *out, size_t stride)
-{
-    for (;;) {
-        uint64_t s1 = atomic_load_explicit(version, memory_order_acquire);
-        if (s1 == 0u) return false; // never published
-        if (s1 & 1u) continue;      // mid-write
-        for (size_t i = 0; i < stride / 8u; ++i) {
-            uint64_t w = atomic_load_explicit(&value[i], memory_order_relaxed);
-            memcpy((uint8_t *)out + 8u * i, &w, 8u);
-        }
-        atomic_thread_fence(memory_order_acquire);                    // value reads before recheck
-        uint64_t s2 = atomic_load_explicit(version, memory_order_relaxed);
-        if (s1 == s2) return true;  // version unmoved
-    }
-}
-
-
 /* Bridge */
 
-static_assert(sizeof(ANO_ATOMIC(uint64_t)) == sizeof(uint64_t), "seqlock lanes assume plain-width atomics");
-static_assert(sizeof(RenderSnapshot) % 8u == 0, "seqlock lane copies whole 64-bit words");
-static_assert(sizeof(AnoViewState)   % 8u == 0, "seqlock lane copies whole 64-bit words");
+static_assert(ano::TransportData<RenderCommand>);
+static_assert(ano::TransportData<RenderEvent>);
+static_assert(ano::TransportData<RenderSnapshot>);
+static_assert(ano::TransportData<AnoViewState>);
 
 // Completes the opaque AnoRenderBridge declared in anoptic_render.h.
 struct AnoRenderBridge
 {
-    AnoSpscRing commands; // logic -> render (RenderCommand)
-    AnoSpscRing events;   // render -> logic (RenderEvent)
+    ano::SpscRing<RenderCommand> commands; // logic -> render
+    ano::SpscRing<RenderEvent> events;     // render -> logic
 
-    // Latest-wins lanes. snapshot: render->logic. viewState: logic->render.
-    // Atomic word lanes; typed access only via publish/acquire copies.
-    // One ANO_THREAD_LINE per direction; version leads its words.
-    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) snapshotVersion; // render publishes
-    ANO_ATOMIC(uint64_t) snapshot[sizeof(RenderSnapshot) / sizeof(uint64_t)];
-    alignas(ANO_THREAD_LINE) ANO_ATOMIC(uint64_t) viewStateVersion; // logic publishes
-    ANO_ATOMIC(uint64_t) viewState[sizeof(AnoViewState) / sizeof(uint64_t)];
+    ano::SeqPub<RenderSnapshot> snapshot; // render -> logic
+    ano::SeqPub<AnoViewState> viewState; // logic -> render
     bool viewRejectWarned; // publisher-private: degenerate-pose warning once (never read by render)
 };
 
@@ -214,25 +121,25 @@ void ano_render_command_release(const RenderCommand *cmd);
 // Dequeue one command into `out`. false if empty.
 static inline bool ano_render_next_command(AnoRenderBridge *bridge, RenderCommand *out)
 {
-    return ano_spsc_pop(&bridge->commands, out);
+    return bridge->commands.pop(*out);
 }
 
 // Enqueue one event. false if full (render must NOT block: drop coalescible samples, advise via CAPACITY).
 static inline bool ano_render_emit_event(AnoRenderBridge *bridge, const RenderEvent *evt)
 {
-    return ano_spsc_push(&bridge->events, evt);
+    return bridge->events.push(*evt);
 }
 
 // Publish this frame's view-0 camera snapshot for the logic master.
 static inline void ano_render_publish_snapshot(AnoRenderBridge *bridge, const RenderSnapshot *snap)
 {
-    ano_seqpub_store(bridge->snapshot, &bridge->snapshotVersion, snap, sizeof *snap);
+    bridge->snapshot.publish(*snap);
 }
 
 // Read latest logic-published camera pose. false (untouched) before first publish.
 static inline bool ano_render_acquire_view(AnoRenderBridge *bridge, AnoViewState *out)
 {
-    return ano_seqpub_load(bridge->viewState, &bridge->viewStateVersion, out, sizeof *out);
+    return bridge->viewState.acquire(*out);
 }
 
 #endif // ANO_RENDER_BRIDGE_INTERNAL_H

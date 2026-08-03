@@ -18,7 +18,7 @@ static void *null_device_main(void *arg)
     const uint64_t periodUs = (uint64_t)mx->blockFrames * 1000000ull / mx->sampleRate;
     bool started = false; // no underruns before first block
     while (atomic_load_explicit(&mx->deviceRun, memory_order_acquire)) {
-        if (ano_audio_ring_pop(&mx->blockRing, mx->deviceScratch))
+        if (mx->blockRing.pop(mx->deviceScratch))
             started = true;
         else if (started)
             atomic_fetch_add_explicit(&mx->underruns, 1u, memory_order_relaxed);

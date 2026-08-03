@@ -71,7 +71,7 @@ static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
 // Forward one input sample to logic over the events ring, best-effort.
 static void forward_input(const AnoInputEvent* ie)
 {
-	AnoSpscRing* r = &rendererState.bridge.events;
+	auto* r = &rendererState.bridge.events;
 	if (!r->buffer) return; // ring not built yet
 	uint32_t tail = atomic_load_explicit(&r->tail, memory_order_relaxed); // render is the sole producer
 	uint32_t head = atomic_load_explicit(&r->head, memory_order_acquire);

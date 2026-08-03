@@ -17,51 +17,8 @@
 #include <anoptic_log.h>
 
 
-/* SPSC */
-
 // Events-ring element size (copied per push/pop). Cap at 32 B.
 static_assert(sizeof(RenderEvent) <= 32u, "RenderEvent grew past 32 bytes; revisit the events ring");
-
-// Smallest power of two >= v, floor of 2. Returns 0 on overflow (v > 2^31).
-static uint32_t next_pow2_u32(uint32_t v)
-{
-    if (v < 2u) return 2u;
-    v--;
-    v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16;
-    return v + 1u; // wraps to 0 if v was > 2^31
-}
-
-bool ano_spsc_init(AnoSpscRing *ring, mi_heap_t *heap, uint32_t capacity_pow2, uint32_t stride)
-{
-    if (!ring || !heap || stride == 0u) return false;
-
-    uint32_t cap = next_pow2_u32(capacity_pow2);
-    if (cap == 0u) return false;                       // capacity overflow
-    if ((size_t)cap > SIZE_MAX / stride) return false; // cap*stride overflow
-
-    uint8_t *buffer = static_cast<uint8_t *>(mi_heap_calloc(heap, cap, stride));
-    if (!buffer) return false;
-
-    atomic_init(&ring->tail, 0u);
-    atomic_init(&ring->head, 0u);
-    ring->mask   = cap - 1u;
-    ring->stride = stride;
-    ring->buffer = buffer;
-    return true;
-}
-
-void ano_spsc_destroy(AnoSpscRing *ring)
-{
-    if (!ring) return;
-    if (ring->buffer) {
-        mi_free(ring->buffer);
-        ring->buffer = NULL;
-    }
-    ring->mask   = 0u;
-    ring->stride = 0u;
-    atomic_store_explicit(&ring->head, 0u, memory_order_relaxed);
-    atomic_store_explicit(&ring->tail, 0u, memory_order_relaxed);
-}
 
 
 /* Bridge Lifecycle */
@@ -70,20 +27,17 @@ bool ano_render_bridge_init(AnoRenderBridge *bridge, mi_heap_t *heap,
                             uint32_t cmd_capacity_pow2, uint32_t evt_capacity_pow2)
 {
     if (!bridge || !heap) return false;
-    if (!ano_spsc_init(&bridge->commands, heap, cmd_capacity_pow2, (uint32_t)sizeof(RenderCommand)))
+    const auto allocate = [heap](size_t count, size_t width) -> void* {
+        return mi_heap_calloc(heap, count, width);
+    };
+    if (!bridge->commands.initialize(cmd_capacity_pow2, allocate))
         return false;
-    if (!ano_spsc_init(&bridge->events, heap, evt_capacity_pow2, (uint32_t)sizeof(RenderEvent))) {
-        ano_spsc_destroy(&bridge->commands);
+    if (!bridge->events.initialize(evt_capacity_pow2, allocate)) {
+        bridge->commands.destroy([](void* memory) { mi_free(memory); });
         return false;
     }
-    // Latest-wins lanes start at version 0 (unpublished).
-    // Lane words: atomic_init, not memset.
-    for (size_t i = 0; i < sizeof bridge->snapshot / sizeof bridge->snapshot[0]; ++i)
-        atomic_init(&bridge->snapshot[i], 0u);
-    for (size_t i = 0; i < sizeof bridge->viewState / sizeof bridge->viewState[0]; ++i)
-        atomic_init(&bridge->viewState[i], 0u);
-    atomic_init(&bridge->snapshotVersion, 0u);
-    atomic_init(&bridge->viewStateVersion, 0u);
+    bridge->snapshot.initialize();
+    bridge->viewState.initialize();
     bridge->viewRejectWarned = false;
     return true;
 }
@@ -104,10 +58,10 @@ void ano_render_bridge_destroy(AnoRenderBridge *bridge)
     if (!bridge) return;
     // Discharge undelivered payloads (ring frees buffer only).
     RenderCommand cmd;
-    while (ano_spsc_pop(&bridge->commands, &cmd))
+    while (bridge->commands.pop(cmd))
         ano_render_command_release(&cmd);
-    ano_spsc_destroy(&bridge->commands);
-    ano_spsc_destroy(&bridge->events); // RenderEvent is wholly inline: nothing to discharge
+    bridge->commands.destroy([](void* memory) { mi_free(memory); });
+    bridge->events.destroy([](void* memory) { mi_free(memory); });
 }
 
 
@@ -116,7 +70,7 @@ void ano_render_bridge_destroy(AnoRenderBridge *bridge)
 // Public producer endpoint (anoptic_render.h). Non-inline via opaque handle.
 bool ano_render_submit(AnoRenderBridge *bridge, const RenderCommand *cmd)
 {
-    return ano_spsc_push(&bridge->commands, cmd);
+    return bridge->commands.push(*cmd);
 }
 
 // Runtime light endpoints. POD RenderCommand -> command ring. false == full, retry.
@@ -126,7 +80,7 @@ bool ano_render_light_attach(AnoRenderBridge *bridge, uint32_t light_id, uint32_
     RenderCommand c = { .kind = RCMD_LIGHT_ATTACH, .render_id = parent_render_id, .light_id = light_id };
     if (params) c.light = *params;
     c.light_offset[0] = ox; c.light_offset[1] = oy; c.light_offset[2] = oz;
-    return ano_spsc_push(&bridge->commands, &c);
+    return bridge->commands.push(c);
 }
 
 bool ano_render_light_update(AnoRenderBridge *bridge, uint32_t light_id,
@@ -142,13 +96,13 @@ bool ano_render_light_update_fields(AnoRenderBridge *bridge, uint32_t light_id,
     RenderCommand c = { .kind = RCMD_LIGHT_UPDATE, .light_id = light_id, .light_fields = fields };
     if (params) c.light = *params;
     c.light_offset[0] = ox; c.light_offset[1] = oy; c.light_offset[2] = oz;
-    return ano_spsc_push(&bridge->commands, &c);
+    return bridge->commands.push(c);
 }
 
 bool ano_render_light_detach(AnoRenderBridge *bridge, uint32_t light_id)
 {
     RenderCommand c = { .kind = RCMD_LIGHT_DETACH, .light_id = light_id };
-    return ano_spsc_push(&bridge->commands, &c);
+    return bridge->commands.push(c);
 }
 
 
@@ -282,7 +236,7 @@ AnoRenderSubmitResult ano_render_text_set(AnoRenderBridge *bridge, uint32_t text
     b->count = count;
     b->instances = inst;
     RenderCommand c = { .kind = RCMD_TEXT_SET, .text = b, .text_id = text_id, .bulk_owned = true };
-    if (!ano_spsc_push(&bridge->commands, &c)) {
+    if (!bridge->commands.push(c)) {
         ano_render_command_release(&c); // failed push: retire block
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_BACKPRESSURE);
     }
@@ -293,7 +247,7 @@ AnoRenderSubmitResult ano_render_text_set(AnoRenderBridge *bridge, uint32_t text
 AnoRenderSubmitResult ano_render_text_clear(AnoRenderBridge *bridge, uint32_t text_id)
 {
     RenderCommand c = { .kind = RCMD_TEXT_CLEAR, .text_id = text_id };
-    return ano_spsc_push(&bridge->commands, &c)
+    return bridge->commands.push(c)
                ? ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_ACCEPTED)
                : ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_BACKPRESSURE);
 }
@@ -428,7 +382,7 @@ AnoRenderSubmitResult ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id,
     b->glyphs = (const AnoGlyphInstance *)at;
     if (glyphB) memcpy(at, glyphs, glyphB);
     RenderCommand c = { .kind = RCMD_UI_SET, .ui = b, .ui_id = ui_id, .bulk_owned = true };
-    if (!ano_spsc_push(&bridge->commands, &c)) {
+    if (!bridge->commands.push(c)) {
         ano_render_command_release(&c); // failed push: retire block
         return ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_BACKPRESSURE);
     }
@@ -439,7 +393,7 @@ AnoRenderSubmitResult ano_render_ui_set(AnoRenderBridge *bridge, uint32_t ui_id,
 AnoRenderSubmitResult ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_id)
 {
     RenderCommand c = { .kind = RCMD_UI_CLEAR, .ui_id = ui_id };
-    return ano_spsc_push(&bridge->commands, &c)
+    return bridge->commands.push(c)
                ? ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_ACCEPTED)
                : ANO_RESULT(AnoRenderSubmitResult, ANO_RENDER_SUBMIT_BACKPRESSURE);
 }
@@ -450,12 +404,12 @@ AnoRenderSubmitResult ano_render_ui_clear(AnoRenderBridge *bridge, uint32_t ui_i
 // Logic-master endpoints (anoptic_render.h). Non-inline via opaque handle.
 bool ano_render_poll_event(AnoRenderBridge *bridge, RenderEvent *out)
 {
-    return ano_spsc_pop(&bridge->events, out);
+    return bridge->events.pop(*out);
 }
 
 bool ano_render_acquire_snapshot(AnoRenderBridge *bridge, RenderSnapshot *out)
 {
-    return ano_seqpub_load(bridge->snapshot, &bridge->snapshotVersion, out, sizeof *out);
+    return bridge->snapshot.acquire(*out);
 }
 
 // Accept-form compares need float fields.
@@ -505,5 +459,5 @@ void ano_render_publish_view(AnoRenderBridge *bridge, const AnoViewState *view)
         }
         return;
     }
-    ano_seqpub_store(bridge->viewState, &bridge->viewStateVersion, view, sizeof *view);
+    bridge->viewState.publish(*view);
 }

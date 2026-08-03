@@ -551,7 +551,7 @@ void *ano_audio_mixer_main(void *arg)
 
         // Ring full: short wait while head advances (consumer behind).
         // Head stuck past stallUs: idleUs sleep (consumer gone). False gone resumes on next head move.
-        if (ano_audio_ring_full(&mx->blockRing)) {
+        if (mx->blockRing.full()) {
             uint32_t head = atomic_load_explicit(&mx->blockRing.head, memory_order_acquire);
             if (head != lastHead) {
                 lastHead  = head;
@@ -570,7 +570,7 @@ void *ano_audio_mixer_main(void *arg)
         uint64_t t0 = ano_timestamp_ticks();
         ano_audio_render_block(mx, mx->blockScratch);
         uint64_t t1 = ano_timestamp_ticks();
-        ano_audio_ring_push(&mx->blockRing, mx->blockScratch); // sole producer; space checked above
+        (void)mx->blockRing.push(mx->blockScratch); // sole producer; space checked above
         publish_stats(mx, ano_ticks_to_ns(t1 - t0));
     }
     return NULL;

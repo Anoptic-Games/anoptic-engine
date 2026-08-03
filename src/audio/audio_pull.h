@@ -27,7 +27,7 @@ static inline void ano_audio_pull_frames(AnoAudioMixer *mx, AnoAudioPull *p,
     uint32_t done = 0;
     while (done < frames) {
         if (p->frames == 0u) {
-            if (ano_audio_ring_pop(&mx->blockRing, mx->deviceScratch)) {
+            if (mx->blockRing.pop(mx->deviceScratch)) {
                 p->offset  = 0u;
                 p->frames  = mx->blockFrames;
                 p->started = true;

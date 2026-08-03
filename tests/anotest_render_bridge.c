@@ -22,11 +22,12 @@
 
 #include "templates/sanopts.h"   // ASan alt-stack opt-out; see header
 
-static_assert(offsetof(AnoSpscRing, head) - offsetof(AnoSpscRing, tail) >= ANO_CACHE_LINE,
+using TestSpscRing = ano::SpscRing<uint32_t>;
+static_assert(offsetof(TestSpscRing, head) - offsetof(TestSpscRing, tail) >= ANO_CACHE_LINE,
                "SPSC head/tail must live on separate cache lines");
 // Alignas floor: lesser of ANO_CACHE_LINE and ANO_THREAD_LINE.
 #define ANO_MIN_LINE (ANO_CACHE_LINE < ANO_THREAD_LINE ? ANO_CACHE_LINE : ANO_THREAD_LINE)
-static_assert(alignof(AnoSpscRing) >= ANO_MIN_LINE,
+static_assert(alignof(TestSpscRing) >= ANO_MIN_LINE,
                "SPSC ring must be cache-line aligned");
 
 static int failures = 0;
@@ -90,23 +91,25 @@ static void *consumer_fn(void *arg)
 
 static void test_single_threaded(mi_heap_t *heap)
 {
-    AnoSpscRing r;
-    CHECK(ano_spsc_init(&r, heap, 2, sizeof(uint32_t)), "spsc init (cap 2)");
+    TestSpscRing r;
+    CHECK(r.initialize(2u, [heap](size_t count, size_t width) -> void* {
+        return mi_heap_calloc(heap, count, width);
+    }), "spsc init (cap 2)");
 
     uint32_t x;
-    x = 10u; CHECK(ano_spsc_push(&r, &x), "push 1");
-    x = 20u; CHECK(ano_spsc_push(&r, &x), "push 2");
-    x = 30u; CHECK(!ano_spsc_push(&r, &x), "push 3 rejected (full)");
+    x = 10u; CHECK(r.push(x), "push 1");
+    x = 20u; CHECK(r.push(x), "push 2");
+    x = 30u; CHECK(!r.push(x), "push 3 rejected (full)");
 
-    CHECK(ano_spsc_pop(&r, &x) && x == 10u, "pop 1 == 10 (FIFO)");
-    CHECK(ano_spsc_pop(&r, &x) && x == 20u, "pop 2 == 20");
-    CHECK(!ano_spsc_pop(&r, &x), "pop 3 rejected (empty)");
+    CHECK(r.pop(x) && x == 10u, "pop 1 == 10 (FIFO)");
+    CHECK(r.pop(x) && x == 20u, "pop 2 == 20");
+    CHECK(!r.pop(x), "pop 3 rejected (empty)");
 
     // head/tail at 2/2; next push wraps through the mask
-    x = 40u; CHECK(ano_spsc_push(&r, &x), "push after drain (wraps index)");
-    CHECK(ano_spsc_pop(&r, &x) && x == 40u, "pop wrapped == 40");
+    x = 40u; CHECK(r.push(x), "push after drain (wraps index)");
+    CHECK(r.pop(x) && x == 40u, "pop wrapped == 40");
 
-    ano_spsc_destroy(&r);
+    r.destroy([](void* memory) { mi_free(memory); });
 }
 
 
@@ -579,7 +582,7 @@ static void test_bulk_alignment(mi_heap_t *heap)
         AnoRenderSubmitResult r = ano_render_submit_bulk_update(&b, &batch);
         CHECK(r.code == ANO_RENDER_SUBMIT_ACCEPTED, "bulk align: ACCEPTED");
         RenderCommand c;
-        if (!ano_spsc_pop(&b.commands, &c)) { CHECK(false, "bulk align: command popped"); continue; }
+        if (!b.commands.pop(c)) { CHECK(false, "bulk align: command popped"); continue; }
         const RenderUpdateBatch *u = c.update;
         CHECK(((uintptr_t)u->transforms    % alignof(mat4)) == 0u
               && ((uintptr_t)u->motion        % alignof(AnoMotionDescriptor)) == 0u

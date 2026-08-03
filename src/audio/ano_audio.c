@@ -75,19 +75,17 @@ bool ano_audio_bridge_init(AnoAudioBridge *bridge, mi_heap_t *heap,
 {
     if (!bridge || !heap)
         return false;
-    if (!ano_audio_ring_init(&bridge->commands, heap, cmd_capacity_pow2, (uint32_t)sizeof(AnoAudioCommand)))
+    const auto allocate = [heap](size_t count, size_t width) -> void* {
+        return mi_heap_calloc(heap, count, width);
+    };
+    if (!bridge->commands.initialize(cmd_capacity_pow2, allocate))
         return false;
-    if (!ano_audio_ring_init(&bridge->events, heap, evt_capacity_pow2, (uint32_t)sizeof(AnoAudioEvent))) {
-        ano_audio_ring_destroy(&bridge->commands);
+    if (!bridge->events.initialize(evt_capacity_pow2, allocate)) {
+        bridge->commands.destroy([](void* memory) { mi_free(memory); });
         return false;
     }
-    // version 0 = unpublished; lane words need atomic_init, not memset
-    for (size_t i = 0; i < sizeof bridge->listener / sizeof bridge->listener[0]; ++i)
-        atomic_init(&bridge->listener[i], 0u);
-    for (size_t i = 0; i < sizeof bridge->telemetry / sizeof bridge->telemetry[0]; ++i)
-        atomic_init(&bridge->telemetry[i], 0u);
-    atomic_init(&bridge->listenerVersion, 0u);
-    atomic_init(&bridge->telemetryVersion, 0u);
+    bridge->listener.initialize();
+    bridge->telemetry.initialize();
     return true;
 }
 
@@ -95,8 +93,8 @@ void ano_audio_bridge_destroy(AnoAudioBridge *bridge)
 {
     if (!bridge)
         return;
-    ano_audio_ring_destroy(&bridge->commands);
-    ano_audio_ring_destroy(&bridge->events);
+    bridge->commands.destroy([](void* memory) { mi_free(memory); });
+    bridge->events.destroy([](void* memory) { mi_free(memory); });
 }
 
 bool ano_audio_init(const AnoAudioConfig *cfg)
@@ -162,7 +160,10 @@ bool ano_audio_init(const AnoAudioConfig *cfg)
     mx->bridge = bridge;
 
     blockStride = bf * ANO_AUDIO_CHANNELS * (uint32_t)sizeof(float);
-    if (!ano_audio_ring_init(&mx->blockRing, heap, devBlocks, blockStride))
+    if (!mx->blockRing.initialize(devBlocks, blockStride,
+            [heap](size_t count, size_t width) -> void* {
+                return mi_heap_calloc(heap, count, width);
+            }))
         goto fail_heap;
     mx->blockScratch = static_cast<float *>(
         mi_heap_calloc(heap, (size_t)bf * ANO_AUDIO_CHANNELS, sizeof(float)));
@@ -238,7 +239,7 @@ fail_heap:
 static void audio_discharge_blocks(AnoAudioMixer *mx)
 {
     AnoAudioCommand cmd;
-    while (ano_audio_ring_pop(&mx->bridge->commands, &cmd)) {
+    while (mx->bridge->commands.pop(cmd)) {
         const AnoAudioCommandContract *contract = ano::audio_contract::commands.find(cmd.kind);
         if (contract && contract->ownership == AnoAudioPayloadOwnership::adopted)
             ano_audio_block_free(
@@ -246,7 +247,7 @@ static void audio_discharge_blocks(AnoAudioMixer *mx)
     }
 
     AnoAudioEvent evt;
-    while (ano_audio_ring_pop(&mx->bridge->events, &evt)) {
+    while (mx->bridge->events.pop(evt)) {
         const AnoAudioEventContract *contract = ano::audio_contract::events.find(static_cast<size_t>(evt.kind));
         if (contract && contract->ownership == AnoAudioPayloadOwnership::returned)
             ano_audio_block_free(evt.u.buffer.block);
@@ -276,7 +277,7 @@ void ano_audio_shutdown(void)
     audio_discharge_blocks(mx);
 
     ano_audio_bridge_destroy(mx->bridge);
-    ano_audio_ring_destroy(&mx->blockRing);
+    mx->blockRing.destroy([](void* memory) { mi_free(memory); });
     g_mixer = NULL;
     mi_heap_destroy(g_heap);
     g_heap = NULL;
@@ -292,22 +293,22 @@ AnoAudioBridge *anoAudioBridge(void)
 
 bool ano_audio_submit(AnoAudioBridge *bridge, const AnoAudioCommand *cmd)
 {
-    return ano_audio_ring_push(&bridge->commands, cmd);
+    return bridge->commands.push(*cmd);
 }
 
 bool ano_audio_poll_event(AnoAudioBridge *bridge, AnoAudioEvent *out)
 {
-    return ano_audio_ring_pop(&bridge->events, out);
+    return bridge->events.pop(*out);
 }
 
 void ano_audio_publish_listener(AnoAudioBridge *bridge, const AnoAudioListener *l)
 {
-    ano_audio_seq_store(bridge->listener, &bridge->listenerVersion, l, sizeof *l);
+    bridge->listener.publish(*l);
 }
 
 bool ano_audio_acquire_telemetry(AnoAudioBridge *bridge, AnoAudioTelemetry *out)
 {
-    return ano_audio_seq_load(bridge->telemetry, &bridge->telemetryVersion, out, sizeof *out);
+    return bridge->telemetry.acquire(*out);
 }
 
 /* Buffer producer endpoints */
@@ -331,7 +332,7 @@ bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,
     h->pad      = 0u;
     memcpy(h + 1, interleaved, (size_t)bytes64);
     AnoAudioCommand c = { .kind = ACMD_BUFFER_REGISTER, .source_id = buffer_id, .block = h };
-    if (!ano_audio_ring_push(&bridge->commands, &c)) {
+    if (!bridge->commands.push(c)) {
         mi_free(h);
         return false; // backpressure
     }
@@ -341,7 +342,7 @@ bool ano_audio_buffer_register(AnoAudioBridge *bridge, uint32_t buffer_id,
 bool ano_audio_buffer_release(AnoAudioBridge *bridge, uint32_t buffer_id)
 {
     AnoAudioCommand c = { .kind = ACMD_BUFFER_RELEASE, .source_id = buffer_id };
-    return ano_audio_ring_push(&bridge->commands, &c);
+    return bridge->commands.push(c);
 }
 
 void ano_audio_block_free(void *block)

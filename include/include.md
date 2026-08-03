@@ -17,6 +17,7 @@ include/
 ├── anoptic_memory.h    # Public memory allocation API
 ├── anoptic_memory_typed.h # C++ typed allocation extension
 ├── anoptic_threads.h   # Platform abstraction of pthread API
+├── anoptic_threads_typed.h # C++26 typed lock-free transport
 ├── ...                 # other APIs
 └── anoptic_time.h      # Public timekeeping API
 ```
