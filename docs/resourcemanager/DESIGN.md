@@ -57,6 +57,8 @@ To our knowledge, this is the first resource architecture to derive a unified co
 11. Cross-module surfaces remain C-shaped and use C ABI where practical. Implementation remains plain data, value semantics, `.c` and `.h`, C++26, `-nostdlib++`, no exceptions, no RTTI, and no virtual polymorphism.
 12. Every artifact and realization family has one required portable route. Optional acceleration may replace an executor step but never resource semantics, correctness, or availability.
 13. Manifests, packs, codecs, schemas, and logical assets are vendor-neutral. A build for ordinary Linux, Windows, or macOS hardware is a first-class product rather than a compatibility fallback.
+14. Native scenes and levels are spatial ECS data, never a USD/OpenUSD hierarchy or serialized object-offset graph.
+15. A new external format enters only for a demonstrated engine feature and becomes the one strategic standard for that need.
 
 ## The three graphs
 
@@ -125,6 +127,63 @@ GpuTexture realize_texture(const TextureMipChain&, const RenderDeviceCaps&);
 ```
 
 The exact surface syntax is provisional. The semantic requirement is not: the compiler must be able to recover each recipe's input types, output type, stage, executor, revision, determinism policy, and failure policy from its declaration.
+
+## Generalized source mega-parser
+
+Phase 1 begins with one generalized parser for the complete source-asset surface the engine accepts today. This ingress checkpoint is deliberately horizontal: every current asset family first enters through one bounded, typed, reflection-compiled contract, then the same phase carries those artifacts through cooking, packing, residency, and publication.
+
+Mega-parser means one generated recognition, dispatch, validation, dependency, error, and output system. It does not mean one giant function or one algorithm pretending unrelated foreign grammars are the same. Format semantics remain small explicit kernels behind a uniform importer declaration.
+
+| Source family | Current accepted surface | Initial kernel | Canonical output |
+| --- | --- | --- | --- |
+| Scene and model | glTF 2.0 JSON and GLB, external buffers and images, data URIs, and the extensions already supported by anogltf | Anogltf structural decoder plus the existing semantic importer | SceneSource, meshes, materials, images, skins, animations, nodes, and typed dependencies |
+| Raster image | The configured stb_image decoder surface; the current repository and glTF corpus exercise PNG and JPEG | stb_image initially, replaceable per codec without changing the importer contract | ImagePixels plus dimensions, channels, colour-domain intent, and provenance |
+| Font face | Scalable faces accepted by the configured FreeType build; the current corpus contains TTF and variable TTF | FreeType plus the existing bounded OpenType/GPOS processing | FontSource, face metadata, glyph/metric inputs, and later cooked font pages |
+| Audio clip | RIFF/WAVE PCM 16/24/32 or IEEE f32, one or two channels, with the existing target-rate conversion | Existing checked WAV decoder and resampler | Interleaved canonical f32 AudioClip plus format metadata |
+| Shader | GLSL vertex, fragment, compute, mesh, and task sources with shared GLSL includes, producing SPIR-V; committed SPIR-V remains the no-compiler input | Existing external shader compiler invocation and SPIR-V ingestion | ShaderModule artifact plus stage, variant, include dependencies, and compilation provenance |
+
+Foreign subresources such as glTF buffer files, embedded images, data URIs, shader includes, and committed SPIR-V are dependencies or alternate representations within those families rather than unrelated manager APIs.
+
+Every importer is an ordinary annotated function with one approved signature:
+
+```cpp
+[[=resource::source_importer{
+    .kind = resource::SourceKind::gltf,
+    .extensions = {".gltf", ".glb"},
+    .revision = 1
+}]]
+ImportResult<SceneSource> import_gltf(SourceView source, ImportContext& context);
+```
+
+SourceView is a bounded immutable byte view carrying stable origin and size. ImportContext supplies explicit limits, scratch and output arenas, dependency emission, settings, target facts where admissible, and structured diagnostics. Importers do not open arbitrary paths, allocate through libc, publish runtime objects, or call device APIs.
+
+The common import sequence is:
+
+1. Read through anoptic_filesystem.h into a bounded SourceView.
+2. Identify candidates using generated magic probes, structural probes, MIME facts, and extension hints; extension alone is never trusted when the format provides a stronger signature.
+3. Run a bounded preflight to reject impossible sizes, integer overflow, unsupported variants, and resource-limit violations before output allocation.
+4. Invoke the selected explicit format kernel.
+5. Emit typed dependencies through ImportContext rather than recursively opening files behind the graph's back.
+6. Perform reflected structural validation and explicit semantic validation.
+7. Canonicalize the successful result into typed portable artifacts.
+8. Record source identity, importer revision, settings, dependencies, diagnostics, and output provenance.
+
+Reflection and consteval generate or prove:
+
+- the complete importer inventory and deterministic source-kind ordering;
+- recognition tables and direct specialized dispatch;
+- importer signature, result type, revision, stage, and error-contract legality;
+- extension, MIME, magic, and structural-probe collision handling;
+- typed output IDs and the legal canonical artifact family for each importer;
+- dependency extraction and required dependency policy;
+- option-schema validation and canonical settings hashing;
+- structured diagnostic names and source locations;
+- exhaustive coverage of every declared current SourceKind;
+- compile-time rejection when a new source kind has no importer, validator, canonical output, dependency policy, or portable recipe.
+
+Reflection does not parse JPEG entropy streams, execute FreeType, understand RIFF chunks, compile GLSL, or invent glTF semantics. Those algorithms already exist. It removes the duplicated registries and glue around them, makes their contracts uniform, and makes omission impossible.
+
+The generated public operation is conceptually one ano_resource_import call. The compiler expands its closed dispatch into concrete calls; shipping code performs no runtime reflection or string-based registry traversal.
 
 ## Compile-time graph compiler
 
@@ -373,31 +432,69 @@ Memory budgets apply by domain, quality class, and executor. Eviction accounts f
 - Making the resource module own renderer, audio, filesystem, allocator, or threading implementation details.
 - Requiring DirectStorage, RTX IO, CUDA, a vendor compression format, or vendor-specific GPU features for correctness or acceptable performance.
 - Forking manifests, packs, schemas, or resource semantics by operating system or GPU vendor.
+- Supporting USD or OpenUSD as a native or alternate scene and level representation.
+- Accumulating speculative or redundant source formats because a decoder happens to expose them.
 - Promising transparent support for every future source-format extension.
 - Depending on the C++ runtime library, RTTI, exceptions, virtual dispatch, or `.hpp`/`.cpp` naming.
 
-## Initial vertical slice
+## Strategic format policy
 
-The first proof is one complete Sponza path, not a horizontal framework rollout.
+Anoptic supports one strategic open format for each demonstrated asset need, plus formats already required by the project. It does not accumulate every extension a library happens to recognize, implement speculative importers, or let a vendor format define the canonical engine model.
 
-1. Declare reflected schemas for the portable scene, mesh, material, texture, and world-cell artifacts already produced or consumed by the engine.
-2. Reuse the Anoptic-native glTF decoder only as a cooker ingress and produce canonical scene artifacts.
-3. Compile recipe and schema inventories with C++26 reflection and `consteval` validation.
-4. Build a local CAS, provenance records, one manifest generation, and locality-aware pack output.
-5. Launch the existing release engine from the cooked pack with no runtime glTF or image-source parsing.
-6. Represent the scene request as an ECS `AssetRef<WorldCellAsset>` residency goal.
-7. Realize render resources through the renderer bridge, assemble a candidate epoch, and publish at a frame boundary.
-8. Change one material or texture, rebuild only its affected descendants, and publish a coherent hot-reload epoch while the old scene remains usable.
-9. Corrupt and truncate artifacts deliberately and verify rejection before publication.
-10. Compare final geometry, materials, textures, transforms, and rendered output against the existing path.
+| Asset need | Strategic format | Roadmap status |
+| --- | --- | --- |
+| Model and interchange scene | [glTF 2.0 and GLB](https://registry.khronos.org/glTF/) | Existing and included in Phase 1 |
+| Native reusable scene and streamed level | Anoptic Spatial ECS Scene and World formats | Phase 2; designed in-house, no USD or OpenUSD |
+| Raster authoring input | PNG and JPEG through the existing image kernel | Existing and included in Phase 1 |
+| Portable GPU texture transport | [KTX 2.0](https://registry.khronos.org/KTX/specs/2.0/ktxspec.v2.html) with Basis Universal where appropriate | Phase 4 |
+| Uncompressed and lossless working audio | RIFF/WAVE PCM and IEEE f32 | Existing and included in Phase 1 |
+| Compressed streamable audio | [Ogg Opus](https://www.rfc-editor.org/info/rfc7845/) | Phase 3 |
+| Font source | OpenType faces through the configured FreeType build | Existing and included in Phase 1 |
+| Shader authoring and portable binary | GLSL plus SPIR-V | Existing and included in Phase 1 |
+| Video or another future family | No format until an engine feature requires it | Must pass the new-family checkpoint protocol |
 
-The vertical slice succeeds only if it demonstrates the architecture end to end. A collection of reflected serializers without ECS demand, staged evaluation, and transactional publication is not the proposed system.
+KTX 2.0 is selected because it is a cross-vendor GPU texture container with independently addressable mip levels and standardized BasisLZ or Zstandard supercompression, not because every image should become another runtime decoder. Ogg Opus is selected because its standard container provides metadata, checksums, seeking, recovery, and streaming without requiring the complete file up front. WAV remains useful for uncompressed working data and short decoded clips.
+
+USD and OpenUSD are explicitly out of scope. Anoptic will not adopt their scene graph, composition model, object hierarchy, or offset-oriented runtime representation. glTF remains an interchange source. Anoptic's native scene and level artifacts are organized for spatial streaming, ECS archetypes, contiguous component columns, and direct residency.
+
+## Twenty frontier-scale implementation checkpoints
+
+These are research objectives for a frontier model, not ticket-sized implementation steps. Each checkpoint names a complete observable state and includes its own derivation, implementation, refactoring, adversarial review, and evidence. Checkpoints 1 through 10 constitute Phase 1 and are intended to be attempted as one continuous operation; their separation exists so the result can be audited, not so the work can be micromanaged.
+
+1. Freeze the present asset contract and oracle: enumerate every source asset, accepted semantic variant, decoder/compiler behavior, consumer, platform expectation, resource limit, and current output required for exact differential comparison.
+2. Establish the bounded resource substrate: implement SourceView, typed source and artifact IDs, checked readers, arenas, dependency requests, importer context, deterministic errors, cancellation, and the public C ABI without hidden file access or ambient working-directory state.
+3. Define the reflected resource language: declare sources, importers, canonical artifacts, transforms, realizations, dependencies, versions, migrations, limits, quality atoms, and owner domains once; use reflection for discovery and orchestration, consteval for graph computation and laws, templates for reusable kernels, and explicit code for runtime algorithms.
+4. Complete the generalized mega-parser for the entire current asset surface: route glTF/GLB and its external or embedded resources, PNG/JPEG, OpenType faces through FreeType, WAV PCM or IEEE f32, GLSL and include graphs, and SPIR-V through one generated ano_resource_import entry while retaining their proven bounded algorithmic kernels.
+5. Produce canonical portable artifacts and prove current semantic parity: normalize padding, endianness, identities, dependencies, provenance, material/geometry/image/font/audio/shader facts, and compare normalized outputs plus final renderer, text, and audio behavior against the existing loaders.
+6. Implement the incremental cooker: compile the reflected type graph into an artifact-instance DAG, derive deterministic action keys and artifact IDs, execute only invalidated transforms, publish immutable content-addressed outputs atomically, deduplicate equal content, and retain complete derivation provenance.
+7. Implement the universal distribution format: emit one vendor-neutral manifest and pack system with validated typed roots, schema versions, dependencies, hashes, independently useful ranges, co-residency ordering, patch locality, and a single portable Linux/Windows/macOS reader using coalesced asynchronous reads and bounded persistent staging.
+8. Implement typed runtime realization: resolve artifacts into renderer, audio, text, and other owner modules only through their public bridges; schedule bounded I/O and CPU work off real-time threads; construct candidate realizations privately; and provide typed missing, corrupt, cancelled, unsupported, and device-loss behavior.
+9. Compose residency with ECS: store stable AssetRef<T> values in components, reflect reference extraction at structural changes, derive dependency and quality goals incrementally, publish coherent immutable residency epochs at owner-safe boundaries, retain old epochs until readers leave, and hot-reload complete commit groups without mixed versions.
+10. Prove and cut over Phase 1: pass all existing tests, differential corpora, compile-fail contracts, ASan, UBSan, TSan, and supported Release builds; start performance proof with one representative quick A/B; record load latency, I/O, allocations, copies, memory, artifact size, rebuild scope, compiler cost, and generated code; then remove runtime source parsing, handwritten central registries, obsolete staging, and every superseded asset path.
+11. Define Anoptic's native reusable-scene and streamed-world schema from reflected persistent ECS components, explicitly excluding USD/OpenUSD and any physical object hierarchy; make stable IDs, relations, resources, spatial bounds, defaults, quantization, canonical encoding, versions, and migration obligations part of the type contract.
+12. Generate the native scene/world writer and cooker: inventory eligible archetypes without a registry, partition spatial entities into multiresolution Morton cells, preserve contiguous archetype SoA columns, encode relations as stable-ID columns, place globals and large entities explicitly, and make output deterministic and content-addressable.
+13. Generate the native scene/world loader and residency path: preflight the complete directory graph, bulk-load archetype columns, migrate column-wise, resolve resources and relations, stream and publish complete cells at ECS barriers, prove Sponza parity and a million-entity world, prove localized rebuild and hot reload, and remove hierarchical runtime reconstruction.
+14. Add Ogg Opus as the strategic compressed-audio family: integrate one portable decoder, bounded Ogg page and packet validation, Opus headers/tags/channel mappings, exact pre-skip/gain/end-trim behavior, deterministic seek and pre-roll data, streamable atoms, canonical artifacts, and policy choosing retained compression or cooked PCM.
+15. Complete Opus runtime and proof: decode only on bounded workers into an allocation-free audio bridge, support cancellation, seek, looping, chaining, underrun recovery, hot reload, and epoch retirement, then establish decoded-sample parity, malformed-input rejection, first-audio and seek latency, throughput, memory, I/O, and equivalent Linux/Windows/macOS behavior while retaining WAV for uncompressed sources.
+16. Add KTX 2.0 with Basis Universal as the strategic portable GPU texture family: implement bounded metadata and range validation, the required uncompressed/BasisLZ/Zstandard paths, canonical texture intent and mip inventories, deterministic cooking, portable CPU transcoding, and a reflected cross-vendor target-format policy with an unconditional fallback.
+17. Complete KTX2 runtime and proof: preserve mips as independent residency atoms, integrate glTF KHR_texture_basisu, transcode off the render thread, upload only validated blocks, prove texel/rendering parity and adversarial safety, measure size/transcode/upload/residency behavior across supported hardware, and remove shipping PNG/JPEG decode only where cooked texture parity is complete.
+18. Make every later asset family pass one mandatory architectural proof: identify a concrete engine feature, select one mature open standard or justify one native design, settle licensing and security, pin a normative specification and corpus, define reflected source/artifact/dependency/migration contracts, isolate a bounded kernel, integrate cooker/CAS/pack/runtime/ECS paths, prove parity and malformed-input behavior, and verify portable semantics before deleting anything.
+19. Add only the next asset family demanded by a real feature: do not prebuild a codec zoo, alternate scene stack, vendor path, or video pipeline; treat optional acceleration as a measured adapter over the same canonical artifacts and semantics, never as the design center or sole implementation.
+20. Converge the production system: harden cancellation, memory pressure, device loss, corruption recovery, schema longevity, migration durability, concurrent rebuild/publication, cross-platform reproducibility, and operational observability; remove every superseded route; and publish the final architecture, evidence, limits, and unresolved risks.
+
+The native scene/world physical shape is a spatial archetype pack: a versioned header; a reflected component-schema table; a deduplicated typed resource table; a multiresolution directory keyed by level and Morton code; an archetype directory keyed by component-set fingerprint; cell payloads containing entity IDs and contiguous SoA component columns; stable-ID relation columns; and explicit global or large-entity payloads. Hierarchy exists only as domain data such as a parent relation. Loading a cell never requires walking object offsets, reconstructing an ancestor tree, or deserializing unrelated siblings.
+
+Phase 1 exits only when the complete current corpus enters through the reflected generalized importer, cooks into canonical artifacts, loads from vendor-neutral packs, reaches existing consumers through typed residency, matches or improves current behavior, and leaves no shipping runtime source parser. Each later format exits only with the same end-to-end proof, not merely when its decoder can parse a sample.
+
 
 ## Measurements
 
-The baseline and vertical slice must record:
+The baseline, Phase 1 vertical, and every subsequent asset-family phase must record:
 
 - production LoC and duplicated schema/registry LoC;
+- accepted-format and semantic-output parity for every current source family;
+- import, validation, and canonicalization time by source family;
+- importer allocations, scratch peak, output bytes, dependency count, and bytes copied;
 - clean and incremental cook wall time;
 - action-cache hit rate and bytes rebuilt after representative edits;
 - cold and warm startup time;
@@ -407,7 +504,7 @@ The baseline and vertical slice must record:
 - hot-reload latency and publication interruption;
 - generated code and data size;
 - C++ compilation time and GCC memory use;
-- malformed-input rejection, schema mismatch rejection, and compile-time contract probes.
+- malformed-input rejection, schema mismatch rejection, and compile-time contract probes;
 - output parity among portable CPU, portable GPU, and any vendor-accelerated route;
 - representative Linux, Windows, macOS, NVIDIA, AMD, and Intel results before accepting a supposedly universal optimization;
 - direct comparison against vendor APIs before adding their maintenance and testing burden.
@@ -418,19 +515,22 @@ The architecture earns adoption by improving the judge: fewer representations th
 
 | Phase | Deliverable | Exit condition |
 | --- | --- | --- |
-| 0 | Reflected artifact and recipe language | GCC 16.1 compiles the inventory under production flags; invalid schemas and routes fail clearly |
-| 1 | Portable artifact compiler and local CAS | Deterministic Sponza artifacts rebuild incrementally with provenance |
-| 2 | Manifest, packs, and portable runtime range loader | Release runtime consumes the same cooked assets without source parsing on every supported platform |
-| 3 | ECS goals and dependency closure | Component changes produce incremental typed demand without frame-wide scans |
-| 4 | Renderer realization and residency epochs | Sponza publishes coherently at frame boundaries with safe old-epoch retirement |
-| 5 | Hot reload and schema migrations | Changed assets rebuild and publish transactionally; supported old schemas have verified routes |
-| 6 | Streaming quality and scheduler | Mips, LODs, audio pages, or world cells converge under explicit budgets and deadlines |
-| 7 | Production hardening | Corruption, cancellation, device loss, memory pressure, and interrupted builds preserve invariants |
-| 8 | Adoption | Existing runtime source-loading path is deleted only after measured parity or improvement |
+| 1 | One-shot current-asset vertical | The complete current scene, image, font, WAV, GLSL/include, and SPIR-V surface enters through reflected import, cooks into canonical CAS artifacts and packs, reaches typed ECS-driven residency, publishes coherently, passes parity and sanitizers, and removes shipping source parsing |
+| 2 | Anoptic spatial ECS scene and world | Reflected writers and readers round-trip reusable scenes and spatially partitioned million-entity worlds as archetype columns, stream cells coherently, migrate schemas, and replace hierarchical runtime reconstruction |
+| 3 | Ogg Opus | Production music, ambience, and voice assets import, cook, seek, stream, decode off-thread, publish audio-safely, and match the reference decoder across supported platforms |
+| 4 | KTX 2.0 and Basis Universal | KTX2 imports and cooked texture artifacts stream mips, transcode portably across GPU families, integrate with glTF, preserve visual parity, and remove shipping PNG/JPEG texture decoding |
+| N | One justified future asset family | The proposal satisfies checkpoint 18 and adds one strategic format without creating an ad hoc loader or vendor-specific canonical path |
 
 ## Locked decisions
 
 - The type graph is closed and compiled; artifact instances remain data.
+- Phase 1 is one frontier-model operation covering the generalized importer and the complete cooking, packing, runtime, ECS, residency, parity, and cutover vertical for every asset the engine already uses.
+- Mega-parser generality lives in reflected contracts and generated orchestration; foreign syntax and codec semantics remain explicit kernels.
+- New external format support is demand-driven and limited to one strategic open standard per actual asset need.
+- USD and OpenUSD will not be native, alternate, or compatibility scene paths.
+- Anoptic scenes and levels are reflected spatial archetype-column formats organized for ECS and cell streaming rather than hierarchical object offsets.
+- Ogg Opus is the planned compressed and streamable audio standard.
+- KTX 2.0 with Basis Universal where appropriate is the planned portable GPU texture standard.
 - Reflection is compile time and disappears into specialized operations and minimal tables.
 - Offline and runtime transforms share one declared graph.
 - The CAS and shipping pack layout are separate layers.
@@ -445,11 +545,15 @@ The architecture earns adoption by improving the judge: fewer representations th
 ## Open engineering questions
 
 - Exact stable logical-ID format and authoring workflow.
+- Final names and optional filename extensions for native Anoptic scene and world artifacts.
 - Canonical byte encoding and endian policy for each artifact family.
 - Whether epoch publication is global, domain-partitioned, or both.
 - The smallest useful commit-group boundary for world streaming.
+- The baseline multiresolution cell sizes, coordinate quantization, and policy for very large entities.
 - The first scheduler cost model and source of demand predictions.
 - Pack partitioning strategy and patch-distribution constraints.
+- The portable Opus decoder kernel and exact multichannel scope.
+- The initial ETC1S/UASTC and target-format policy for KTX2.
 - Whether a portable compute-shader decompressor beats the SIMD CPU route broadly enough to justify its complexity.
 - Development-daemon transport, if any, between cooker and running engine.
 - Driver and device facts that must enter realization cache identity.
@@ -458,6 +562,6 @@ The architecture earns adoption by improving the judge: fewer representations th
 
 ## Falsification
 
-This design should be abandoned or substantially simplified if the vertical slice shows that compile-time graph machinery creates unacceptable compiler instability or build cost, structural sharing cannot bound epoch memory, reconciliation adds material latency versus direct scheduling, generated specialization inflates the runtime image without hot-path benefit, or the unified graph makes module ownership less explicit.
+This design should be abandoned or substantially simplified if the complete importer cannot preserve current acceptance and semantic output with less duplicated orchestration, compile-time graph machinery creates unacceptable compiler instability or build cost, structural sharing cannot bound epoch memory, reconciliation adds material latency versus direct scheduling, generated specialization inflates the runtime image without hot-path benefit, or the unified graph makes module ownership less explicit.
 
 The breakthrough is not that reflection can enumerate fields. The breakthrough is that the engine can compile its resource laws from the same declarations used by cooker, ECS, runtime, renderer, and audio, then execute only the stage of that typed program appropriate to the current machine and world.
