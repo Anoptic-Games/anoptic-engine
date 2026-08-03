@@ -198,6 +198,54 @@ static AnoRenderSubmitResult hud_text_submit(AnoRenderBridge* bridge, uint32_t t
 #define HUD_UI_MENU  2u
 #define HUD_UI_GCAP  192u
 
+struct HudCommonStyle final {
+	ano::UiColor shadow;
+	ano::UiColor white;
+	ano::UiColor rim;
+	ano::UiColor label;
+	ano::UiStops<2> plate;
+};
+
+static constexpr HudCommonStyle HUD_COMMON_STYLE = {
+	.shadow = ano::ui_srgb(0.00f, 0.00f, 0.00f, 0.60f),
+	.white = ano::ui_srgb(1.00f, 1.00f, 1.00f, 1.00f),
+	.rim = ano::ui_srgb(0.62f, 0.65f, 0.70f, 1.00f),
+	.label = ano::ui_srgb(0.92f, 0.94f, 0.97f, 1.00f),
+	.plate = ano::ui_stops(
+		ano::ui_stop(0.0f, 0.17f, 0.18f, 0.22f, 0.97f),
+		ano::ui_stop(1.0f, 0.09f, 0.10f, 0.13f, 0.97f)),
+};
+
+struct MenuStyle final {
+	ano::UiColor button;
+	ano::UiColor buttonHot;
+	ano::UiColor buttonRim;
+	ano::UiColor title;
+	ano::UiColor glow;
+};
+
+static constexpr MenuStyle MENU_STYLE = {
+	.button = ano::ui_srgb(0.22f, 0.24f, 0.30f, 1.00f),
+	.buttonHot = ano::ui_srgb(0.28f, 0.45f, 0.80f, 1.00f),
+	.buttonRim = ano::ui_srgb(0.75f, 0.80f, 0.88f, 0.90f),
+	.title = ano::ui_srgb(1.00f, 0.80f, 0.35f, 1.00f),
+	.glow = ano::ui_srgb(0.25f, 0.45f, 0.85f, 0.00f),
+};
+
+struct BarStyle final {
+	ano::UiColor shadow;
+	ano::UiColor plate;
+	ano::UiColor rim;
+	ano::UiColor label;
+};
+
+static constexpr BarStyle BAR_STYLE = {
+	.shadow = ano::ui_srgb(0.00f, 0.00f, 0.00f, 0.50f),
+	.plate = ano::ui_srgb(0.10f, 0.11f, 0.13f, 0.92f),
+	.rim = ano::ui_srgb(0.50f, 0.54f, 0.60f, 1.00f),
+	.label = ano::ui_srgb(0.88f, 0.90f, 0.94f, 1.00f),
+};
+
 // Menu geometry in overlay logical units (render + hit-test).
 typedef struct MenuLayout {
 	float panel[4];      // minX minY maxX maxY
@@ -262,42 +310,29 @@ static AnoRenderSubmitResult submit_menu(AnoRenderBridge* bridge, const AnoFontB
 	AnoUiBuilder b;
 	ano_ui_builder_init(&b, prims, 24, NULL, 0, paints, 2, stops, 4);
 	ano_ui_builder_curves(&b, curves, 128);
-	float shadow[4], white[4], rim[4], btn[4], btnHot[4], btnRim[4], label[4], title[4], glow[4];
-	ano_ui_color_srgb((float[4]){ 0.00f, 0.00f, 0.00f, 0.60f }, shadow);
-	ano_ui_color_srgb((float[4]){ 1.00f, 1.00f, 1.00f, 1.0f }, white); // gradient carrier
-	ano_ui_color_srgb((float[4]){ 0.62f, 0.65f, 0.70f, 1.0f }, rim);
-	ano_ui_color_srgb((float[4]){ 0.22f, 0.24f, 0.30f, 1.0f }, btn);
-	ano_ui_color_srgb((float[4]){ 0.28f, 0.45f, 0.80f, 1.0f }, btnHot);
-	ano_ui_color_srgb((float[4]){ 0.75f, 0.80f, 0.88f, 0.90f }, btnRim);
-	ano_ui_color_srgb((float[4]){ 0.92f, 0.94f, 0.97f, 1.0f }, label);
-	ano_ui_color_srgb((float[4]){ 1.00f, 0.80f, 0.35f, 1.0f }, title);
-	ano_ui_color_srgb((float[4]){ 0.25f, 0.45f, 0.85f, 0.0f }, glow); // ADD: rgb only
-	// Plate gradient: light top -> dark bottom.
-	AnoUiStop plateStops[2];
-	ano_ui_color_srgb((float[4]){ 0.17f, 0.18f, 0.22f, 0.97f }, plateStops[0].color);
-	plateStops[0].t = 0.0f;
-	ano_ui_color_srgb((float[4]){ 0.09f, 0.10f, 0.13f, 0.97f }, plateStops[1].color);
-	plateStops[1].t = 1.0f;
-	uint32_t plateGrad = ano_ui_paint_linear(&b, (float[2]){ m->panel[0], m->panel[1] },
-	                                         (float[2]){ m->panel[0], m->panel[3] }, plateStops, 2);
+	const auto& common = HUD_COMMON_STYLE;
+	const auto& style = MENU_STYLE;
+	uint32_t plateGrad = ano::ui_paint_linear(&b, (float[2]){ m->panel[0], m->panel[1] },
+	                                        (float[2]){ m->panel[0], m->panel[3] }, common.plate);
 	float r12[4] = { 12, 12, 12, 12 }, r8[4] = { 8, 8, 8, 8 };
 	ano_ui_shadow(&b, (float[2]){ m->panel[0] + 6, m->panel[1] + 10 },
-	              (float[2]){ m->panel[2] + 6, m->panel[3] + 10 }, 12.0f, 9.0f, shadow,
+	              (float[2]){ m->panel[2] + 6, m->panel[3] + 10 }, 12.0f, 9.0f, common.shadow.rgba,
 	              ANO_UI_REF_NONE, 0);
-	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, white, 0.0f,
+	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, common.white.rgba, 0.0f,
 	             plateGrad, ANO_UI_REF_NONE, 0);
-	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, rim, 2.0f,
+	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, common.rim.rgba, 2.0f,
 	             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 	float titleRect[4] = { m->panel[0], m->panel[1] + 14, m->panel[2], m->panel[1] + 58 };
-	ui_label(&b, bake, anostr_lit("MENU"), 26.0f, titleRect, title, glyphs, &gcount);
+	ui_label(&b, bake, anostr_lit("MENU"), 26.0f, titleRect, style.title.rgba, glyphs, &gcount);
 	for (int i = 0; i < 3; i++) {
 		bool hot = hovered == i;
 		if (hot)
-			ano_ui_shadow(&b, &m->button[i][0], &m->button[i][2], 8.0f, 8.0f, glow,
+			ano_ui_shadow(&b, &m->button[i][0], &m->button[i][2], 8.0f, 8.0f, style.glow.rgba,
 			              ANO_UI_REF_NONE, ANO_UI_BLEND_ADD);
-		ano_ui_rrect(&b, &m->button[i][0], &m->button[i][2], r8, hot ? btnHot : btn, 0.0f,
+		ano_ui_rrect(&b, &m->button[i][0], &m->button[i][2], r8,
+		             hot ? style.buttonHot.rgba : style.button.rgba, 0.0f,
 		             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
-		ano_ui_rrect(&b, &m->button[i][0], &m->button[i][2], r8, btnRim, hot ? 2.0f : 1.0f,
+		ano_ui_rrect(&b, &m->button[i][0], &m->button[i][2], r8, style.buttonRim.rgba, hot ? 2.0f : 1.0f,
 		             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 		char text[32];
 		int len;
@@ -307,7 +342,7 @@ static AnoRenderSubmitResult submit_menu(AnoRenderBridge* bridge, const AnoFontB
 			len = snprintf(text, sizeof text, "%s", (const char*[]){ "RESUME", "OPTIONS", "QUIT" }[i]);
 		if (len > 0)
 			ui_label(&b, bake, anostr_view(text, (size_t)len), 20.0f, m->button[i],
-			         label, glyphs, &gcount);
+			         common.label.rgba, glyphs, &gcount);
 	}
 	// RESUME play-triangle via curve transport.
 	float rb0 = m->button[0][0], rcy = 0.5f * (m->button[0][1] + m->button[0][3]);
@@ -316,7 +351,7 @@ static AnoRenderSubmitResult submit_menu(AnoRenderBridge* bridge, const AnoFontB
 		{ ANO_UI_SEG_LINE, { rb0 + 38.0f, rcy, 0.0f, 0.0f } },
 		{ ANO_UI_SEG_LINE, { rb0 + 22.0f, rcy + 9.0f, 0.0f, 0.0f } },
 	};
-	ano_ui_path_fill(&b, play, 3, label, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	ano_ui_path_fill(&b, play, 3, common.label.rgba, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 	return ano_render_ui_set(bridge, HUD_UI_MENU, 128, &b, glyphs, gcount);
 }
 
@@ -448,6 +483,27 @@ static void music_world_stop(bool drain)
 
 #define HUD_UI_MUSIC 3u
 
+struct MusicStyle final {
+	ano::UiColor title;
+	ano::UiColor track;
+	ano::UiColor knob;
+	ano::UiColor dim;
+	ano::UiColor hair;
+	ano::UiStops<3> axis;
+};
+
+static constexpr MusicStyle MUSIC_STYLE = {
+	.title = ano::ui_srgb(0.55f, 0.85f, 1.00f, 1.00f),
+	.track = ano::ui_srgb(0.10f, 0.11f, 0.14f, 1.00f),
+	.knob = ano::ui_srgb(0.96f, 0.97f, 1.00f, 1.00f),
+	.dim = ano::ui_srgb(0.55f, 0.60f, 0.68f, 1.00f),
+	.hair = ano::ui_srgb(0.80f, 0.85f, 0.92f, 0.22f),
+	.axis = ano::ui_stops(
+		ano::ui_stop(0.0f, 0.10f, 0.13f, 0.26f, 1.00f),
+		ano::ui_stop(0.5f, 0.16f, 0.17f, 0.20f, 1.00f),
+		ano::ui_stop(1.0f, 0.34f, 0.26f, 0.13f, 1.00f)),
+};
+
 enum { MUS_DRAG_NONE = 0, MUS_DRAG_XY, MUS_DRAG_TENSION };
 
 typedef struct MusicLayout {
@@ -534,28 +590,13 @@ static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFont
 	AnoUiBuilder b;
 	ano_ui_builder_init(&b, prims, 40, NULL, 0, paints, 4, stops, 8);
 
-	float shadow[4], white[4], rim[4], label[4], title[4], track[4], knob[4], glow[4], dim[4];
-	ano_ui_color_srgb((float[4]){ 0.00f, 0.00f, 0.00f, 0.60f }, shadow);
-	ano_ui_color_srgb((float[4]){ 1.00f, 1.00f, 1.00f, 1.00f }, white); // gradient carrier
-	ano_ui_color_srgb((float[4]){ 0.62f, 0.65f, 0.70f, 1.00f }, rim);
-	ano_ui_color_srgb((float[4]){ 0.92f, 0.94f, 0.97f, 1.00f }, label);
-	ano_ui_color_srgb((float[4]){ 0.55f, 0.85f, 1.00f, 1.00f }, title);
-	ano_ui_color_srgb((float[4]){ 0.10f, 0.11f, 0.14f, 1.00f }, track);
-	ano_ui_color_srgb((float[4]){ 0.96f, 0.97f, 1.00f, 1.00f }, knob);
-	ano_ui_color_srgb((float[4]){ 0.30f, 0.70f, 1.00f, 0.00f }, glow); // ADD: rgb only
-	ano_ui_color_srgb((float[4]){ 0.55f, 0.60f, 0.68f, 1.00f }, dim);
-
-	// The plate.
-	AnoUiStop plate[2];
-	ano_ui_color_srgb((float[4]){ 0.17f, 0.18f, 0.22f, 0.97f }, plate[0].color);
-	plate[0].t = 0.0f;
-	ano_ui_color_srgb((float[4]){ 0.09f, 0.10f, 0.13f, 0.97f }, plate[1].color);
-	plate[1].t = 1.0f;
-	uint32_t plateGrad = ano_ui_paint_linear(&b, (float[2]){ m->panel[0], m->panel[1] },
-	                                         (float[2]){ m->panel[0], m->panel[3] }, plate, 2);
+	const auto& common = HUD_COMMON_STYLE;
+	const auto& style = MUSIC_STYLE;
+	uint32_t plateGrad = ano::ui_paint_linear(&b, (float[2]){ m->panel[0], m->panel[1] },
+	                                        (float[2]){ m->panel[0], m->panel[3] }, common.plate);
 	float r12[4] = { 12, 12, 12, 12 }, r6[4] = { 6, 6, 6, 6 };
 	ano_ui_shadow(&b, (float[2]){ m->panel[0] + 6, m->panel[1] + 10 },
-	              (float[2]){ m->panel[2] + 6, m->panel[3] + 10 }, 12.0f, 9.0f, shadow,
+	              (float[2]){ m->panel[2] + 6, m->panel[3] + 10 }, 12.0f, 9.0f, common.shadow.rgba,
 	              ANO_UI_REF_NONE, 0);
 
 	// Cadence flash: ADD rim, 0.5s decay.
@@ -567,38 +608,30 @@ static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFont
 		              (float[2]){ m->panel[2] + 2, m->panel[3] + 2 }, 14.0f, 12.0f, pulse,
 		              ANO_UI_REF_NONE, ANO_UI_BLEND_ADD);
 	}
-	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, white, 0.0f, plateGrad,
+	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, common.white.rgba, 0.0f, plateGrad,
 	             ANO_UI_REF_NONE, 0);
-	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, rim, 2.0f, ANO_UI_REF_NONE,
+	ano_ui_rrect(&b, &m->panel[0], &m->panel[2], r12, common.rim.rgba, 2.0f, ANO_UI_REF_NONE,
 	             ANO_UI_REF_NONE, 0);
 	float titleRect[4] = { m->panel[0], m->panel[1] + 12, m->panel[2], m->panel[1] + 52 };
-	ui_label(&b, bake, anostr_lit("MUSIC"), 24.0f, titleRect, title, glyphs, &gcount);
+	ui_label(&b, bake, anostr_lit("MUSIC"), 24.0f, titleRect, style.title.rgba, glyphs, &gcount);
 
 	// Valence x energy square. Gradient: cold-dark -> warm-bright.
-	AnoUiStop axis[3];
-	ano_ui_color_srgb((float[4]){ 0.10f, 0.13f, 0.26f, 1.0f }, axis[0].color);
-	axis[0].t = 0.0f;
-	ano_ui_color_srgb((float[4]){ 0.16f, 0.17f, 0.20f, 1.0f }, axis[1].color);
-	axis[1].t = 0.5f;
-	ano_ui_color_srgb((float[4]){ 0.34f, 0.26f, 0.13f, 1.0f }, axis[2].color);
-	axis[2].t = 1.0f;
-	uint32_t axisGrad = ano_ui_paint_linear(&b, (float[2]){ m->pad[0], m->pad[1] },
-	                                        (float[2]){ m->pad[2], m->pad[1] }, axis, 3);
-	ano_ui_rrect(&b, &m->pad[0], &m->pad[2], r6, white, 0.0f, axisGrad,
+	uint32_t axisGrad = ano::ui_paint_linear(&b, (float[2]){ m->pad[0], m->pad[1] },
+	                                       (float[2]){ m->pad[2], m->pad[1] }, style.axis);
+	ano_ui_rrect(&b, &m->pad[0], &m->pad[2], r6, common.white.rgba, 0.0f, axisGrad,
 	             ANO_UI_REF_NONE, 0);
-	ano_ui_rrect(&b, &m->pad[0], &m->pad[2], r6, hovered == MUS_DRAG_XY ? rim : dim,
+	ano_ui_rrect(&b, &m->pad[0], &m->pad[2], r6,
+	             hovered == MUS_DRAG_XY ? common.rim.rgba : style.dim.rgba,
 	             hovered == MUS_DRAG_XY ? 2.0f : 1.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 
 	// Knob at (valence, energy)
 	float kx = m->pad[0] + (st->valence * 0.5f + 0.5f) * (m->pad[2] - m->pad[0]);
 	float ky = m->pad[3] - st->energy * (m->pad[3] - m->pad[1]);
-	float hair[4];
-	ano_ui_color_srgb((float[4]){ 0.80f, 0.85f, 0.92f, 0.22f }, hair);
 	ano_ui_rrect(&b, (float[2]){ m->pad[0] + 1, ky - 0.5f },
-	             (float[2]){ m->pad[2] - 1, ky + 0.5f }, (float[4]){ 0, 0, 0, 0 }, hair,
+	             (float[2]){ m->pad[2] - 1, ky + 0.5f }, (float[4]){ 0, 0, 0, 0 }, style.hair.rgba,
 	             0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 	ano_ui_rrect(&b, (float[2]){ kx - 0.5f, m->pad[1] + 1 },
-	             (float[2]){ kx + 0.5f, m->pad[3] - 1 }, (float[4]){ 0, 0, 0, 0 }, hair,
+	             (float[2]){ kx + 0.5f, m->pad[3] - 1 }, (float[4]){ 0, 0, 0, 0 }, style.hair.rgba,
 	             0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 	// Glow radius scales with energy
 	float gr = 10.0f + 16.0f * st->energy;
@@ -608,15 +641,15 @@ static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFont
 	ano_ui_shadow(&b, (float[2]){ kx - gr, ky - gr }, (float[2]){ kx + gr, ky + gr },
 	              gr, 9.0f, lit, ANO_UI_REF_NONE, ANO_UI_BLEND_ADD);
 	float kr[4] = { 7, 7, 7, 7 };
-	ano_ui_rrect(&b, (float[2]){ kx - 7, ky - 7 }, (float[2]){ kx + 7, ky + 7 }, kr, knob,
+	ano_ui_rrect(&b, (float[2]){ kx - 7, ky - 7 }, (float[2]){ kx + 7, ky + 7 }, kr, style.knob.rgba,
 	             0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 
 	float axisRow[4] = { m->pad[0], m->pad[3] + 2, m->pad[2], m->pad[3] + 26 };
-	ui_label(&b, bake, anostr_lit("dark  <  brightness  >  bright"), 15.0f, axisRow, dim,
+	ui_label(&b, bake, anostr_lit("dark  <  brightness  >  bright"), 15.0f, axisRow, style.dim.rgba,
 	         glyphs, &gcount);
 
 	// Tension slider
-	ano_ui_rrect(&b, &m->slider[0], &m->slider[2], r6, track, 0.0f, ANO_UI_REF_NONE,
+	ano_ui_rrect(&b, &m->slider[0], &m->slider[2], r6, style.track.rgba, 0.0f, ANO_UI_REF_NONE,
 	             ANO_UI_REF_NONE, 0);
 	float fillX = m->slider[0] + st->tension * (m->slider[2] - m->slider[0]);
 	if (fillX > m->slider[0] + 1.0f) {
@@ -627,17 +660,17 @@ static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFont
 		             ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 	}
 	ano_ui_rrect(&b, &m->slider[0], &m->slider[2], r6,
-	             hovered == MUS_DRAG_TENSION ? rim : dim,
+	             hovered == MUS_DRAG_TENSION ? common.rim.rgba : style.dim.rgba,
 	             hovered == MUS_DRAG_TENSION ? 2.0f : 1.0f, ANO_UI_REF_NONE,
 	             ANO_UI_REF_NONE, 0);
 	float sy = 0.5f * (m->slider[1] + m->slider[3]);
 	ano_ui_rrect(&b, (float[2]){ fillX - 6, sy - 10 }, (float[2]){ fillX + 6, sy + 10 },
-	             (float[4]){ 5, 5, 5, 5 }, knob, 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	             (float[4]){ 5, 5, 5, 5 }, style.knob.rgba, 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
 	char tenText[40];
 	int tl = snprintf(tenText, sizeof tenText, "tension  %.2f", (double)st->tension);
 	float tenRow[4] = { m->slider[0], m->slider[1] - 26, m->slider[2], m->slider[1] - 4 };
 	if (tl > 0)
-		ui_label(&b, bake, anostr_view(tenText, (size_t)tl), 15.0f, tenRow, dim, glyphs,
+		ui_label(&b, bake, anostr_view(tenText, (size_t)tl), 15.0f, tenRow, style.dim.rgba, glyphs,
 		         &gcount);
 
 	// AEVT_MUSIC_BAR readout.
@@ -658,9 +691,9 @@ static AnoRenderSubmitResult submit_music(AnoRenderBridge* bridge, const AnoFont
 	float row2[4] = { m->panel[0], m->slider[3] + 40, m->panel[2], m->slider[3] + 62 };
 	if (n1 > 0)
 		ui_label(&b, bake, anostr_view(line1, (size_t)n1), 17.0f,
-		         row1, st->isCadence ? title : label, glyphs, &gcount);
+		         row1, st->isCadence ? style.title.rgba : common.label.rgba, glyphs, &gcount);
 	if (n2 > 0)
-		ui_label(&b, bake, anostr_view(line2, (size_t)n2), 13.0f, row2, dim, glyphs,
+		ui_label(&b, bake, anostr_view(line2, (size_t)n2), 13.0f, row2, style.dim.rgba, glyphs,
 		         &gcount);
 
 	return ano_render_ui_set(bridge, HUD_UI_MUSIC, 96, &b, glyphs, gcount);
@@ -674,18 +707,14 @@ static AnoRenderSubmitResult submit_bar(AnoRenderBridge* bridge, const AnoFontBa
 	uint32_t gcount = 0;
 	AnoUiBuilder b;
 	ano_ui_builder_init(&b, prims, 8, NULL, 0, NULL, 0, NULL, 0);
-	float shadow[4], plate[4], rim[4], label[4];
-	ano_ui_color_srgb((float[4]){ 0.00f, 0.00f, 0.00f, 0.50f }, shadow);
-	ano_ui_color_srgb((float[4]){ 0.10f, 0.11f, 0.13f, 0.92f }, plate);
-	ano_ui_color_srgb((float[4]){ 0.50f, 0.54f, 0.60f, 1.0f }, rim);
-	ano_ui_color_srgb((float[4]){ 0.88f, 0.90f, 0.94f, 1.0f }, label);
+	const auto& style = BAR_STYLE;
 	float rect[4] = { 24.0f, vpH - 68.0f, 24.0f + 420.0f, vpH - 24.0f };
 	float r10[4] = { 10, 10, 10, 10 };
 	ano_ui_shadow(&b, (float[2]){ rect[0] + 4, rect[1] + 6 }, (float[2]){ rect[2] + 4, rect[3] + 6 },
-	              10.0f, 6.0f, shadow, ANO_UI_REF_NONE, 0);
-	ano_ui_rrect(&b, &rect[0], &rect[2], r10, plate, 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
-	ano_ui_rrect(&b, &rect[0], &rect[2], r10, rim, 1.5f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
-	ui_label(&b, bake, anostr_lit("M menu · N music · drag the square"), 20.0f, rect, label,
+	              10.0f, 6.0f, style.shadow.rgba, ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, &rect[0], &rect[2], r10, style.plate.rgba, 0.0f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	ano_ui_rrect(&b, &rect[0], &rect[2], r10, style.rim.rgba, 1.5f, ANO_UI_REF_NONE, ANO_UI_REF_NONE, 0);
+	ui_label(&b, bake, anostr_lit("M menu · N music · drag the square"), 20.0f, rect, style.label.rgba,
 	         glyphs, &gcount);
 	return ano_render_ui_set(bridge, HUD_UI_BAR, 16, &b, glyphs, gcount);
 }

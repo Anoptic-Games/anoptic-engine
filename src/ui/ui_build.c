@@ -230,6 +230,7 @@ uint32_t ano_ui_glyphs(AnoUiBuilder *b, const float bboxMin[2], const float bbox
 /* Paints */
 
 // Copy stops sorted ascending by t, write paint header. NONE if full or stopCount 0.
+template<bool SortStops>
 static uint32_t paint_push(AnoUiBuilder *b, uint32_t kind, const float xform[6],
                            const AnoUiStop *stops, uint32_t stopCount)
 {
@@ -239,14 +240,16 @@ static uint32_t paint_push(AnoUiBuilder *b, uint32_t kind, const float xform[6],
     uint32_t stopFirst = b->stopCount;
     for (uint32_t i = 0; i < stopCount; i++)
         b->stops[stopFirst + i] = stops[i];
-    for (uint32_t i = 1; i < stopCount; i++) {
-        AnoUiStop key = b->stops[stopFirst + i];
-        int32_t j = (int32_t)i - 1;
-        while (j >= 0 && b->stops[stopFirst + j].t > key.t) {
-            b->stops[stopFirst + j + 1] = b->stops[stopFirst + j];
-            j--;
+    if constexpr (SortStops) {
+        for (uint32_t i = 1; i < stopCount; i++) {
+            AnoUiStop key = b->stops[stopFirst + i];
+            int32_t j = (int32_t)i - 1;
+            while (j >= 0 && b->stops[stopFirst + j].t > key.t) {
+                b->stops[stopFirst + j + 1] = b->stops[stopFirst + j];
+                j--;
+            }
+            b->stops[stopFirst + j + 1] = key;
         }
-        b->stops[stopFirst + j + 1] = key;
     }
     b->stopCount += stopCount;
     uint32_t idx = b->paintCount++;
@@ -261,15 +264,28 @@ static uint32_t paint_push(AnoUiBuilder *b, uint32_t kind, const float xform[6],
     return idx;
 }
 
-// In: axis endpoints + stops. t = dot(p-p0,d)/|d|^2. Zero-length axis -> t = 0.
-uint32_t ano_ui_paint_linear(AnoUiBuilder *b, const float p0[2], const float p1[2],
-                             const AnoUiStop *stops, uint32_t stopCount)
+template<bool SortStops>
+static uint32_t paint_linear_push(AnoUiBuilder *b, const float p0[2], const float p1[2],
+                                  const AnoUiStop *stops, uint32_t stopCount)
 {
     float dx = p1[0] - p0[0], dy = p1[1] - p0[1];
     float l2 = dx * dx + dy * dy;
     float inv = l2 > 0.0f ? 1.0f / l2 : 0.0f;
     float xform[6] = { dx * inv, dy * inv, -(p0[0] * dx + p0[1] * dy) * inv, 0.0f, 0.0f, 0.0f };
-    return paint_push(b, ANO_UI_GRAD_LINEAR, xform, stops, stopCount);
+    return paint_push<SortStops>(b, ANO_UI_GRAD_LINEAR, xform, stops, stopCount);
+}
+
+// In: axis endpoints + stops. t = dot(p-p0,d)/|d|^2. Zero-length axis -> t = 0.
+uint32_t ano_ui_paint_linear(AnoUiBuilder *b, const float p0[2], const float p1[2],
+                             const AnoUiStop *stops, uint32_t stopCount)
+{
+    return paint_linear_push<true>(b, p0, p1, stops, stopCount);
+}
+
+uint32_t ano_ui_paint_linear_sorted(AnoUiBuilder *b, const float p0[2], const float p1[2],
+                                    const AnoUiStop *stops, uint32_t stopCount)
+{
+    return paint_linear_push<false>(b, p0, p1, stops, stopCount);
 }
 
 // In: center + radius + stops. g = (p-center)/radius, t = |g|. radius <= 0 -> t = 0.
@@ -278,7 +294,7 @@ uint32_t ano_ui_paint_radial(AnoUiBuilder *b, const float center[2], float radiu
 {
     float inv = radius > 0.0f ? 1.0f / radius : 0.0f;
     float xform[6] = { inv, 0.0f, -center[0] * inv, 0.0f, inv, -center[1] * inv };
-    return paint_push(b, ANO_UI_GRAD_RADIAL, xform, stops, stopCount);
+    return paint_push<true>(b, ANO_UI_GRAD_RADIAL, xform, stops, stopCount);
 }
 
 // In: center, startAngle (radians), stops. xform rotates startAngle onto g.x.
@@ -289,7 +305,7 @@ uint32_t ano_ui_paint_conic(AnoUiBuilder *b, const float center[2], float startA
     float c = cosf(startAngle), s = sinf(startAngle);
     float xform[6] = { c, s, -(c * center[0] + s * center[1]),
                        -s, c, -(-s * center[0] + c * center[1]) };
-    return paint_push(b, ANO_UI_GRAD_CONIC, xform, stops, stopCount);
+    return paint_push<true>(b, ANO_UI_GRAD_CONIC, xform, stops, stopCount);
 }
 
 

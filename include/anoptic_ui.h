@@ -210,6 +210,10 @@ uint32_t ano_ui_clip(AnoUiBuilder *b, const float rectMin[2], const float rectMa
 uint32_t ano_ui_paint_linear(AnoUiBuilder *b, const float p0[2], const float p1[2],
                              const AnoUiStop *stops, uint32_t stopCount);
 
+// Pre-sorted variant for C++26 ano::UiStops. The caller proves ascending finite t values.
+uint32_t ano_ui_paint_linear_sorted(AnoUiBuilder *b, const float p0[2], const float p1[2],
+                                    const AnoUiStop *stops, uint32_t stopCount);
+
 // Radial: t = |pixel - center| / radius, 0 at center, 1 on the circle.
 uint32_t ano_ui_paint_radial(AnoUiBuilder *b, const float center[2], float radius,
                              const AnoUiStop *stops, uint32_t stopCount);
@@ -315,6 +319,107 @@ void ano_ui_ref_eval_tiled(const AnoUiScene *s, int32_t ox, int32_t oy,
 
 #ifdef __cplusplus
 }
+
+namespace ano {
+
+struct UiColor final {
+    float rgba[4];
+
+    constexpr const float* data() const noexcept { return rgba; }
+};
+static_assert(sizeof(UiColor) == sizeof(float) * 4u);
+
+consteval float ui_srgb_channel(float value)
+{
+    if (!__builtin_isfinite(value))
+        __builtin_abort();
+    const float channel = value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value;
+    return channel <= 0.04045f
+        ? channel / 12.92f
+        : __builtin_powf((channel + 0.055f) / 1.055f, 2.4f);
+}
+
+consteval UiColor ui_srgb(float red, float green, float blue, float alpha)
+{
+    if (!__builtin_isfinite(alpha))
+        __builtin_abort();
+    return {{ ui_srgb_channel(red) * alpha,
+              ui_srgb_channel(green) * alpha,
+              ui_srgb_channel(blue) * alpha,
+              alpha }};
+}
+
+struct UiSrgbStop final {
+    float t;
+    float red;
+    float green;
+    float blue;
+    float alpha;
+};
+
+consteval UiSrgbStop ui_stop(float t, float red, float green, float blue, float alpha)
+{
+    return { t, red, green, blue, alpha };
+}
+
+template<size_t Count>
+struct UiStops final {
+    static_assert(Count > 0u && Count <= UINT32_MAX);
+    static constexpr uint32_t count = static_cast<uint32_t>(Count);
+
+    template<class... Stops>
+    consteval explicit UiStops(Stops... input) : values{}
+    {
+        static_assert(sizeof...(Stops) == Count);
+        UiSrgbStop authored[Count] = { input... };
+        for (size_t i = 0; i < Count; ++i) {
+            if (!__builtin_isfinite(authored[i].t))
+                __builtin_abort();
+            const UiColor color = ui_srgb(authored[i].red, authored[i].green,
+                                          authored[i].blue, authored[i].alpha);
+            values[i] = AnoUiStop{
+                .color = { color.rgba[0], color.rgba[1], color.rgba[2], color.rgba[3] },
+                .t = authored[i].t,
+            };
+        }
+        for (size_t i = 1; i < Count; ++i) {
+            const AnoUiStop key = values[i];
+            size_t position = i;
+            while (position > 0u && values[position - 1u].t > key.t) {
+                values[position] = values[position - 1u];
+                --position;
+            }
+            values[position] = key;
+        }
+    }
+
+    constexpr const AnoUiStop* data() const noexcept { return values; }
+    constexpr const AnoUiStop& operator[](size_t index) const noexcept
+    {
+        return values[index];
+    }
+
+private:
+    AnoUiStop values[Count];
+};
+static_assert(sizeof(UiStops<1>) == sizeof(AnoUiStop));
+
+template<class... Stops>
+consteval auto ui_stops(Stops... input)
+{
+    constexpr size_t count = sizeof...(Stops);
+    static_assert(count > 0u && count <= UINT32_MAX);
+    return UiStops<count>(input...);
+}
+
+template<size_t Count>
+inline uint32_t ui_paint_linear(AnoUiBuilder* builder, const float p0[2],
+                                const float p1[2], const UiStops<Count>& stops) noexcept
+{
+    return ano_ui_paint_linear_sorted(builder, p0, p1, stops.data(), stops.count);
+}
+
+} // namespace ano
 #endif
 
 #endif

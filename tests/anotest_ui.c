@@ -362,6 +362,47 @@ static void test_clip(void)
 
 /* Gradient Paints */
 
+static void test_consteval_styles(void)
+{
+    struct ColorParity final {
+        float source[4];
+        ano::UiColor baked;
+    };
+    static constexpr ColorParity colors[] = {
+        {{ 0.00f, 0.00f, 0.00f, 0.60f }, ano::ui_srgb(0.00f, 0.00f, 0.00f, 0.60f)},
+        {{ 0.75f, 0.80f, 0.88f, 0.90f }, ano::ui_srgb(0.75f, 0.80f, 0.88f, 0.90f)},
+        {{ 0.17f, 0.18f, 0.22f, 0.97f }, ano::ui_srgb(0.17f, 0.18f, 0.22f, 0.97f)},
+        {{ 0.80f, 0.85f, 0.92f, 0.22f }, ano::ui_srgb(0.80f, 0.85f, 0.92f, 0.22f)},
+        {{ 0.25f, 0.45f, 0.85f, 0.00f }, ano::ui_srgb(0.25f, 0.45f, 0.85f, 0.00f)},
+    };
+    for (const ColorParity& color : colors) {
+        volatile float barrier[4] = {
+            color.source[0], color.source[1], color.source[2], color.source[3]
+        };
+        const float source[4] = { barrier[0], barrier[1], barrier[2], barrier[3] };
+        float runtime[4];
+        ano_ui_color_srgb(source, runtime);
+        CHECK(memcmp(runtime, color.baked.rgba, sizeof runtime) == 0,
+              "consteval/runtime sRGB bytes match");
+    }
+
+    static constexpr auto sorted = ano::ui_stops(
+        ano::ui_stop(1.0f, 0.9f, 0.8f, 0.7f, 1.0f),
+        ano::ui_stop(0.0f, 0.1f, 0.2f, 0.3f, 1.0f),
+        ano::ui_stop(0.5f, 0.4f, 0.5f, 0.6f, 1.0f));
+    static_assert(sorted.count == 3u && sorted[0].t == 0.0f
+                  && sorted[1].t == 0.5f && sorted[2].t == 1.0f);
+    AnoUiPaint paints[1];
+    AnoUiStop stops[3];
+    AnoUiBuilder builder;
+    ano_ui_builder_init(&builder, NULL, 0, NULL, 0, paints, 1, stops, 3);
+    const float p0[2] = { 0.0f, 0.0f }, p1[2] = { 1.0f, 0.0f };
+    CHECK(ano::ui_paint_linear(&builder, p0, p1, sorted) == 0u,
+          "constexpr sorted stops build a paint");
+    CHECK(memcmp(stops, sorted.data(), sizeof stops) == 0,
+          "constexpr sorted stops copy byte-exactly");
+}
+
 // rrect fill vs analytic t + two-stop lerp (deep interior, cov=1).
 
 static void grad2_truth(const float c0[4], const float c1[4], double t, float out[4])
@@ -1399,6 +1440,7 @@ int main(int argc, char **argv)
     printf("anotest_ui: prim ABI, builder, reference evaluator (soak x%u)\n", soak);
     test_abi();
     test_builder();
+    test_consteval_styles();
     test_sdf(soak);
     test_coverage();
     test_clip();
