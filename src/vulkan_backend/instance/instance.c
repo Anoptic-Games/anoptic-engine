@@ -9,9 +9,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
-#include <anoptic_memory.h>
+#include <anoptic_memory_typed.h>
 #include <anoptic_log.h>
-#include "cpp/ano_alloc.h"
 
 #ifndef GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_VULKAN

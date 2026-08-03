@@ -1,7 +1,7 @@
 #ifndef ANO_AUDIO_COMMAND_CONTRACT_H
 #define ANO_AUDIO_COMMAND_CONTRACT_H
 
-#include "cpp/ano_reflect.h"
+#include <anoptic_meta.h>
 
 #include <anoptic_audio.h>
 

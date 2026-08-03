@@ -19,6 +19,7 @@
 struct AnoModeContract final {
     uint8_t intervals[7];
     int brightness;
+    bool affectMapped = true;
 };
 struct AnoCadenceContract final {
     int8_t targetDegree;
@@ -118,7 +119,7 @@ typedef struct AnoMeter
     int denominator;
 } AnoMeter;
 
-// Enum ORDER is load-bearing: mapper walks modes along the brightness axis in this order; renumbering changes the music.
+// One declaration owns scale intervals, brightness, and affect-mapping membership.
 typedef enum AnoMode
 {
     ANO_MODE_IONIAN ANO_MUSIC_META(AnoModeContract{{0, 2, 4, 5, 7, 9, 11}, 2}) = 0,
@@ -127,7 +128,7 @@ typedef enum AnoMode
     ANO_MODE_LYDIAN ANO_MUSIC_META(AnoModeContract{{0, 2, 4, 6, 7, 9, 11}, 3}),
     ANO_MODE_MIXOLYDIAN ANO_MUSIC_META(AnoModeContract{{0, 2, 4, 5, 7, 9, 10}, 1}),
     ANO_MODE_AEOLIAN ANO_MUSIC_META(AnoModeContract{{0, 2, 3, 5, 7, 8, 10}, -1}),
-    ANO_MODE_LOCRIAN ANO_MUSIC_META(AnoModeContract{{0, 1, 3, 5, 6, 8, 10}, -1}),
+    ANO_MODE_LOCRIAN ANO_MUSIC_META(AnoModeContract{{0, 1, 3, 5, 6, 8, 10}, -1, false}),
     ANO_MODE_COUNT,
     ANO_MODE_NONE = -1, // valence-driven (with mapper) / ionian (without)
 } AnoMode;

@@ -38,17 +38,16 @@ double ano_map_articulation(AnoAffect a, const AnoMappingTable *t);
 double ano_map_velocity(AnoAffect a, const AnoMappingTable *t);
 int    ano_map_accent(AnoAffect a, const AnoMappingTable *t);
 
-// Valence -1..+1 -> EMS brightness axis -2..+3.
+// Valence -1..+1 -> the reflected affect-mapped brightness extent.
 double ano_map_brightness_target(double valence);
 
-// Nearest usable mode by brightness; float-abs ties break brighter-first
-// (min key (|delta|, -brightness) over BRIGHTNESS insertion order).
+// Nearest affect-mapped mode by reflected brightness; float-abs ties break brighter-first.
 AnoMode ano_nearest_mode(double valence);
 
 // Deadband: stay until target drifts >= modeHysteresis. NONE = first pick.
 AnoMode ano_pick_mode(AnoMode current, double valence, const AnoMappingTable *t);
 
-// Step up brightness ordering, clamped at lydian; locrian passes through.
+// Step up reflected brightness ordering, clamped at the brightest mapped mode.
 AnoMode ano_brighter_mode(AnoMode mode, int steps);
 
 // Energy-tiered patch per layer with instrumentHysteresis deadband.

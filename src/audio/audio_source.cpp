@@ -10,7 +10,7 @@
 #include <anoptic_audio.h>
 
 #include "audio_source.h"
-#include "cpp/ano_types.h"
+#include <anoptic_meta.h>
 
 namespace {
 

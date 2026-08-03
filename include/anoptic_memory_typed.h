@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private typed allocation for plain engine data. No ownership or runtime surface.
+// C++ typed allocation for plain engine data. Header-only; no ownership surface.
 
-#ifndef ANO_CPP_ALLOC_H
-#define ANO_CPP_ALLOC_H
-
-#include "cpp/ano_types.h"
+#ifndef ANOPTICENGINE_ANOPTIC_MEMORY_TYPED_H
+#define ANOPTICENGINE_ANOPTIC_MEMORY_TYPED_H
 
 #include <anoptic_memory.h>
+#include <anoptic_meta.h>
+
 #include <cstddef>
 #include <cstdint>
 
@@ -72,4 +72,4 @@ template<Data T>
 
 } // namespace ano
 
-#endif // ANO_CPP_ALLOC_H
+#endif // ANOPTICENGINE_ANOPTIC_MEMORY_TYPED_H

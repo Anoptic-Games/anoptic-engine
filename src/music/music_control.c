@@ -4,14 +4,101 @@
 /*  == Anoptic Game Engine v0.0000001 == */
 
 // Affect -> Tier-2 mappers. gate_layers: energy >; pick_instruments: >=.
-// nearest_mode: BRIGHTNESS insertion order, min key (|delta|, -brightness). Rounds are banker's.
+// nearest_mode: reflected brightness order, min key (|delta|, -brightness). Rounds are banker's.
 
 #include <math.h>
 
 #include <string.h>
 
+#include <anoptic_meta.h>
+
 #include "music_control.h"
 #include "music_ir.h" // AnoPatchName: the value domain of instrument arrays
+
+namespace {
+
+struct ModeControlPoint final {
+    AnoMode mode;
+    int brightness;
+};
+
+template<std::size_t Count>
+struct ModeControlRegistry final {
+    ModeControlPoint values[Count];
+
+    static constexpr std::size_t size() { return Count; }
+};
+
+inline constexpr auto kModeContracts =
+    ano::reflect_dense_enum_contracts<AnoMode, AnoModeContract>();
+
+consteval std::size_t mode_control_count()
+{
+    std::size_t count = 0;
+    for (const AnoModeContract &contract : kModeContracts.values)
+        count += contract.affectMapped;
+    return count;
+}
+
+template<std::size_t Count>
+consteval ModeControlRegistry<Count> make_mode_control_registry()
+{
+    ModeControlRegistry<Count> result{};
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < kModeContracts.size(); ++i)
+        if (kModeContracts.values[i].affectMapped)
+            result.values[count++] = {
+                static_cast<AnoMode>(i),
+                kModeContracts.values[i].brightness,
+            };
+
+    for (std::size_t i = 1; i < Count; ++i) {
+        ModeControlPoint point = result.values[i];
+        std::size_t j = i;
+        while (j > 0 && point.brightness < result.values[j - 1].brightness) {
+            result.values[j] = result.values[j - 1];
+            --j;
+        }
+        result.values[j] = point;
+    }
+    return result;
+}
+
+template<std::size_t Count>
+consteval bool mode_control_registry_valid(
+    const ModeControlRegistry<Count> &registry)
+{
+    for (std::size_t i = 1; i < Count; ++i)
+        if (registry.values[i - 1].brightness >= registry.values[i].brightness)
+            return false;
+    return true;
+}
+
+inline constexpr auto kControlModes =
+    make_mode_control_registry<mode_control_count()>();
+
+static_assert(kControlModes.size() > 1,
+              "mode control requires at least two affect-mapped modes");
+static_assert(mode_control_registry_valid(kControlModes),
+              "affect-mapped modes require unique brightness values");
+static_assert(ano::Data<ModeControlPoint>);
+static_assert(ano::Data<decltype(kControlModes)>);
+
+constexpr std::size_t control_mode_index(AnoMode mode)
+{
+    for (std::size_t i = 0; i < kControlModes.size(); ++i)
+        if (kControlModes.values[i].mode == mode)
+            return i;
+    return kControlModes.size();
+}
+
+constexpr const ModeControlPoint *control_mode(AnoMode mode)
+{
+    const std::size_t index = control_mode_index(mode);
+    return index < kControlModes.size() ? &kControlModes.values[index] : nullptr;
+}
+
+} // namespace
 
 static double clampd(double x, double lo, double hi)
 {
@@ -130,27 +217,28 @@ int ano_map_accent(AnoAffect a, const AnoMappingTable *t)
 
 double ano_map_brightness_target(double valence)
 {
-    return -2.0 + 5.0 * (valence + 1.0) / 2.0;
+    constexpr double darkest = kControlModes.values[0].brightness;
+    constexpr double span =
+        kControlModes.values[kControlModes.size() - 1].brightness - darkest;
+    return darkest + span * (valence + 1.0) / 2.0;
 }
-
-// BRIGHTNESS insertion order, bright to dark (locrian absent).
-static const struct { AnoMode mode; int b; } EMS[6] = {
-    { ANO_MODE_LYDIAN, 3 },  { ANO_MODE_IONIAN, 2 },  { ANO_MODE_MIXOLYDIAN, 1 },
-    { ANO_MODE_DORIAN, 0 },  { ANO_MODE_AEOLIAN, -1 }, { ANO_MODE_PHRYGIAN, -2 },
-};
 
 AnoMode ano_nearest_mode(double valence)
 {
     double target = ano_map_brightness_target(valence);
-    AnoMode best = EMS[0].mode;
-    double bestAbs = fabs(EMS[0].b - target);
-    int bestNeg = -EMS[0].b;
-    for (int i = 1; i < 6; ++i) {
-        double d = fabs(EMS[i].b - target);
-        int neg = -EMS[i].b;
+    const ModeControlPoint &brightest =
+        kControlModes.values[kControlModes.size() - 1];
+    AnoMode best = brightest.mode;
+    double bestAbs = fabs(brightest.brightness - target);
+    int bestNeg = -brightest.brightness;
+    for (std::size_t offset = 1; offset < kControlModes.size(); ++offset) {
+        const ModeControlPoint &point =
+            kControlModes.values[kControlModes.size() - 1 - offset];
+        double d = fabs(point.brightness - target);
+        int neg = -point.brightness;
         // tuple key (|delta|, -brightness), strict <: first minimum wins
         if (d < bestAbs || (d == bestAbs && neg < bestNeg)) {
-            best = EMS[i].mode;
+            best = point.mode;
             bestAbs = d;
             bestNeg = neg;
         }
@@ -162,34 +250,27 @@ AnoMode ano_pick_mode(AnoMode current, double valence, const AnoMappingTable *t)
 {
     if (current == ANO_MODE_NONE)
         return ano_nearest_mode(valence);
-    for (int i = 0; i < 6; ++i)
-        if (EMS[i].mode == current) {
-            if (fabs(ano_map_brightness_target(valence) - EMS[i].b) < t->modeHysteresis)
-                return current;
-            return ano_nearest_mode(valence);
-        }
+    const ModeControlPoint *point = control_mode(current);
+    if (point != nullptr) {
+        if (fabs(ano_map_brightness_target(valence) - point->brightness)
+            < t->modeHysteresis)
+            return current;
+        return ano_nearest_mode(valence);
+    }
     return ano_nearest_mode(valence); // unreachable in the pipeline (locrian)
 }
 
 AnoMode ano_brighter_mode(AnoMode mode, int steps)
 {
-    // sorted(BRIGHTNESS, key=brightness) ascending
-    static const AnoMode ORDER[6] = {
-        ANO_MODE_PHRYGIAN, ANO_MODE_AEOLIAN, ANO_MODE_DORIAN,
-        ANO_MODE_MIXOLYDIAN, ANO_MODE_IONIAN, ANO_MODE_LYDIAN,
-    };
     if (steps <= 0)
         return mode;
-    int idx = -1;
-    for (int i = 0; i < 6; ++i)
-        if (ORDER[i] == mode)
-            idx = i;
-    if (idx < 0)
-        return mode; // not in BRIGHTNESS (locrian)
-    int j = idx + steps;
-    if (j > 5)
-        j = 5;
-    return ORDER[j];
+    const std::size_t index = control_mode_index(mode);
+    if (index == kControlModes.size())
+        return mode; // not affect-mapped (locrian)
+    const std::size_t remaining = kControlModes.size() - 1 - index;
+    const std::size_t requested = static_cast<std::size_t>(steps);
+    const std::size_t advance = requested < remaining ? requested : remaining;
+    return kControlModes.values[index + advance].mode;
 }
 
 void ano_pick_instruments(const uint8_t current[ANO_MUSIC_LAYER_COUNT], double energy,

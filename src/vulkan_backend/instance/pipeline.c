@@ -3,10 +3,9 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-#include <anoptic_memory.h>
+#include <anoptic_memory_typed.h>
 #include <anoptic_filesystem.h>
 #include <anoptic_log.h>
-#include "cpp/ano_alloc.h"
 #include "pipeline.h"
 #include "vulkan_backend/pipeline_registry.h"
 #include "pipelines/flat.h"

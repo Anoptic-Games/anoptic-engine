@@ -3,18 +3,20 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 /*  == Anoptic Game Engine v0.0000001 == */
 
-// Private C++ value contracts. Header-only; no ownership or runtime surface.
+// Included by anoptic_meta.h. These value contracts share its reflected enum proofs.
 
-#ifndef ANO_CPP_TYPES_H
-#define ANO_CPP_TYPES_H
+#ifndef ANOPTICENGINE_ANOPTIC_META_H
+#error "Include <anoptic_meta.h> instead of <anoptic_meta_types.h>"
+#endif
+
+#ifndef ANOPTICENGINE_ANOPTIC_META_TYPES_H
+#define ANOPTICENGINE_ANOPTIC_META_TYPES_H
 
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
 #include <utility>
-
-#include "cpp/ano_reflect.h"
 
 namespace ano {
 
@@ -168,4 +170,4 @@ private:
 
 } // namespace ano
 
-#endif // ANO_CPP_TYPES_H
+#endif // ANOPTICENGINE_ANOPTIC_META_TYPES_H

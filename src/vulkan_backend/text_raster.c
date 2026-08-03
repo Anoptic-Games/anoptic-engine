@@ -15,7 +15,7 @@
 #include "vulkan_backend/pipeline_registry.h"
 #include "vulkan_backend/texture/texture.h"
 #include "vulkan_backend/vertex/vertex.h"
-#include "cpp/ano_alloc.h"
+#include <anoptic_memory_typed.h>
 
 #include <math.h>
 #include <stdio.h>

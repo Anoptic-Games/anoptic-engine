@@ -17,6 +17,7 @@ The current layout:
 
 ```
 src/
+├── meta/           # Header-only C++26 reflection and compile-time value contracts
 ├── engine/         # Entry point (main.c): runs the render world on the main thread, spawns the logic master
 ├── render_bridge/  # Logic <-> render boundary: lock-free SPSC command/event rings
 ├── vulkan_backend/ # GPU-driven Vulkan renderer (render master thread); owns GPU slots + all GLFW
@@ -35,6 +36,8 @@ src/
 
 ## Purpose of Each Subdirectory
 
+- `meta/` (public `include/anoptic_meta.h`): Header-only C++26 structural reflection, enum-domain proofs, strong plain-data concepts, and compile-time value contracts shared across modules. It owns no runtime behavior.
+
 - `audio/` (public `include/anoptic_audio.h`): Mixer thread owns every audio structure (sources, buses, insert chains, sends). Structural change arrives as commands at block boundaries over lock-free rings; telemetry and listener pose ride published double buffers. Device backends are per-platform and hand-rolled, cascading to a null device when none opens. A `generator` seam lets another module render into the bus mixes; the synth is the one that does.
 
 - `synth/` (public `include/anoptic_synth.h`): Voices, patches, beat clock, deadline-sorted schedule. Renders music IR into the audio buses through that seam. Hosts a live music engine: attach one and the generator composes ahead of the playhead every block, with steering, per-bar musical meaning, and seek riding the audio bridge.
@@ -52,7 +55,7 @@ src/
 
 - `mesh/` (`ano_meshoptimizer.h`): Clean-room reimplementation of the meshoptimizer algorithms (no library linked): vertex-cache optimization, meshlet + bounds decomposition for the GPU geometry pool, and quadric-error edge-collapse simplification (`ano_simplify`) for LOD chain production.
 
-- `memory/` (`anoptic_memory.h`): Aligned allocation primitives, hardware interference constants (`ANO_CACHE_LINE` / `ANO_THREAD_LINE`), and mimalloc integration for arenas and thread-local heaps.
+- `memory/` (`anoptic_memory.h`, C++ extension `anoptic_memory_typed.h`): Aligned allocation primitives, overflow-safe typed allocation, hardware interference constants (`ANO_CACHE_LINE` / `ANO_THREAD_LINE`), and mimalloc integration for arenas and thread-local heaps.
 
 - `threads/` (`anoptic_threads.h`): Platform-agnostic threads, mutexes, condition variables, spinlocks, barriers, and TLS over pthreads / Win32. Spawn shim arms each new thread's crash stack via `ano_log_crash_thread_arm` (see `log/`).
 

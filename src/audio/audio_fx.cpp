@@ -6,8 +6,7 @@
 // Insert-effect set. Mixer thread (or offline caller). No alloc/locks after init.
 
 #include "audio_fx.h"
-#include "cpp/ano_reflect.h"
-#include "cpp/ano_types.h"
+#include <anoptic_meta.h>
 
 #include <math.h>
 #include <string.h>

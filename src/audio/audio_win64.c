@@ -17,7 +17,7 @@
 
 #include "audio_internal.h"
 #include "audio_pull.h"
-#include "cpp/ano_alloc.h"
+#include <anoptic_memory_typed.h>
 
 #include <anoptic_log.h>
 #include <anoptic_time.h>

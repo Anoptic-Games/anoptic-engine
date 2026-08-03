@@ -4,7 +4,7 @@ Public headers for the Anoptic Game Engine. Public API means FUNCTION SIGNATURES
 
 IMPLEMENTATIONS of those signatures and definitions live in `src/{module}/`. Example: `include/anoptic_time.h` → `src/time/`.
 
-Functions in an `include/` header always begin with `ano_`, distinguishing them from internal and imported functions:
+Runtime C ABI functions in an `include/` header always begin with `ano_`; C++26 compile-time facilities live in namespace `ano`. This distinguishes both from internal and imported functions:
 1. Public interface: surface of an engine module.
 2. Written and sanctioned by us; anoptische (adjective form of anoptic).
 
@@ -13,7 +13,9 @@ Functions in an `include/` header always begin with `ano_`, distinguishing them 
 ```plaintext
 include/
 ├── anogltf.h           # C++26 reflected glTF loader and typed schema
+├── anoptic_meta.h      # Header-only C++26 reflection and value contracts
 ├── anoptic_memory.h    # Public memory allocation API
+├── anoptic_memory_typed.h # C++ typed allocation extension
 ├── anoptic_threads.h   # Platform abstraction of pthread API
 ├── ...                 # other APIs
 └── anoptic_time.h      # Public timekeeping API

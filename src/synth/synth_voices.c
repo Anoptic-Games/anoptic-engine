@@ -12,7 +12,7 @@
 
 #include "synth_internal.h"
 #include "../audio/dsp/wavetable.h"
-#include "cpp/ano_reflect.h"
+#include <anoptic_meta.h>
 
 // constant-power pan: p in [-1, 1] -> L/R
 static void pan_gains(float p, float *gl, float *gr)

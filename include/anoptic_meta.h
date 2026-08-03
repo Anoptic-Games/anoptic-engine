@@ -1,5 +1,12 @@
-#ifndef ANO_CPP_REFLECT_H
-#define ANO_CPP_REFLECT_H
+/* SPDX-FileCopyrightText: 2026 Anoptic Game Engine Authors
+ *
+ * SPDX-License-Identifier: LGPL-3.0 */
+/*  == Anoptic Game Engine v0.0000001 == */
+
+// C++26 structural reflection and value contracts. Header-only; no runtime surface.
+
+#ifndef ANOPTICENGINE_ANOPTIC_META_H
+#define ANOPTICENGINE_ANOPTIC_META_H
 
 #include <meta>
 #include <stddef.h>
@@ -363,4 +370,6 @@ inline constexpr bool dependent_false = false;
 
 } // namespace ano
 
-#endif // ANO_CPP_REFLECT_H
+#include <anoptic_meta_types.h>
+
+#endif // ANOPTICENGINE_ANOPTIC_META_H

@@ -8,7 +8,7 @@
 #include "vulkan_backend/ui_raster.h"
 #include "vulkan_backend/instance/instanceInit.h"
 #include "vulkan_backend/text_raster.h"
-#include "cpp/ano_alloc.h"
+#include <anoptic_memory_typed.h>
 
 #include <math.h>
 #include <stdlib.h>

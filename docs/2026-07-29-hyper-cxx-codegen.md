@@ -136,7 +136,7 @@ This is the strongest production result. The relevant flags are stable for thous
 
 ## Kept change 3: C++26 enum and data contracts
 
-`src/cpp/ano_types.h` is a small header-only contract, not a framework. `EnumValue<E, Count>` represents a proven dense enum; `EnumFlags<E, Mask>` strips unknown bits and exposes only compile-time flag queries; `EnumTable` can only be indexed by a proven enum value; `make_enum_map` requires exactly one explicit association for every key; `invert_enum_map` constructs and validates the inverse of a bijection at compile time; `Option<T>` carries parse success without importing a C++ runtime; and `ano::assume` transports an ingress invariant into optimized code.
+`include/anoptic_meta.h` is a small header-only contract, not a framework. `EnumValue<E, Count>` represents a proven dense enum; `EnumFlags<E, Mask>` strips unknown bits and exposes only compile-time flag queries; `EnumTable` can only be indexed by a proven enum value; `make_enum_map` requires exactly one explicit association for every key; `invert_enum_map` constructs and validates the inverse of a bijection at compile time; `Option<T>` carries parse success without importing a C++ runtime; and `ano::assume` transports an ingress invariant into optimized code.
 
 The explicit key matters. A positional array with the right number of rows can still be silently reordered. The keyed builder accepts rows in any order, rejects invalid or duplicate keys during constant evaluation, and therefore proves completeness from `Size == Count`. The composer-to-synth table is inverted at compile time, so a duplicate destination or missing inverse also fails the build.
 
@@ -232,7 +232,7 @@ The five initial LeakSanitizer failures are an honest environment limitation, no
 - `.gitignore`: admit private `.cpp` engine sources.
 - `CMakeLists.txt`: strict C++26 mode, module scanning off, enum/control-flow errors, no exceptions/RTTI, no standard-library runtime, sanitizer-compatible runtime selection.
 - `include/anoptic_audio.h`, `include/anoptic_log.h`, `include/anoptic_music.h`, `include/anoptic_strings.h`, `include/anoptic_strings_utf.h`, `include/anoptic_synth.h`: C linkage guards and closed audio enum counts.
-- `src/cpp/ano_types.h`: trivial data concept, option, dense enum value, masked flags, explicit enum tables, consteval keyed-map construction/inversion, and optimizer assumptions.
+- `include/anoptic_meta.h`: trivial data concept, option, dense enum value, masked flags, explicit enum tables, consteval keyed-map construction/inversion, and optimizer assumptions.
 - `src/strings/ano_strings_collate.cpp`, `src/strings/CMakeLists.txt`: templated collation access and C ABI.
 - `src/audio/audio_source.h`, `src/audio/audio_source.cpp`, `src/audio/audio_fx.cpp`, `src/audio/audio_internal.h`, `src/audio/audio_mixer.c`, `src/audio/CMakeLists.txt`: plain shared source/effect state, checked enum ingress, and block-level specialized source rendering.
 - `src/music/music_modes.cpp`, `src/music/music_modes.h`, `src/music/music_vocab.cpp`, `src/music/music_vocab.h`, and callers: keyed mode/layer/patch registries with checked C accessors.

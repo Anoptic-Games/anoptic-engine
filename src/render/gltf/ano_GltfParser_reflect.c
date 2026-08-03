@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: LGPL-3.0 */
 
 #include "ano_GltfParser.h"
-#include "cpp/ano_alloc.h"
+#include <anoptic_memory_typed.h>
 #include <string.h>
 #include <assert.h>
 #include <meta>

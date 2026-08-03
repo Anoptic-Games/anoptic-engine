@@ -7,7 +7,7 @@
 
 #include "music_modes.h"
 
-#include "cpp/ano_types.h"
+#include <anoptic_meta.h>
 
 namespace {
 

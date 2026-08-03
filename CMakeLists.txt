@@ -202,6 +202,7 @@ target_compile_definitions(anoptic_core PUBLIC
 )
 
 # Core module subdirectories
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/meta)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/memory)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/threads)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/time)

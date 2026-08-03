@@ -9,7 +9,7 @@
 
 #include <anoptic_music.h>
 
-#include "cpp/ano_types.h"
+#include <anoptic_meta.h>
 
 namespace {
 

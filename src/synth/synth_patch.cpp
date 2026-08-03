@@ -7,7 +7,7 @@
 
 #include <anoptic_synth.h>
 
-#include "cpp/ano_types.h"
+#include <anoptic_meta.h>
 
 namespace {
 
